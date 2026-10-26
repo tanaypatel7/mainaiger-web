@@ -1,0 +1,29 @@
+{
+  "status": "prepared; login disabled pending SMTP/DNS/delivery test",
+  "unitTests": "node tests/auth-client.test.js passed",
+  "browserReview": [
+    "light and dark sign-in dialog",
+    "320px iframe; dialog within305px content area; no horizontal overflow",
+    "disabled email input/send controls and truthful setup message"
+  ],
+  "homepagePreservation": [
+    "original styles retained as prefix",
+    "avatar and Lab SVGs plus motion rig byte-identical",
+    "homepage HTML outside signin modal and newscript tags unchanged"
+  ],
+  "notVerified": [
+    "real OTP delivery",
+    "real invited account login",
+    "macOS download and pairing",
+    "Nexus API authentication integration"
+  ],
+  "backendSettings": {
+    "publicSignup": false,
+    "anonymousSignin": false,
+    "confirmEmail": true,
+    "otpDigits": 8,
+    "otpSeconds": 600
+  },
+  "smtp": "disabled",
+  "dns": "Resend records prepared; Cloudflare login returned403; not changed"
+}

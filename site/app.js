@@ -31,7 +31,7 @@
     },
     signin: {
       title: 'Welcome to MainAIger',
-      description: 'The planned sign-in choices for accessing the MainAIger download.'
+      description: 'Invite-only email sign-in for registered MainAIger users.'
     }
   };
   theme.addEventListener('change', () => {

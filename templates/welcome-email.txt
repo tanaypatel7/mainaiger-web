@@ -1,0 +1,11 @@
+Subject: Set up MainAIger on your Mac
+
+Your MainAIger account is ready.
+
+Open the MainAIger website, sign in with an email code, and select “Set up this computer”. Download the versioned macOS launcher when it is available, review its container/workspace settings, and approve device pairing separately.
+
+https://tanaypatel7.github.io/mainaiger-web/
+
+Never send your sign-in code or device key by email. Installing the app does not grant access to Nexus or another device.
+
+Activation note for maintainers: this template is prepared, not wired or sent. Do not send a download-ready message until an installer exists. Trigger it once after verified account activation, using a replaceable server-side SMTP adapter and an idempotent delivery record.

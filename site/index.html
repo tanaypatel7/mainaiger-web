@@ -139,13 +139,25 @@
         <p class="dialog-note">The installer is not available in this preview. No software is installed and no permissions are requested.</p>
       </section>
       <section data-dialog-panel="signin" hidden>
-        <div class="auth-options"><button type="button" class="button button-outline button-full" disabled>Continue with Google</button><button type="button" class="button button-outline button-full" disabled>Continue with GitHub</button><button type="button" class="button button-outline button-full" disabled>Continue with an email code</button></div>
-        <p class="dialog-note">Sign-in is not connected yet. This preview does not collect your email or create an account.</p>
+        <div class="auth-options"><button type="button" class="button button-outline button-full" disabled>Continue with Google · later</button><button type="button" class="button button-outline button-full" disabled>Continue with GitHub · later</button></div>
+        <form id="auth-email-form" class="auth-form">
+          <label for="auth-email">Registered email</label><input id="auth-email" type="email" autocomplete="email" required maxlength="254" disabled>
+          <button id="auth-send" type="submit" class="button button-primary button-full" disabled>Send sign-in code</button>
+        </form>
+        <form id="auth-code-form" class="auth-form" hidden>
+          <label for="auth-code">Email code · 8 digits</label><input id="auth-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" minlength="8" maxlength="8" required disabled>
+          <button id="auth-verify" type="submit" class="button button-primary button-full" disabled>Verify code</button>
+        </form>
+        <div id="auth-account" hidden><p>Signed in as <span id="auth-account-email"></span></p><button id="auth-signout" type="button" class="button button-outline button-full">Sign out</button></div>
+        <p id="auth-status" class="dialog-note" role="status" aria-live="polite">Email sign-in is being configured.</p>
         <button type="button" class="text-link" data-open="setup">Back to setup <span aria-hidden="true">↗</span></button>
       </section>
     </div>
   </dialog>
   <script src="main-manager-rig.js"></script>
   <script src="app.js"></script>
+  <script src="auth-config.js"></script>
+  <script src="auth-client.js"></script>
+  <script src="auth-ui.js"></script>
 </body>
 </html>

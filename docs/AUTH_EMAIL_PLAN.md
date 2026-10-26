@@ -1,6 +1,6 @@
 # MainAIger invite-only login and email integration plan
 
-The selected first-release policy is invite-only registration with managed identity. This is an implementation plan; the services below are not provisioned and no authentication or delivery success is claimed.
+The selected first-release policy is invite-only registration with managed identity. A healthy Supabase Auth project now exists in the Mainaiger Free organization, with public signups disabled, anonymous sign-ins disabled, email confirmation required and 8-digit email codes expiring after 600 seconds. The selected email route is Resend Free via replaceable standard SMTP. The sending domain notify.mainaiger.org has been registered in Resend, but DNS verification, SMTP configuration and delivery testing remain pending. The frontend stays disabled until those checks pass. See EMAIL_DNS_SETUP.md for exact setup status. No authentication or email-delivery success is claimed.
 
 ## Service boundaries
 
