@@ -32,6 +32,10 @@
     signin: {
       title: 'Welcome to MainAIger',
       description: 'Invite-only email sign-in for registered MainAIger users.'
+    },
+    workspace: {
+      title: 'Your starting point',
+      description: 'Sign-in is the first step. Next, connect the device that will run your work.'
     }
   };
   theme.addEventListener('change', () => {
@@ -48,6 +52,10 @@
   }
   document.querySelectorAll('[data-open]').forEach(button => {
     button.addEventListener('click', () => openPanel(button.dataset.open));
+  });
+  document.addEventListener('mainaiger:signin', () => openPanel('workspace'));
+  document.addEventListener('mainaiger:session-ended', () => {
+    if (dialog.open && !document.querySelector('[data-dialog-panel="workspace"]').hidden) openPanel('signin');
   });
   closeButton.addEventListener('click', () => dialog.close());
   dialog.addEventListener('click', event => {

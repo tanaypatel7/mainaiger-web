@@ -138,6 +138,16 @@
         <button type="button" class="button button-primary button-full" data-open="signin">See sign-in options <span aria-hidden="true">↗</span></button>
         <p class="dialog-note">The installer is not available in this preview. No software is installed and no permissions are requested.</p>
       </section>
+      <section data-dialog-panel="workspace" hidden aria-labelledby="workspace-heading">
+        <div class="workspace-state"><span aria-hidden="true">●</span><div><strong id="workspace-heading">No device connected</strong><p>Your account is signed in. Device access requires a separate connection.</p></div></div>
+        <ol class="dialog-steps workspace-steps">
+          <li><strong>Choose a device</strong><span>Start with your Mac or an existing private MainAIger server. The connector and pairing flow are not available yet.</span></li>
+          <li><strong>Choose your workspace</strong><span>Select folders and permissions on your device when setup is available. The website cannot access files or run commands yet.</span></li>
+          <li><strong>Open your Lab</strong><span>Notebook editing, code execution, terminal actions and Ollama connections are planned; none are connected in this preview.</span></li>
+        </ol>
+        <p class="dialog-note">The macOS installer is not available yet. You can continue exploring the site while setup is developed.</p>
+        <button type="button" class="button button-outline button-full workspace-account" data-open="signin">Account and sign out <span aria-hidden="true">↗</span></button>
+      </section>
       <section data-dialog-panel="signin" hidden>
         <div class="auth-options"><button type="button" class="button button-outline button-full" disabled>Continue with Google · later</button><button type="button" class="button button-outline button-full" disabled>Continue with GitHub · later</button></div>
         <form id="auth-email-form" class="auth-form">
@@ -148,7 +158,7 @@
           <label for="auth-code">Email code · 8 digits</label><input id="auth-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" minlength="8" maxlength="8" required disabled>
           <button id="auth-verify" type="submit" class="button button-primary button-full" disabled>Verify code</button>
         </form>
-        <div id="auth-account" hidden><p>Signed in as <span id="auth-account-email"></span></p><button id="auth-signout" type="button" class="button button-outline button-full">Sign out</button></div>
+        <div id="auth-account" hidden><p>Signed in as <span id="auth-account-email"></span></p><button type="button" class="button button-primary button-full" data-open="workspace">View device setup <span aria-hidden="true">↗</span></button><button id="auth-signout" type="button" class="button button-outline button-full">Sign out</button></div>
         <p id="auth-status" class="dialog-note" role="status" aria-live="polite">Email sign-in is being configured.</p>
         <button type="button" class="text-link" data-open="setup">Back to setup <span aria-hidden="true">↗</span></button>
       </section>

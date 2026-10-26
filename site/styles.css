@@ -31,3 +31,5 @@
 
 /* Account fields extend only the existing sign-in dialog. */
 .auth-form{display:grid;gap:10px;margin-top:18px}.auth-form[hidden],#auth-account[hidden]{display:none}.auth-form label{font-size:14px;font-weight:600}.auth-form input{min-height:46px;width:100%;border:1px solid var(--control-line,#877d90);border-radius:8px;background:var(--bg,#fff);color:var(--ink,#17151b);font:inherit;padding:10px 12px}.auth-form input:focus-visible{outline:3px solid var(--purple,#6747a6);outline-offset:3px}.auth-form input:disabled{opacity:.6}#auth-account-email{overflow-wrap:anywhere}
+
+.workspace-state{display:flex;gap:12px;padding:16px;background:var(--soft);border-radius:10px;margin:8px 0 22px}.workspace-state>span{color:var(--gold-text);font-size:12px;line-height:1.8}.workspace-state strong{font-size:15px}.workspace-state p{color:var(--muted);font-size:13px;line-height:1.55;margin:3px 0 0}.workspace-steps{margin-bottom:16px}.workspace-account{margin-top:18px}

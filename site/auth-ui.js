@@ -6,7 +6,7 @@
   function message(text){status.textContent=text;}
   function render(){
     const state=client.state();
-    if(lastSignedIn&&!state.signedIn&&!busy)message('Session expired. Sign in again.');
+    if(lastSignedIn&&!state.signedIn&&!busy){message('Session expired. Sign in again.');document.dispatchEvent(new Event('mainaiger:session-ended'));}
     lastSignedIn=state.signedIn;
     emailForm.hidden=state.signedIn;codeForm.hidden=state.signedIn||!codeForm.dataset.requested;
     account.hidden=!state.signedIn;$('auth-account-email').textContent=state.user?.email||'';
@@ -23,6 +23,7 @@
   codeForm.addEventListener('submit',e=>{e.preventDefault();const code=$('auth-code').value;$('auth-code').value='';run(async()=>{
     const result=await client.verifyCode(code);if(result.stale)return;
     $('auth-email').value='';delete codeForm.dataset.requested;message('Signed in. Device pairing and the macOS installer are not available yet.');
+    document.dispatchEvent(new Event('mainaiger:signin'));
   });});
   $('auth-signout').addEventListener('click',()=>run(async()=>{await client.signOut();message('Signed out.');}));
   $('entry-dialog').addEventListener('close',()=>{
