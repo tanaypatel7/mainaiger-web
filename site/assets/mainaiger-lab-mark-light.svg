@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="600" viewBox="0 0 1000 600" role="img">
+<title>MainAIger Lab — symmetric graph M</title>
+<desc>Precisely mirrored geometry with five transparent graph joints, gold diagonal, green start bracket, and red stop bracket. Approved brand baseline v1, 2026-10-26.</desc>
+<defs>
+ <path id="light-m-half" d="M330 438V170L500 350" fill="none" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+ <path id="light-bracket" d="M205 220L105 305L205 390" fill="none" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"/>
+ <g id="light-port"><path d="M330 190L230 158" fill="none" stroke="currentColor" stroke-width="22" stroke-linecap="round"/><rect x="205" y="133" width="50" height="50" rx="12" fill="currentColor"/></g>
+ <rect id="light-cutout" x="-17" y="-17" width="34" height="34" rx="9"/>
+ <mask id="light-joint-holes" x="0" y="0" width="1000" height="600" maskUnits="userSpaceOnUse"><g color="white"><use xlink:href="#light-port"/><use xlink:href="#light-port" transform="translate(1000 0) scale(-1 1)"/></g><use xlink:href="#light-m-half" stroke="white"/><use xlink:href="#light-m-half" stroke="white" transform="translate(1000 0) scale(-1 1)"/>
+ <g fill="black"><use xlink:href="#light-cutout" transform="translate(330 170)"/><use xlink:href="#light-cutout" transform="translate(330 438)"/><use xlink:href="#light-cutout" transform="translate(500 350)"/><use xlink:href="#light-cutout" transform="translate(670 170)"/><use xlink:href="#light-cutout" transform="translate(670 438)"/></g></mask>
+ <clipPath id="light-gold-limit"><rect x="0" y="0" width="618" height="600"/></clipPath>
+ </defs><g aria-label="MainAIger Lab graph M between Start and Stop brackets">
+ <use xlink:href="#light-bracket" stroke="#237A52"/>
+ <use xlink:href="#light-bracket" stroke="#C13E51" transform="translate(1000 0) scale(-1 1)"/>
+ <g mask="url(#light-joint-holes)">
+ <rect width="1000" height="600" fill="#6747A6"/>
+ <path d="M500 350L670 170" fill="none" stroke="#B68A2E" stroke-width="104" stroke-linecap="round" stroke-linejoin="round" clip-path="url(#light-gold-limit)"/>
+ </g></g>
+</svg>

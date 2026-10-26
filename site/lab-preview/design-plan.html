@@ -1,0 +1,326 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MainAIger — design and implementation plan</title><style>body{margin:0;background:#f4f6f6;color:#182a3a;font:16px/1.65 system-ui,sans-serif}header{padding:22px 5%;background:#182a3a;color:white}header a{color:#b7efe6}main{max-width:1100px;margin:36px auto;padding:36px;background:white;border-radius:12px}h1{font-size:34px;line-height:1.2}h2{margin-top:42px;color:#087f7a}h3{margin-top:28px}p,li{max-width:90ch}code{font-size:.88em;background:#edf3f2;padding:2px 4px;border-radius:3px}pre{background:#edf3f2;padding:18px;overflow:auto}pre code{padding:0}a{color:#087f7a}table{border-collapse:collapse;min-width:600px;width:100%;font-size:14px}td,th{padding:12px;text-align:left;border-bottom:1px solid #dce4e3;vertical-align:top}th{background:#edf3f2}.table-wrap{overflow:auto;margin:20px 0}section+section{border-top:3px solid #dce4e3;margin-top:64px;padding-top:40px}@media(max-width:700px){main{margin:0;padding:22px}h1{font-size:28px}}</style><header><b>MainAIger</b> · Design &amp; implementation <a href="index.html" style="float:right">Open prototype →</a></header><main><section><h1>MainAIger Lab: notebook to graph</h1>
+<p>Design and implementation plan · 25 October 2026</p>
+<p>Implementation status: the static design prototype is published at <a href="https://tanaypatel7.github.io/mainaiger-web/.">https://tanaypatel7.github.io/mainaiger-web/.</a> The repository is <a href="https://github.com/tanaypatel7/mainaiger-web.">https://github.com/tanaypatel7/mainaiger-web.</a> Connecting <code>mainaiger.org</code> remains pending because Cloudflare sign-in failed; no DNS records were changed.</p>
+<h2>1. Product decision</h2>
+<p>MainAIger should retain the familiar notebook as one view of an experiment and add a second, spatial graph view of the same cells. The public website introduces the product, demonstrates the transformation, distributes installers and explains connection setup. An installed, authenticated runtime executes native Python and manages local or remote devices. The static website is not the runtime.</p>
+<p>The first experience should present three clear choices: <strong>Explore the demo</strong>, <strong>Use this computer</strong>, and <strong>Connect an existing MainAIger</strong>. A user can inspect the design without creating an account. Authentication is required before accessing a private runtime. A future MainAIger cloud account can synchronize account-level preferences, but must remain distinct from permission to execute on a particular device.</p>
+<p>The accompanying web prototype is a design demonstration. Its process metrics, execution, setup progress and output are simulated unless the interface explicitly reports a verified runtime connection. It does not install Python, operate a terminal, authenticate an account or create a sandbox. A click in the public demo must never silently become a real operating-system action later.</p>
+<p>The essential relationship is:</p>
+<blockquote>One experiment document → notebook view and graph view → selected runtime → durable run records.</blockquote>
+<p>Browser tabs, experiment documents, kernels, OS processes, tmux sessions and devices are separate objects. The interface connects them through visible identifiers rather than treating them as interchangeable.</p>
+<h2>2. What already exists</h2>
+<p>The inspected MainAIger Development Studio archive identifies Studio 0.2.0 and base application 0.6. It contains a working custom Python Lab, a copied-source Studio, a device-aware broker and connector, and a separate Jupyter launcher. The archive is a source snapshot; it does not establish what is currently deployed on any private device.</p>
+<p>Reuse these components:</p>
+<div class="table-wrap"><table>
+<tr><th>Existing source</th><th>Existing responsibility</th><th>Planned change</th></tr>
+<tr><td><code>static/lab/index.html</code>, <code>lab.css</code>, <code>lab.js</code></td><td>Lab chrome, SVG graph, block editor, process/run views</td><td>Add notebook/graph switch, richer cell cards, stable ports, variable drawer and adapter status</td></tr>
+<tr><td><code>lab/projects.py</code></td><td>Blocks, graphs, source snapshots and separate layout revisions</td><td>Add versioned experiment-document adapter and migration/export hooks</td></tr>
+<tr><td><code>lab/scheduler.py</code></td><td>DAG validation, selected/from/one execution, declared inputs</td><td>Preserve review/readiness rules; add explicit execution-adapter contract</td></tr>
+<tr><td><code>lab/runtime.py</code></td><td>Persistent Python subprocesses and lifecycle observations</td><td>Preserve custom runtime; register Jupyter-backed sessions through an adapter</td></tr>
+<tr><td><code>lab/interpreter.py</code></td><td>Custom Python execution and bounded namespace summaries</td><td>Keep as a supported backend; do not describe it as a Jupyter kernel</td></tr>
+<tr><td><code>lab/host.py</code>, <code>broker.py</code>, <code>connector.py</code></td><td>Enrolled target operations, authentication and transport</td><td>Add narrowly scoped document/kernel actions and truthful connection observations</td></tr>
+<tr><td><code>jupyter_workspaces.py</code>, <code>scripts/jupyter/</code></td><td>Existing Jupyter connection workflow</td><td>Reuse target identity and connection verification</td></tr>
+<tr><td><code>static/studio/</code>, <code>lab/studio.py</code></td><td>Source navigation, editing and copied-app preview</td><td>Keep distinct from executable experiment graphs; link selected UI features to their source</td></tr>
+</table></div>
+<p>Current Lab supports Start, End, code and parameter nodes; explicit data/control edges; retained Python sessions; missing-input diagnostics; process observations; save/reopen; and run all/from/selected/one. It executes branches serially in one process. Cycles, conditional guards, structured loops, composites, process scopes and notebook import/export are explicitly deferred. The current SVG cards are fixed-size and route right-center to left-center; flexible notebook cards require new rendering work.</p>
+<p>Preserve its useful separation between layout revision and executable revision. Moving a card should not invalidate Python results or imply a changed program. The existing source-map graph is an explanation of source relationships, while the experiment graph has executable semantics; keep those views visibly named.</p>
+<h2>3. Public website and private runtime</h2>
+<h3>Public origin: <code><a href="https://mainaiger.org">https://mainaiger.org</a></code></h3>
+<p>GitHub Pages can serve HTML, CSS, JavaScript, documentation, a prototype, and downloadable release links. It cannot run a server-side Python interpreter, conda, tmux or an interactive terminal. Browser Python through JupyterLite/Pyodide is a possible separate demo mode, with a clearly labeled browser environment and package/filesystem limitations.</p>
+<p>Use GitHub Pages first for the design lab and installation guide. Serve the actual private Lab from the installed companion or an authenticated private server. Initially, <strong>Open my Lab</strong> navigates to that runtime in a top-level tab. This avoids making the public page an unrestricted cross-origin terminal client and avoids relying on inconsistent localhost/local-network permissions across browsers. A later paired bridge can be added only with explicit origin checks, short-lived pairing, authorization and capability enforcement.</p>
+<p>A public login page alone cannot protect a native kernel. If hosted accounts are introduced, use an appropriate managed authentication service or owned backend, keep private credentials out of static assets, and still require device pairing. Do not embed a shared owner token or GitHub token in JavaScript.</p>
+<h3>Installed runtime</h3>
+<p>The companion owns environment discovery, approved folders, device identity, process supervision, Jupyter connection and execution. Bind the local service to loopback by default. Remote access uses the existing private network and authenticated HTTPS. The homepage must not expose a private kernel publicly through a new port-forward or Tailscale Funnel.</p>
+<p>Use the existing tailnet when available. Joining ordinary Tailscale client devices is not “creating a MainAIger subnet.” Subnet routers are relevant only when deliberately reaching a network that does not run Tailscale directly. Device discovery does not grant execution permission.</p>
+<h2>4. Onboarding as a setup notebook</h2>
+<p>Replace ten separate blocking pages with a resumable setup notebook and a progress rail: <strong>Choose location → Device → Access → Python → Launch → Connect</strong>. Each section contains a short explanation, a command or form, an observed result and a recovery action. Advanced networking appears after a local experiment works.</p>
+<ol>
+<li><strong>Choose a mode.</strong> Demo, new local installation or existing installation. Existing users select a known workspace or locate its manifest; reconstruct the UI from saved configuration and current observations. Never infer that stale saved process IDs are still live.</li>
+<li><strong>Choose storage.</strong> Before the companion exists, the website offers a browser folder picker where supported or a download/import alternative. That picker grants browser file access only. The installer confirms the native workspace root separately. Show the exact resulting path before creation.</li>
+<li><strong>Describe the device.</strong> Ask for a friendly name and role. Discover OS, interpreter candidates, disk availability and memory through the companion. Use a generated installation/device ID rather than an IP as identity. IPs are connection observations and may change. Show unknown GPU capacity as unknown.</li>
+<li><strong>Review access.</strong> A table displays path, read/write scope, execution capability, network access and enforcement mechanism. A folder allowlist can constrain companion file APIs; it does not constrain arbitrary Python running with the user&#x27;s OS permissions. Label that mode <strong>Trusted local Python</strong>. A real sandbox requires an OS/container boundary and separate acceptance tests.</li>
+<li><strong>Choose Python.</strong> Discover existing venv/conda interpreters, allow creation of a project venv, and show interpreter path, Python version, package state and device in an environment card. Package isolation is not a security sandbox. Do not automatically upgrade an established research environment.</li>
+<li><strong>Launch.</strong> Show the managed service, its owned child kernels and optional terminal sessions as separate rows. tmux is an optional terminal convenience. Prefer the platform&#x27;s normal supervisor for long-lived service startup; tmux does not itself manage Jupyter kernel lifecycle or supply isolation.</li>
+<li><strong>Connect and verify.</strong> Open the private Lab. Run a small cell and show actual host, interpreter, session ID, working directory and output. Mark setup complete only after this observation succeeds.</li>
+</ol>
+<p>Before installation, terminal cells have <strong>Copy command</strong> and <strong>I ran this</strong> actions. They cannot execute shell commands from the static page. After pairing with the companion, cells can display <strong>Run on this Mac</strong> or another exact target, preview the operation, stream stdout/stderr, report exit status and retain the operation record. Prefer fixed structured operations for installation steps over arbitrary shell strings. Failed steps remain retryable with idempotent checks; rerunning setup must not overwrite existing experiments.</p>
+<p>Use the requested <code>&lt;chosen-root&gt;/mainaiger/main/online_exp/</code> as the initial experiment directory if desired, while separating <code>config/</code>, <code>state/</code>, <code>logs/</code> and optional <code>artifacts/</code> under the MainAIger root. Do not mix application source updates with user experiment storage. Keep secrets outside portable experiment files.</p>
+<h2>5. Interface composition</h2>
+<p>Keep a Jupyter-like menu, document tabs, execution counts, code editor behavior, Markdown cells, output MIME rendering, kernel selector, command palette and keyboard execution conventions. The left rail contains <strong>Files</strong>, <strong>Running</strong>, <strong>Blocks</strong> and <strong>Outline</strong>. The top toolbar adds a <strong>Notebook | Graph</strong> switch, <strong>Run selection</strong>, <strong>Arrange</strong> and <strong>Fit</strong>. The right drawer contains <strong>Variables</strong>, <strong>Node</strong>, <strong>Run</strong> and <strong>Environment</strong> tabs. The bottom status line reports save state, device, interpreter, session and connection freshness.</p>
+<p>Maintain MainAIger&#x27;s current light panels, dark ink and teal actions. Use shape and text as well as color: green circular Start, red outlined shutdown control, rectangular code cells, a double-border subgraph and a distinct service card. A completed workflow uses a neutral <strong>Finish</strong> marker; red is reserved for cancellation, failure or shutdown. Clearly label sample telemetry in the public prototype.</p>
+<p>The notebook and graph views share cell IDs and editing state. Changing view does not duplicate code, restart a kernel or run anything. Every code card contains title, execution count/status, device/session badge, collapsible code and an independently collapsible output area. Outputs include their generating run and source revision; older results receive a stale badge after a relevant edit.</p>
+<h3>Notebook-to-graph animation</h3>
+<p>Use a reversible, roughly three-second transformation with <strong>Replay</strong>, <strong>Pause</strong> and a scrubber:</p>
+<ol>
+<li>Show familiar stacked Markdown, input and output rectangles.</li>
+<li>Add stable cell labels and declared input/output port badges.</li>
+<li>Move complete code/output pairs apart while keeping their identity visible.</li>
+<li>Reveal control edges in order, then named data edges.</li>
+<li>Place Start and Finish around the graph and settle into the spatial layout.</li>
+</ol>
+<p>A caption states: <strong>The same cells, another view. Layout changes do not change execution.</strong> Moving cards apart cannot prove previously sequential cells are safe to run in parallel. The example should contain an explicit branch with separately declared dependencies. Respect reduced-motion preferences by switching immediately to the final view.</p>
+<h3>Canvas and layout</h3>
+<p>Provide pan, scroll, zoom, drag, keyboard movement, multi-selection, a minimap and Fit selection/Fit all. “Infinite” means a pannable coordinate space, not an infinitely rendered DOM. Virtualize large graphs and cap output previews.</p>
+<p>Connect semantic ports rather than whichever corner happens to be nearest. The router can select a suitable side while preserving the port identity and label. Use distinct line patterns and labels for control, data and error edges; users can hide a layer. Keep the legend consistent with the rendered view. Changing a route is presentation, while reconnecting a port changes execution.</p>
+<p><strong>Arrange</strong> offers top-down, left-to-right and radial presentation. Top-down is the default: entry points share a rank; fan-out separates branches; joins converge; exits share a final rank. Multiple Start points are independent entry interfaces, not automatically simultaneous launches. Radial layout is optional for exploration, with explicit direction arrows. Fit changes the camera and optionally collapses details; it must not shrink text below legibility or alter graph semantics.</p>
+<p>Duplicate Start/Finish/Stop controls are visual aliases pointing to one semantic ID. Their badges say “alias,” and selecting one highlights all copies. Moving or deleting an alias does not create or cancel a process.</p>
+<h2>6. Execution model</h2>
+<h3>Start, code and Finish</h3>
+<p><strong>Start</strong> enters a workflow invocation. A separate runtime action launches or attaches to a kernel. This permits ordinary notebook reuse and repeated experiments in one session. A Start card shows unique workflow/invocation identity, input contract and selected runtime. Another workflow can invoke it through a declared call interface; a user can also explicitly run it.</p>
+<p><strong>Code</strong> executes one cell under the selected adapter. Preserve Jupyter behavior when using a Jupyter kernel, including rich display, errors and execution counts. A code card&#x27;s output edges activate only according to its declared completion/error rules. One shared mutable kernel serializes execution. A branching picture alone does not enable safe parallel evaluation.</p>
+<p><strong>Finish</strong> completes the invocation and records results; by default it keeps the kernel alive for inspection. <strong>Interrupt</strong>, <strong>Cancel run</strong>, <strong>Restart kernel</strong> and <strong>Shut down kernel</strong> are distinct actions with distinct effects. An optional “shut down this owned kernel when complete” policy is explicit and cannot kill unrelated processes. Cancellation must propagate to owned children according to a defined policy.</p>
+<p>For long-running servers use a <strong>Service</strong> node with start, health, ready, stop and exit states. Readiness may trigger downstream work while the service continues. An “indefinite Stop” is ambiguous; a service has an ongoing lifecycle and a concrete stop operation.</p>
+<h3>Inputs, partial execution and variables</h3>
+<p>Each runnable node declares named inputs and outputs. Preflight reports missing values, the declared producer, whether a cached value belongs to this session/epoch, and a suggested prerequisite closure. Actions are <strong>Include prerequisites</strong>, <strong>Provide value</strong>, <strong>Use current session value</strong> where valid, or <strong>Cancel</strong>. Re-executing upstream cells can have side effects, so the user must see the expanded run before dispatch.</p>
+<p>Static Python analysis can suggest producers but is advisory. Dynamic names, mutation, external files, imports and side effects prevent complete automatic dependency inference. Shared notebook globals remain supported, with an honest hidden-state warning when graph contracts cannot describe them.</p>
+<p>The variable drawer shows name, type, shape, approximate size, owning session, producer if known and freshness. Preview values on demand with limits. Do not automatically serialize every tensor or call arbitrary user-defined <code>repr</code> methods. Values in separate processes are not one shared namespace.</p>
+<h3>Control edges, joins and custom logic</h3>
+<p>Control events are immutable execution records, not arbitrary writable booleans injected into Python globals. Expose a read-only event/context object to custom control nodes. Every token identifies run, activation, source port, sequence, iteration and branch. Data values and control completion remain separate.</p>
+<ul>
+<li><strong>Fan-out:</strong> emit one activation token per outgoing control edge after successful completion.</li>
+<li><strong>Join all:</strong> wait for every required incoming branch in the same run and iteration. Define skipped/cancelled/error behavior instead of waiting forever.</li>
+<li><strong>Join any:</strong> accept the first matching activation and explicitly choose whether remaining branches continue or are cancelled. Deduplicate later arrivals.</li>
+<li><strong>Branch:</strong> evaluate a declared predicate, select named routes and record the decision. Unchosen paths become skipped.</li>
+<li><strong>Custom control:</strong> consume declared events and emit only declared routes. Enforce timeout, output validation and a maximum activation budget. It cannot mutate the scheduler&#x27;s internal history.</li>
+</ul>
+<h3>Loops, errors and recursion</h3>
+<p>Do not accept arbitrary back-edges as implicit loops. A structured For/While/Repeat region has entry, body, carry values, exit condition and maximum iteration/time budget. Every iteration receives an ID. Parallel-for requires isolated workers plus an explicit aggregation node and concurrency limit; reductions must declare order sensitivity.</p>
+<p>A Try region has body, catch and finally paths. Catch receives a bounded error descriptor; finally runs once per relevant invocation. Retry is an explicit policy and is disabled by default for side-effecting work. “Failed,” “cancelled” and “unknown after connection loss” are different states.</p>
+<p>Recursive calls require an explicit subgraph call, depth/activation limit and termination condition. They are a later phase. Until implemented, validation rejects unsupported recursion rather than appearing to run it.</p>
+<h3>Subgraphs and processes</h3>
+<p>A subgraph card references a specific document/revision and exposes named inputs and outputs. <strong>Open tab</strong> navigates into it. <strong>Expand here</strong> is initially a view expansion: gray boundary connectors show the parent call mapping, while internal Start/Finish retain their identity. It does not absorb code or change execution.</p>
+<p><strong>Inline into parent</strong> is a separate reversible edit that creates fresh cell IDs, maps ports and resolves names. <strong>Run in child kernel</strong> creates an isolated session; <strong>Run in current kernel</strong> uses shared state and serial execution. The UI must name that choice.</p>
+<p>Cross-process data uses explicit transfer edges. Support JSON values and declared file/array artifact formats first, including size, checksum, source/destination, storage location and transfer status. Local handles remain valid only in their owning session/epoch. Do not promise transfer of all memory, open sockets, arbitrary Python objects or GPU state. Avoid untrusted pickle ingestion. Large arrays can later use shared memory on one host or artifact transfer between hosts.</p>
+<h2>7. Live processes and history</h2>
+<p>The Running panel groups <strong>Device → service → kernel/process → active run</strong>. Each row shows observed status and observation time. CPU, RSS and GPU metrics must state their scope; current existing CPU sampling is approximate OS process reporting, not per-cell CPU profiling. Unknown values remain unknown.</p>
+<p>Clicking a known kernel opens its linked experiment or offers a list when several documents use it. An arbitrary OS process cannot be reconstructed into a notebook. Display such processes as inspectable external processes only if the user has granted that capability.</p>
+<p>Closing a browser tab does not stop the runtime. A disconnected device becomes stale/unknown, not successful or stopped. Reconnection reconciles durable run IDs and receipts; it must not automatically replay uncertain mutations. On completion, the run appears in History/calendar with start/end time, duration, source revision, environment, outputs and logs. Long-lived services retain a live row and periodic event history.</p>
+<h2>8. Document format and export</h2>
+<p>Use the requested <code>.ipymb</code> extension for a versioned MainAIger experiment document. Treat it as a defined format, not a renamed notebook. Embed a valid notebook payload for cells/outputs and store graph metadata beside it. The same cell IDs identify both views. Start, Finish and service nodes are graph nodes, not fabricated executable notebook cells.</p>
+<p>The initial repository bridge uses the following version-1 wrapper. Its control flow preserves the original sequential code-cell order; it does not implement graph execution. Later runtime metadata and richer graph semantics require a documented schema migration.</p>
+<pre><code>{
+  &quot;format&quot;: &quot;mainaiger&quot;,
+  &quot;schema_version&quot;: 1,
+  &quot;notebook&quot;: {
+    &quot;nbformat&quot;: 4,
+    &quot;nbformat_minor&quot;: 5,
+    &quot;metadata&quot;: {&quot;kernelspec&quot;: {&quot;name&quot;: &quot;python3&quot;, &quot;display_name&quot;: &quot;Python 3&quot;, &quot;language&quot;: &quot;python&quot;}},
+    &quot;cells&quot;: [
+      {&quot;id&quot;: &quot;cell_load&quot;, &quot;cell_type&quot;: &quot;code&quot;, &quot;metadata&quot;: {}, &quot;source&quot;: &quot;x = [1, 2, 3]&quot;, &quot;execution_count&quot;: null, &quot;outputs&quot;: []},
+      {&quot;id&quot;: &quot;cell_sum&quot;, &quot;cell_type&quot;: &quot;code&quot;, &quot;metadata&quot;: {}, &quot;source&quot;: &quot;total = sum(x)\nprint(total)&quot;, &quot;execution_count&quot;: null, &quot;outputs&quot;: []}
+    ]
+  },
+  &quot;graph&quot;: {
+    &quot;nodes&quot;: [
+      {&quot;id&quot;: &quot;start&quot;, &quot;kind&quot;: &quot;start&quot;},
+      {&quot;id&quot;: &quot;cell_load&quot;, &quot;kind&quot;: &quot;code&quot;, &quot;cell_index&quot;: 0},
+      {&quot;id&quot;: &quot;cell_sum&quot;, &quot;kind&quot;: &quot;code&quot;, &quot;cell_index&quot;: 1},
+      {&quot;id&quot;: &quot;finish&quot;, &quot;kind&quot;: &quot;finish&quot;}
+    ],
+    &quot;edges&quot;: [
+      {&quot;id&quot;: &quot;e1&quot;, &quot;kind&quot;: &quot;control&quot;, &quot;source&quot;: &quot;start&quot;, &quot;target&quot;: &quot;cell_load&quot;},
+      {&quot;id&quot;: &quot;e2&quot;, &quot;kind&quot;: &quot;control&quot;, &quot;source&quot;: &quot;cell_load&quot;, &quot;target&quot;: &quot;cell_sum&quot;},
+      {&quot;id&quot;: &quot;e3&quot;, &quot;kind&quot;: &quot;control&quot;, &quot;source&quot;: &quot;cell_sum&quot;, &quot;target&quot;: &quot;finish&quot;}
+    ]
+  },
+  &quot;layout&quot;: {
+    &quot;nodes&quot;: {&quot;cell_load&quot;: {&quot;x&quot;: 100, &quot;y&quot;: 140}, &quot;cell_sum&quot;: {&quot;x&quot;: 500, &quot;y&quot;: 140}},
+    &quot;viewport&quot;: {&quot;x&quot;: 0, &quot;y&quot;: 0, &quot;zoom&quot;: 1}
+  }
+}</code></pre>
+<p>The bridge preserves the original notebook object, including outputs and unknown metadata. Existing unique cell IDs are reused; absent or conflicting reserved IDs receive graph-only identifiers without rewriting the notebook. Markdown/raw cells remain nonexecuting graph nodes. Version 1 references notebook cells by <code>cell_index</code>; an editable implementation must update these mappings atomically whenever cells are reordered, inserted or removed. Stable cell identity is the target design, while the bridge preserves older notebooks that lack unique IDs. The bridge refuses an export that would hide changed graph semantics unless the user explicitly accepts a lossy conversion. It is not a scheduler.</p>
+<p>For the later executable document schema, add document identity, independent execution/layout revisions, named ports, edge kinds, alias identities, subgraph revision references, logical runtime preferences and artifact references. Bind output freshness to the source revision and run ID. These are planned extensions, not fields already implemented by the initial bridge.</p>
+<p>Persist documents atomically and allow incomplete drafts. Validate before execution; show disconnected nodes and unsupported constructs without blocking Save. Keep live PID, credentials, socket connections and memory outside the portable file. A saved document does not serialize a running kernel.</p>
+<p>Provide <code>.ipynb</code> import/export through <code>nbformat</code>. Preserve cells, IDs, Markdown, attachments, ordinary outputs and notebook metadata; store MainAIger metadata in a namespaced field when appropriate. Export reports constructs that ordinary Jupyter cannot reproduce. Include a migration version and fixture tests for unknown metadata and future fields.</p>
+<p>For <code>.py</code>, call the action <strong>Export Python</strong> rather than promising universal compilation. A supported serial DAG can export in dependency order with comments and parameters. Parallel workers, services, loops or advanced event scheduling may require a generated script plus MainAIger runtime. Show that dependency in the export dialog. Large output artifacts remain external with explicit references; a portable ZIP export can include approved artifacts and a manifest.</p>
+<h2>9. Open-source implementation strategy</h2>
+<p>Build a prebuilt JupyterLab extension and compatible Jupyter Server extension where needed. Notebook 7 uses the same extension foundations; this does not mean every JupyterLab extension automatically provides every Notebook 7 UI integration. Verify the chosen frontend explicitly.</p>
+<p>Reuse Jupyter document models, code editors, MIME output rendering and kernel messaging. Add the graph editor around those components instead of reproducing Python completion, widgets, execution ordering and notebook trust from scratch. Evaluate React Flow or an equivalent graph library behind an isolated view component; the current application is vanilla DOM/SVG, so introduce a dependency only with a clear integration/build boundary. Use a layout engine such as ELK for nontrivial automatic layout. Keep dependency licenses and third-party notices.</p>
+<p>Potential sources include JupyterLab extension APIs, Jupyter Server, <code>nbformat</code>, JupyterLite for a limited browser demo, <code>jupyterlab-variableInspector</code> for design/reference, and <code>jupyter-resource-usage</code> for resource scope. Variable inspection and telemetry still need MainAIger-specific ownership/freshness controls. Reusing open-source UI code makes widgets easier; execution, lifecycle, data ownership and sandboxing remain substantial engineering work.</p>
+<h2>10. First five integrated milestones</h2>
+<h3>Milestone 1 — publish the design lab</h3>
+<p>Commit the static prototype, this plan and the feature matrix to a dedicated web path/repository. Serve through GitHub Pages, configure the custom domain, verify HTTPS and retain a known-good deployment. Start with a non-destructive <code>/design/</code> path if the domain already serves content. Verify desktop/mobile navigation, setup walkthrough, notebook/graph animation, dragging, zoom/layout controls, exports and visible demo labels. Success means the <code>.org</code> URL serves the reviewed design; it does not mean native Python works.</p>
+<h3>Milestone 2 — one real notebook on one device</h3>
+<p>Add <code>lab/jupyter_adapter.py</code>, <code>lab/experiment_document.py</code>, <code>lab/document_schema.json</code> and a small <code>jupyterlab_mainaiger/</code> prebuilt extension package. Connect to one local Jupyter kernel through supported APIs and the existing authenticated runtime. Preserve notebook editing, rich outputs, errors and execution counts. Test a small numerical notebook, interrupt, restart, save/reopen and browser reconnect. Success means actual outputs and host/interpreter identity are observed, with no simulated runtime indicator.</p>
+<h3>Milestone 3 — same cells, executable serial graph</h3>
+<p>Add the graph view, cell/port mapping, partial-run preflight, <code>.ipymb</code> serialization and <code>.ipynb</code> round-trip. Extend <code>lab/projects.py</code> and the adapter boundary in <code>lab/scheduler.py</code>; keep serial execution in one kernel. Add proposed <code>static/lab/graph_view.js</code>, <code>notebook_view.js</code> and <code>document_store.js</code> or equivalent extension modules. Test cell-ID preservation, missing producer guidance, stale output badges, aliases, layout-only edits and draft save without Finish. Do not add parallelism yet.</p>
+<h3>Milestone 4 — guided installation and reliable lifecycle</h3>
+<p>Add <code>lab/setup_steps.py</code>, <code>lab/device_capabilities.py</code> and <code>static/setup/</code> for resumable setup operations. Integrate environment discovery, explicit directory creation, trusted-local labeling, service startup, process dashboard and optional tmux. Test repeated setup, invalid interpreter, insufficient path access, browser close/reopen, interrupted cell, stale connection and restart epoch. Distinguish finished workflow from running kernel. Verify on the user&#x27;s actual laptop before claiming local acceptance.</p>
+<h3>Milestone 5 — one child worker and one remote route</h3>
+<p>Add <code>lab/artifacts.py</code>, <code>lab/subgraphs.py</code> and explicit child-session invocation; extend current connectors rather than building a new network. First transfer a small JSON result and a small array artifact between parent and child, then between the controller and enrolled server. Add join-all and a bounded structured loop only after the basic transfer succeeds. Test checksums, wrong-session handle rejection, child cancellation, offline target and unknown outcome after connection loss. Advanced recursion, arbitrary custom event logic and broad sandbox provisioning remain later milestones.</p>
+<p>Each milestone should land as a reviewable change with a working UI, actual-output checkpoint and focused tests. The feature matrix defines the full proposed scope; not every feature belongs in the first release.</p>
+<h2>11. Deployment and acceptance boundaries</h2>
+<p>Before writing to the domain, establish its current DNS/HTTPS state, repository ownership, Pages configuration and existing content. Preserve the current site until the new path is verified. A static <code>CNAME</code> file alone does not configure DNS or prove certificate issuance. Use GitHub&#x27;s current Pages instructions and repository settings; do not invent a repository URL or DNS records without verified ownership and target values.</p>
+<p>Minimum end-to-end checks: the public site is readable without local runtime; unavailable actions explain the missing companion; private execution requires authentication; arbitrary public origins cannot issue runtime commands; a notebook survives view changes and save/reopen; the same cell produces equivalent outputs in notebook and supported graph execution; closing the browser does not fabricate process completion; and reconnection does not duplicate work.</p>
+<p>Security controls should match the implemented boundary. This design does not claim unrestricted local Python is contained by a checkbox, virtual environment or tmux session. A future real sandbox needs filesystem, process, network, resource and escape-boundary testing on each supported OS.</p>
+<h2>12. Primary references</h2>
+<ul>
+<li>GitHub Pages creation and static hosting: <a href="https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site">https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site</a></li>
+<li>JupyterLab extension development: <a href="https://jupyterlab.readthedocs.io/en/stable/extension/extension_dev.html">https://jupyterlab.readthedocs.io/en/stable/extension/extension_dev.html</a></li>
+<li>Notebook 7 extensions: <a href="https://jupyter-notebook.readthedocs.io/en/stable/extending/">https://jupyter-notebook.readthedocs.io/en/stable/extending/</a></li>
+<li>Jupyter Server security: <a href="https://jupyter-server.readthedocs.io/en/latest/operators/security.html">https://jupyter-server.readthedocs.io/en/latest/operators/security.html</a></li>
+<li>JupyterLite limitations: <a href="https://jupyterlite.readthedocs.io/en/stable/troubleshooting.html">https://jupyterlite.readthedocs.io/en/stable/troubleshooting.html</a></li>
+<li>Browser directory picker: <a href="https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker">https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker</a></li>
+<li>Python virtual environments: <a href="https://docs.python.org/3/library/venv.html">https://docs.python.org/3/library/venv.html</a></li>
+<li>Tailscale Serve: <a href="https://tailscale.com/docs/features/tailscale-serve">https://tailscale.com/docs/features/tailscale-serve</a></li>
+<li>Tailscale subnet routers: <a href="https://tailscale.com/docs/features/subnet-routers">https://tailscale.com/docs/features/subnet-routers</a></li>
+<li>Variable inspector: <a href="https://github.com/jupyterlab-contrib/jupyterlab-variableInspector">https://github.com/jupyterlab-contrib/jupyterlab-variableInspector</a></li>
+<li>Resource usage extension: <a href="https://github.com/jupyter-server/jupyter-resource-usage/blob/main/README.md">https://github.com/jupyter-server/jupyter-resource-usage/blob/main/README.md</a></li>
+<li>Chrome local-network access changes: <a href="https://developer.chrome.com/release-notes/142">https://developer.chrome.com/release-notes/142</a></li>
+</ul>
+<p>References support platform constraints and implementation options. The proposed MainAIger behaviors, schema and milestones are design decisions, not claims that upstream tools already implement this complete product.</p></section>
+<section><h1>Publish MainAIger on GitHub Pages</h1>
+<p>Current status: repository <code>tanaypatel7/mainaiger-web</code> has been created and the prototype is live at <a href="https://tanaypatel7.github.io/mainaiger-web/.">https://tanaypatel7.github.io/mainaiger-web/.</a> The workflow completed successfully. Do not repeat repository creation for this project. The domain uses Cloudflare, according to the owner. Cloudflare returned “Unable to sign in” after Google authentication; no DNS records were changed. Resume with the domain steps below once authenticated DNS access is available.</p>
+<p>For future edits, clone the existing repository, make a focused change, test, commit and push. The create commands below are retained for recreating this setup in a different empty repository.</p>
+<pre><code>git clone https://github.com/tanaypatel7/mainaiger-web.git
+cd mainaiger-web
+python3 -m http.server 8080 --bind 127.0.0.1 --directory site</code></pre>
+<p>This project publishes the contents of <code>site/</code>. The repository also contains design documents and a deployment workflow; those are not uploaded to the website artifact. No Node build or Python backend is required for this static prototype.</p>
+<p>Intended repository: <code>tanaypatel7/mainaiger-web</code>.</p>
+<p>Intended final address: <code><a href="https://mainaiger.org/">https://mainaiger.org/</a></code>.</p>
+<p>Treat the repository and domain configuration as pending unless a separate deployment report confirms success. A web fetch cannot establish the current authoritative DNS configuration. Do not infer that the domain is broken from a failed fetch.</p>
+<h2>1. Review and test the local website</h2>
+<p>Extract the package into its own directory. Keep this website project separate from an existing MainAIger application checkout. In Terminal, change into the extracted directory that contains <code>site/</code>, <code>docs/</code>, and <code>.github/</code>:</p>
+<pre><code>cd /path/to/mainaiger-web
+python3 -m http.server 8080 --bind 127.0.0.1 --directory site</code></pre>
+<p>Open <code><a href="http://127.0.0.1:8080/">http://127.0.0.1:8080/</a></code>. Check the notebook-to-graph animation, navigation, canvas actions, and mobile layout. Stop the preview with Ctrl+C. This command serves files; it does not start a Python execution backend.</p>
+<p>Before upload, review the repository contents. Public source and published assets must contain no account secrets, local tokens, SSH keys, private experiment files, or personal device configuration. Prototype runtime and telemetry labels should remain visibly marked as demonstrations.</p>
+<h2>2. Create and upload the new repository</h2>
+<p>The commands below assume Git and GitHub CLI are installed and this extracted folder has no existing Git repository. They create a public website-source repository. Run them in the project folder, not in the existing MainAIger application folder.</p>
+<pre><code>git init -b main
+git add .
+git status --short
+git commit -m &quot;Add MainAIger website design prototype&quot;
+gh auth status</code></pre>
+<p>If GitHub CLI is not authenticated, run <code>gh auth login</code> and complete its browser login. Confirm the active GitHub account can create <code>tanaypatel7/mainaiger-web</code>. Then:</p>
+<pre><code>gh repo create tanaypatel7/mainaiger-web --public --source=. --remote=origin --push</code></pre>
+<p>GitHub CLI&#x27;s <code>--source</code> uses the current local repository and <code>--push</code> sends its commits. <a href="https://cli.github.com/manual/gh_repo_create">CLI reference</a></p>
+<p>If the repository has already been created and is empty, do not run the create command again. Inspect <code>git remote -v</code>, then add its remote if none exists:</p>
+<pre><code>git remote add origin https://github.com/tanaypatel7/mainaiger-web.git
+git push -u origin main</code></pre>
+<p>If that remote already contains commits, clone it into a separate directory and copy these website files into that checkout; review the diff before committing. Do not force-push over existing work.</p>
+<h2>3. Enable Pages and run the deployment</h2>
+<ol>
+<li>Open the repository&#x27;s <strong>Settings → Pages</strong>.</li>
+<li>Under <strong>Build and deployment → Source</strong>, select <strong>GitHub Actions</strong>.</li>
+<li>Open <strong>Actions → Deploy MainAIger website → Run workflow</strong>, select <code>main</code>, and run it. An earlier run may have failed before Pages was enabled; rerun after enabling it.</li>
+<li>Wait for the deployment job to finish successfully. Open the URL recorded by its <code>github-pages</code> environment. Before assigning a custom domain, the expected project URL is <code><a href="https://tanaypatel7.github.io/mainaiger-web/">https://tanaypatel7.github.io/mainaiger-web/</a></code>; use the URL GitHub actually reports.</li>
+</ol>
+<p>Equivalent commands after enabling Pages:</p>
+<pre><code>gh workflow run pages.yml --ref main
+gh run list --workflow pages.yml --limit 5</code></pre>
+<p>The workflow checks out the project, checks <code>site/index.html</code>, configures Pages, uploads only <code>site/</code>, and deploys it. Its built-in GitHub token has <code>contents: read</code>, <code>pages: write</code>, and <code>id-token: write</code>; no personal access token belongs in the website. <a href="https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages">Pages workflow documentation</a></p>
+<h2>4. Verify domain ownership before routing traffic</h2>
+<p>In the GitHub account&#x27;s <strong>Settings → Pages</strong>, add <code>mainaiger.org</code> under verified domains. Copy GitHub&#x27;s exact generated TXT record into the DNS provider; do not invent its value. Verify in GitHub when DNS has propagated, and retain that TXT record. This proves domain control; it does not deploy the website or create MainAIger user authentication. <a href="https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/verifying-your-custom-domain-for-github-pages">Domain verification</a></p>
+<p>Before changing website routing, record the current DNS settings and identify whether another site currently uses the apex or <code>www</code>. Preserve all unrelated records, especially MX and mail-related TXT records (SPF, DKIM, DMARC). If an existing website must remain, test this project on its GitHub URL or a separately chosen subdomain first.</p>
+<h2>5. Connect mainaiger.org</h2>
+<p>In Cloudflare, select the account containing <code>mainaiger.org</code>, open the domain&#x27;s <strong>DNS → Records</strong> page, and inspect its existing entries first. Record the current website-routing values for rollback. Add or edit only the website records in the table below. Use <strong>DNS only</strong> during initial GitHub Pages setup and certificate validation, with TTL <strong>Auto</strong>. Keep MX, SPF, DKIM, DMARC, verification records and unrelated subdomains unchanged. This task does not require changing nameservers. Cloudflare&#x27;s record-management guide: <a href="https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/">https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/</a></p>
+<p>Set <strong>repository Settings → Pages → Custom domain</strong> to <code>mainaiger.org</code> and save <strong>before</strong> changing its DNS routing. At the authoritative DNS provider, use the records below. Replace only conflicting website-routing records after reviewing their current purpose. Do not change nameservers or email records for this task.</p>
+<div class="table-wrap"><table>
+<tr><th>Type</th><th>Name</th><th>Value</th></tr>
+<tr><td>A</td><td><code>@</code></td><td><code>185.199.108.153</code></td></tr>
+<tr><td>A</td><td><code>@</code></td><td><code>185.199.109.153</code></td></tr>
+<tr><td>A</td><td><code>@</code></td><td><code>185.199.110.153</code></td></tr>
+<tr><td>A</td><td><code>@</code></td><td><code>185.199.111.153</code></td></tr>
+<tr><td>AAAA</td><td><code>@</code></td><td><code>2606:50c0:8000::153</code></td></tr>
+<tr><td>AAAA</td><td><code>@</code></td><td><code>2606:50c0:8001::153</code></td></tr>
+<tr><td>AAAA</td><td><code>@</code></td><td><code>2606:50c0:8002::153</code></td></tr>
+<tr><td>AAAA</td><td><code>@</code></td><td><code>2606:50c0:8003::153</code></td></tr>
+<tr><td>CNAME</td><td><code>www</code></td><td><code>tanaypatel7.github.io</code></td></tr>
+</table></div>
+<p>Use the DNS provider&#x27;s equivalent apex field if it does not accept <code>@</code>. Alternatively, a provider-supported apex ALIAS/ANAME can target <code>tanaypatel7.github.io</code>; use one apex strategy. Avoid wildcard records. The <code>www</code> target contains neither a protocol nor <code>/mainaiger-web/</code>.</p>
+<p>Custom Actions deployments use the repository&#x27;s domain setting; a repository <code>CNAME</code> file is not required. <a href="https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site">Official domain and DNS configuration</a></p>
+<h2>6. Check DNS, HTTPS, and the interface</h2>
+<p>From macOS/Linux, inspect the current public records:</p>
+<pre><code>dig mainaiger.org A +short
+dig mainaiger.org AAAA +short
+dig www.mainaiger.org CNAME +short
+dig mainaiger.org MX +short
+dig mainaiger.org TXT +short</code></pre>
+<p>Compare the website addresses with the table and the mail records with the saved pre-change values. Check that the apex and <code>www</code> resolve to the intended site. DNS propagation can take time; do not repeatedly replace correct records because a cache is stale.</p>
+<p>In repository Pages settings, wait for a successful DNS check and certificate availability, then select <strong>Enforce HTTPS</strong>. GitHub requests a certificate after the DNS check succeeds. <a href="https://docs.github.com/en/pages/getting-started-with-github-pages/securing-your-github-pages-site-with-https">HTTPS documentation</a></p>
+<pre><code>curl -I https://mainaiger.org/
+curl -I http://mainaiger.org/
+curl -I https://www.mainaiger.org/</code></pre>
+<p>Open <code><a href="https://mainaiger.org/">https://mainaiger.org/</a></code> in a normal browser and verify:</p>
+<ul>
+<li>The page is the intended MainAIger prototype and HTTPS has no certificate error.</li>
+<li>HTTP redirects to HTTPS; <code>www</code> reaches the configured canonical website.</li>
+<li>Styles, scripts, images, and download links load from both a fresh visit and a refresh.</li>
+<li>Notebook/Graph switching preserves cell content and the animation can be replayed.</li>
+<li>Canvas controls and mobile navigation remain usable.</li>
+<li>Simulated runtime actions cannot be confused with real execution, login, installation, or device connection.</li>
+</ul>
+<p>If the project URL works but the custom domain fails, inspect domain settings, authoritative DNS, and certificate state. If both fail, inspect the Actions run and uploaded <code>site/</code> entry point first. If HTML loads without assets, check relative asset paths; the project URL includes <code>/mainaiger-web/</code> before a custom domain is applied.</p>
+<h2>7. Publish changes and roll back</h2>
+<p>For routine edits, change files under <code>site/</code>, test locally, commit, and push <code>main</code>. The workflow deploys that commit. Keep experimental work on a separate branch until reviewed.</p>
+<pre><code>git diff
+git add site docs .github
+git commit -m &quot;Update MainAIger website&quot;
+git push</code></pre>
+<p>To undo a bad site update, inspect <code>git log --oneline</code>, then revert the specific bad commit and push the new revert commit. This redeploys through the same workflow and preserves history. Do not use force-push as the default rollback. To undo a domain migration, restore the recorded previous website-routing settings while preserving email and verification records. If retiring Pages entirely, remove obsolete DNS routing as part of that change rather than leaving an unclaimed domain pointing at Pages.</p>
+<h2>What this deployment does not provide</h2>
+<p>GitHub Pages serves static files; it does not host MainAIger accounts, native Python kernels, shell execution, tmux, or the local device controller. Authentication needs a separately implemented identity service or local-runtime flow. Keep runtime access private and authenticated; do not publish runtime tokens or device administration endpoints through this site. <a href="https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site">GitHub Pages capability boundary</a></p>
+<h2>Action versions verified for this package</h2>
+<p>The workflow uses exact release tags observed in official action repositories on 25 October 2026. GitHub&#x27;s general documentation examples can lag the action release pages. GitHub-hosted <code>ubuntu-latest</code> is used; a future self-hosted runner needs a separate compatibility check.</p>
+<div class="table-wrap"><table>
+<tr><th>Action</th><th>Version</th><th>Official release</th></tr>
+<tr><td>Checkout</td><td><code>v7.0.1</code></td><td><a href="https://github.com/actions/checkout/releases/tag/v7.0.1">https://github.com/actions/checkout/releases/tag/v7.0.1</a></td></tr>
+<tr><td>Configure Pages</td><td><code>v6.0.0</code></td><td><a href="https://github.com/actions/configure-pages/releases/tag/v6.0.0">https://github.com/actions/configure-pages/releases/tag/v6.0.0</a></td></tr>
+<tr><td>Upload Pages artifact</td><td><code>v5.0.0</code></td><td><a href="https://github.com/actions/upload-pages-artifact/releases/tag/v5.0.0">https://github.com/actions/upload-pages-artifact/releases/tag/v5.0.0</a></td></tr>
+<tr><td>Deploy Pages</td><td><code>v5.0.1</code></td><td><a href="https://github.com/actions/deploy-pages/releases/tag/v5.0.1">https://github.com/actions/deploy-pages/releases/tag/v5.0.1</a></td></tr>
+</table></div>
+<p>Workflow structure reference: <a href="https://github.com/actions/starter-workflows/blob/main/pages/static.yml">https://github.com/actions/starter-workflows/blob/main/pages/static.yml</a></p></section>
+<section><h1>Validation and delivery status</h1>
+<p>Checked on 25 October 2026. This report describes this package, not an installed MainAIger runtime on a private device.</p>
+<h2>Passed</h2>
+<ul>
+<li>Created public repository <code>tanaypatel7/mainaiger-web</code>, uploaded this package,</li>
+</ul>
+<p>enabled GitHub Actions as the Pages source, and verified successful deployment run <code>40262814140</code> (attempt 2). The first attempt occurred before Pages was enabled.</p>
+<ul>
+<li>Opened the published HTTPS site at <code><a href="https://tanaypatel7.github.io/mainaiger-web/">https://tanaypatel7.github.io/mainaiger-web/</a></code></li>
+</ul>
+<p>and verified its interface and export dialog. Downloaded its <code>.ipymb</code> example and successfully validated it with the real Python bridge.</p>
+<ul>
+<li>Python document bridge: <strong>10 unit tests passed</strong>. Coverage includes lossless</li>
+</ul>
+<p>notebook JSON round-trip, unknown metadata, Markdown preservation, missing and duplicate original cell IDs, invalid references/types, unsupported schema versions, incomplete drafts, changed execution order, advanced graph export guards, Unicode, and overwrite protection.</p>
+<ul>
+<li>The supplied <code>.ipymb</code> example passes the bridge&#x27;s structural validator.</li>
+<li><code>node --check site/app.js</code> passes.</li>
+<li>The design-plan example is valid JSON; the feature matrix contains 60 unique</li>
+</ul>
+<p>feature IDs and complete fields. The prototype contains 26 grouped interface illustrations with behavior and implementation details.</p>
+<ul>
+<li>Browser review on the local preview: landing page, notebook/graph switch,</li>
+</ul>
+<p>attached code/output cards, graph drag, saved-layout feedback, missing-input identification, prerequisite simulation, selected-cell simulation, process inspector, setup permission page, feature atlas, and documentation navigation.</p>
+<ul>
+<li>Browser layout check at a 390-pixel iframe width: landing page and graph</li>
+</ul>
+<p>navigation/toolbar render and remain usable. This is a responsive-layout check, not a physical iPhone/iPad or Safari acceptance test.</p>
+<ul>
+<li>The separate conversation animation was visually checked in notebook and graph</li>
+</ul>
+<p>states, retaining cell titles, code and outputs.</p>
+<ul>
+<li>GitHub Actions YAML parsed; the official action release tags referenced by the</li>
+</ul>
+<p>workflow were verified and the workflow deployed successfully.</p>
+<h2>Corrected during review</h2>
+<p>The initial graph default fitted the whole document at an unreadably small zoom. It now opens at a readable zoom with an explicit <strong>Fit overview</strong> action. The <strong>Try a missing dependency</strong> action now performs the simulated preflight check instead of only selecting its cell.</p>
+<h2>Still unverified or unimplemented</h2>
+<ul>
+<li>Authoritative DNS settings, custom-domain routing and custom-domain HTTPS</li>
+</ul>
+<p>certificate issuance. Cloudflare returned “Unable to sign in” after the Google authentication attempt. No DNS records or custom-domain routing were changed. The domain could not be loaded by the web retrieval service; that does not prove the domain is down. The GitHub Pages URL remains available.</p>
+<ul>
+<li>Native Python/Jupyter execution, runtime pairing, authentication, shell execution,</li>
+</ul>
+<p>package installation, actual sandboxing, tmux, private networking, telemetry, child processes and service lifecycle. These remain design specifications in the website. No device setup command was run by the prototype.</p>
+<ul>
+<li>Browser download delivery on every supported browser, physical touch devices,</li>
+</ul>
+<p>all keyboard paths, screen-reader acceptance, large-graph performance, real remote failures, and production browser security policies.</p>
+<p>The document converter is real code. All website runs, variables, device properties and resource metrics are demonstrations. Published status must be updated only after GitHub and domain verification succeed.</p></section></main></html>

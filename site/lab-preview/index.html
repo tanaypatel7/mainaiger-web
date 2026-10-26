@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MainAIger Lab design preview: familiar notebooks, connected graphs, and visible processes.">
+  <meta name="theme-color" content="#142a38">
+  <title>MainAIger Lab — Design Preview</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="rail" aria-label="Main navigation">
+    <a class="brand" href="#welcome" aria-label="MainAIger home"><span class="brandmark">M<span>•</span></span><span>MainAIger<small>LAB / STUDIO</small></span></a>
+    <div class="rail-label">WORKSPACE</div>
+    <nav>
+      <button data-view="welcome" class="nav-item active"><span>⌂</span> Overview</button>
+      <button data-view="setup" class="nav-item"><span>◫</span> Connect a device</button>
+      <button data-view="lab" class="nav-item"><span>⌘</span> Notebook → graph</button>
+      <button data-view="atlas" class="nav-item"><span>▦</span> Interface atlas</button>
+    </nav>
+    <div class="rail-divider"></div>
+    <div class="rail-label">DESIGN PRINCIPLES</div>
+    <div class="rail-note">Your code.<br>Your devices.<br>One visible flow.</div>
+    <div class="rail-foot"><span class="dot amber"></span> No device connected<small>Browser-only design preview</small></div>
+  </aside>
+  <main>
+    <header class="topbar"><div class="breadcrumbs">MainAIger <span>/</span> <b id="page-name">Overview</b></div><span class="prototype-badge">Design prototype · simulated runtime</span></header>
+    <section id="view-welcome" class="view active" aria-labelledby="welcome-title">
+      <div class="hero-eyebrow">A NOTEBOOK, WITH ROOM TO GROW</div>
+      <div class="hero"><div><h1 id="welcome-title">Keep the notebook.<br><em>See the whole system.</em></h1><p>Start with familiar Python cells. Unfold them into a graph that makes data, triggers, and running processes visible.</p><div class="hero-actions"><button class="button primary" data-view="lab">Explore the transformation <span>↗</span></button><button class="button" data-view="setup">Preview device setup</button></div><div class="hero-caption">Interactive concept • no installation • no commands executed</div><button class="text-button" id="welcome-account" style="margin-top:14px">Account & sign-in design →</button></div><div class="hero-graphic" aria-label="A notebook of cells becomes a graph"><div class="graphic-label">SAME CODE. TWO VIEWS.</div><div class="mini-notebook"><div><i>[1]</i><b>Load data</b><span>dataset → 1,024 rows</span></div><div><i>[2]</i><b>Transform</b><span>features → 16 columns</span></div><div><i>[3]</i><b>Evaluate</b><span>score → 0.94</span></div></div><div class="graphic-arrow">↗</div><div class="mini-graph"><span class="mini-start">Start</span><div class="mini-box first">Load data <small>dataset</small></div><div class="mini-box second">Transform <small>features</small></div><div class="mini-box third">Inspect <small>preview</small></div><span class="mini-finish">Finish</span><svg viewBox="0 0 280 230" aria-hidden="true"><path d="M140 28V50M140 83V107H63V133M140 107H216V133M63 171V198H140V217M216 171V198H140"/></svg></div></div></div>
+      <div class="section-heading"><span>THREE PLACES, ONE WORKFLOW</span><small>The public website is the entrance. Execution happens where you choose.</small></div>
+      <div class="three-grid"><article class="mode-card"><span class="mode-number">01</span><h2>Explore in the browser</h2><p>Learn the interface, open a sample graph, and preview setup. A future JupyterLite demo can run browser Python.</p><span class="tag">GitHub Pages</span><span class="tag neutral">This prototype</span></article><article class="mode-card"><span class="mode-number">02</span><h2>Work on your device</h2><p>Install a local companion for native Python, files, environments, terminals, and persistent kernels.</p><span class="tag">Local companion</span><span class="tag neutral">Planned</span></article><article class="mode-card"><span class="mode-number">03</span><h2>Connect your machines</h2><p>Use a private network to open work on a server. Device identity stays visible beside each command and cell.</p><span class="tag">Private runtime</span><span class="tag neutral">Planned</span></article></div>
+      <div class="note-banner"><span>↳</span><div><b>A deliberate first release</b><p>Review the interaction design here. Python execution, authentication, installation, and device permissions are design specifications in this preview.</p></div><button class="text-button" data-view="atlas">Inspect every feature →</button></div>
+    </section>
+    <section id="view-setup" class="view" aria-labelledby="setup-title">
+      <div class="page-title"><div><div class="hero-eyebrow">GUIDED ONBOARDING</div><h1 id="setup-title">Give your work a home.</h1><p>One setup notebook, with a clear device and permission boundary.</p></div><span class="pill amber">Preview — no system changes</span></div>
+      <div class="setup-layout"><ol id="setup-steps" class="step-list"></ol><div class="setup-body"><div id="setup-content"></div><div class="setup-footer"><button class="button" id="setup-back">← Back</button><span id="step-count"></span><button class="button primary" id="setup-next">Continue →</button></div></div></div>
+    </section>
+    <section id="view-lab" class="view lab-view" aria-labelledby="lab-title">
+      <div class="lab-titlebar"><div><span class="file-icon">◩</span><h1 id="lab-title">signal-experiment.ipymb</h1><span class="saved-mark" id="saved-mark">Demo document</span></div><div class="runtime-pill"><span class="dot amber"></span> Mac controller <span>·</span> Python demo</div></div>
+      <div class="menu-bar"><button data-menu="File">File</button><button data-menu="Edit">Edit</button><button data-menu="View">View</button><button data-menu="Run">Run</button><button data-menu="Kernel">Kernel</button><button data-menu="Help">Help</button></div>
+      <div class="lab-toolbar"><div class="segmented"><button id="notebook-mode" class="active">Notebook</button><button id="graph-mode">Graph</button></div><div class="toolbar-divider"></div><button class="tool-btn" id="play-transform" title="Animate notebook into graph">▷ <span>Unfold notebook</span></button><input type="range" id="transform-slider" min="0" max="100" value="0" aria-label="Notebook to graph transformation"><button class="tool-btn" id="run-all">▶ Run demo</button><button class="tool-btn" id="run-selected">Run selected</button><button class="tool-btn" id="add-intent">＋ Intent</button><button class="tool-btn" id="export-button">↓ Export</button></div>
+      <div class="lab-workspace"><aside class="file-panel"><div class="panel-head">FILES <button class="icon-btn" id="toggle-files" aria-label="Collapse file panel">‹</button></div><div class="tree-row">⌄ <b>online_exp</b></div><button class="tree-row selected" data-file="signal-experiment.ipymb">◩ signal-experiment</button><button class="tree-row" data-file="data.csv">▤ data.csv</button><button class="tree-row" data-file="README.md">▧ README.md</button><div class="file-scope"><span class="dot amber"></span><b>Demo workspace</b><small>Files shown are examples.</small><button class="text-button" data-view="setup">Choose a workspace →</button></div><div class="panel-head">CANVAS LEGEND</div><div class="legend"><span><i class="control-line"></i>Execution trigger</span><span><i class="data-line"></i>Named data</span><span><i class="markdown-square"></i>Human intent</span></div></aside><div class="canvas-shell"><div class="canvas-notice"><span id="canvas-caption">Notebook view · familiar cells, outputs, and execution counts</span><button class="text-button" id="reset-demo">Reset demo</button></div><div class="canvas-viewport" id="canvas-viewport" tabindex="0" aria-label="Notebook and graph canvas. Drag a node header to move it in graph view; drag empty space to pan."><div class="canvas-world" id="canvas-world"><svg id="edge-layer" aria-hidden="true"></svg><div id="nodes-layer"></div></div></div><div class="canvas-controls"><button id="zoom-out" aria-label="Zoom out">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="Zoom in">+</button><button id="fit-canvas" title="Fit the whole graph as an overview; zoom in to read cells">Fit overview</button><button id="arrange-canvas">Arrange</button><button id="layout-direction">Top ↓</button></div><div class="minimap" aria-label="Graph overview"><span>OVERVIEW</span><div class="minimap-dots"><i></i><i></i><i></i><i></i><i></i></div></div></div><aside class="inspector"><div class="inspector-tabs"><button class="active" data-inspector="variables">Variables</button><button data-inspector="processes">Processes</button></div><div id="inspector-content"></div></aside></div>
+      <div class="statusbar"><span id="run-status"><span class="dot gray"></span> Demo idle</span><span id="selection-status">Select a cell to inspect it</span><span>Simulation · no Python kernel</span></div>
+    </section>
+    <section id="view-atlas" class="view" aria-labelledby="atlas-title"><div class="page-title"><div><div class="hero-eyebrow">FEATURE-BY-FEATURE INTERFACE</div><h1 id="atlas-title">A place for every capability.</h1><p>Select a feature to inspect its controls, behavior, and first implementation.</p></div><button class="button" data-view="lab">Open canvas ↗</button></div><div id="atlas-filters" class="atlas-filters"></div><div id="atlas-grid" class="atlas-grid"></div></section>
+    <footer class="page-footer">MainAIger Lab <span>Design study · October 2026 · sample data throughout</span><a href="design-plan.html">Implementation plan ↗</a></footer>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="detail-dialog"><div class="dialog-top"><span id="dialog-eyebrow">DESIGN DETAIL</span><button id="close-dialog" class="icon-btn" aria-label="Close dialog">×</button></div><div id="dialog-content"></div></dialog>
+  <script src="app.js"></script>
+</body>
+</html>
