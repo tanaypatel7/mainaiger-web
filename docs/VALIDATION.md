@@ -5,6 +5,13 @@ MainAIger runtime on a private device.
 
 ## Passed
 
+- Created public repository `tanaypatel7/mainaiger-web`, uploaded this package,
+  enabled GitHub Actions as the Pages source, and verified successful deployment
+  run `40262814140` (attempt 2). The first attempt occurred before Pages was enabled.
+- Opened the published HTTPS site at `https://tanaypatel7.github.io/mainaiger-web/`
+  and verified its interface and export dialog. Downloaded its `.ipymb` example
+  and successfully validated it with the real Python bridge.
+
 - Python document bridge: **10 unit tests passed**. Coverage includes lossless
   notebook JSON round-trip, unknown metadata, Markdown preservation, missing and
   duplicate original cell IDs, invalid references/types, unsupported schema
@@ -25,8 +32,7 @@ MainAIger runtime on a private device.
 - The separate conversation animation was visually checked in notebook and graph
   states, retaining cell titles, code and outputs.
 - GitHub Actions YAML parsed; the official action release tags referenced by the
-  workflow were verified. This is configuration validation, not a successful
-  GitHub Actions deployment.
+  workflow were verified and the workflow deployed successfully.
 
 ## Corrected during review
 
@@ -37,12 +43,11 @@ instead of only selecting its cell.
 
 ## Still unverified or unimplemented
 
-- GitHub repository creation/upload, Pages deployment, authoritative DNS settings,
-  custom-domain routing and HTTPS certificate issuance. The domain could not be
-  loaded by the web retrieval service; that does not prove the domain is down.
-- GitHub sign-in and repository-creation access remain prerequisites for publishing
-  from this session. The existing GitHub connection did not expose a MainAIger
-  repository and does not provide a create-repository operation.
+- Authoritative DNS settings, custom-domain routing and custom-domain HTTPS
+  certificate issuance. Cloudflare returned “Unable to sign in” after the Google
+  authentication attempt. No DNS records or custom-domain routing were changed.
+  The domain could not be loaded by the web retrieval service; that does not
+  prove the domain is down. The GitHub Pages URL remains available.
 - Native Python/Jupyter execution, runtime pairing, authentication, shell execution,
   package installation, actual sandboxing, tmux, private networking, telemetry,
   child processes and service lifecycle. These remain design specifications in

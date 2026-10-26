@@ -1,5 +1,10 @@
 # MainAIger website and notebook-to-graph design prototype
 
+Live prototype: https://tanaypatel7.github.io/mainaiger-web/
+
+GitHub Pages deployment is verified. Connecting `mainaiger.org` is still pending:
+Cloudflare rejected the Google sign-in attempt, and no DNS records were changed.
+
 This repository is the first reviewable website milestone for `mainaiger.org`.
 It contains a static interactive design prototype, a complete implementation
 plan, a GitHub Pages workflow, and a real dependency-free notebook file converter.
@@ -14,8 +19,8 @@ plan, a GitHub Pages workflow, and a real dependency-free notebook file converte
    commands or change your devices.
 4. Read `docs/DESIGN_PLAN.md` and `docs/FEATURE_MATRIX.csv` for the full design,
    corrections, source-file map, and acceptance criteria.
-5. Read `docs/DEPLOY_GITHUB_PAGES.md` to create a separate `mainaiger-web` repository,
-   deploy `site/`, and connect your domain. Domain setup requires GitHub and DNS access.
+5. Read `docs/DEPLOY_GITHUB_PAGES.md` to update this repository and connect your
+   domain. The repository and GitHub Pages site already exist; DNS setup remains.
 
 ## What works in this package
 

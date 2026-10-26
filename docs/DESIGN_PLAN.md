@@ -2,6 +2,11 @@
 
 Design and implementation plan · 25 October 2026
 
+Implementation status: the static design prototype is published at
+https://tanaypatel7.github.io/mainaiger-web/. The repository is
+https://github.com/tanaypatel7/mainaiger-web. Connecting `mainaiger.org` remains
+pending because Cloudflare sign-in failed; no DNS records were changed.
+
 ## 1. Product decision
 
 MainAIger should retain the familiar notebook as one view of an experiment and add a second, spatial graph view of the same cells. The public website introduces the product, demonstrates the transformation, distributes installers and explains connection setup. An installed, authenticated runtime executes native Python and manages local or remote devices. The static website is not the runtime.

@@ -1,5 +1,22 @@
 # Publish MainAIger on GitHub Pages
 
+Current status: repository `tanaypatel7/mainaiger-web` has been created and the
+prototype is live at https://tanaypatel7.github.io/mainaiger-web/. The workflow
+completed successfully. Do not repeat repository creation for this project.
+The domain uses Cloudflare, according to the owner. Cloudflare returned “Unable
+to sign in” after Google authentication; no DNS records were changed. Resume with
+the domain steps below once authenticated DNS access is available.
+
+For future edits, clone the existing repository, make a focused change, test,
+commit and push. The create commands below are retained for recreating this setup
+in a different empty repository.
+
+```bash
+git clone https://github.com/tanaypatel7/mainaiger-web.git
+cd mainaiger-web
+python3 -m http.server 8080 --bind 127.0.0.1 --directory site
+```
+
 This project publishes the contents of `site/`. The repository also contains design documents and a deployment workflow; those are not uploaded to the website artifact. No Node build or Python backend is required for this static prototype.
 
 Intended repository: `tanaypatel7/mainaiger-web`.
@@ -73,6 +90,15 @@ In the GitHub account's **Settings → Pages**, add `mainaiger.org` under verifi
 Before changing website routing, record the current DNS settings and identify whether another site currently uses the apex or `www`. Preserve all unrelated records, especially MX and mail-related TXT records (SPF, DKIM, DMARC). If an existing website must remain, test this project on its GitHub URL or a separately chosen subdomain first.
 
 ## 5. Connect mainaiger.org
+
+In Cloudflare, select the account containing `mainaiger.org`, open the domain's
+**DNS → Records** page, and inspect its existing entries first. Record the current
+website-routing values for rollback. Add or edit only the website records in the
+table below. Use **DNS only** during initial GitHub Pages setup and certificate
+validation, with TTL **Auto**. Keep MX, SPF, DKIM, DMARC, verification records and
+unrelated subdomains unchanged. This task does not require changing nameservers.
+Cloudflare's record-management guide:
+https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/
 
 Set **repository Settings → Pages → Custom domain** to `mainaiger.org` and save **before** changing its DNS routing. At the authoritative DNS provider, use the records below. Replace only conflicting website-routing records after reviewing their current purpose. Do not change nameservers or email records for this task.
 

@@ -1,5 +1,6 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MainAIger — design and implementation plan</title><style>body{margin:0;background:#f4f6f6;color:#182a3a;font:16px/1.65 system-ui,sans-serif}header{padding:22px 5%;background:#182a3a;color:white}header a{color:#b7efe6}main{max-width:1100px;margin:36px auto;padding:36px;background:white;border-radius:12px}h1{font-size:34px;line-height:1.2}h2{margin-top:42px;color:#087f7a}h3{margin-top:28px}p,li{max-width:90ch}code{font-size:.88em;background:#edf3f2;padding:2px 4px;border-radius:3px}pre{background:#edf3f2;padding:18px;overflow:auto}pre code{padding:0}a{color:#087f7a}table{border-collapse:collapse;min-width:600px;width:100%;font-size:14px}td,th{padding:12px;text-align:left;border-bottom:1px solid #dce4e3;vertical-align:top}th{background:#edf3f2}.table-wrap{overflow:auto;margin:20px 0}section+section{border-top:3px solid #dce4e3;margin-top:64px;padding-top:40px}@media(max-width:700px){main{margin:0;padding:22px}h1{font-size:28px}}</style><header><b>MainAIger</b> · Design &amp; implementation <a href="index.html" style="float:right">Open prototype →</a></header><main><section><h1>MainAIger Lab: notebook to graph</h1>
 <p>Design and implementation plan · 25 October 2026</p>
+<p>Implementation status: the static design prototype is published at <a href="https://tanaypatel7.github.io/mainaiger-web/.">https://tanaypatel7.github.io/mainaiger-web/.</a> The repository is <a href="https://github.com/tanaypatel7/mainaiger-web.">https://github.com/tanaypatel7/mainaiger-web.</a> Connecting <code>mainaiger.org</code> remains pending because Cloudflare sign-in failed; no DNS records were changed.</p>
 <h2>1. Product decision</h2>
 <p>MainAIger should retain the familiar notebook as one view of an experiment and add a second, spatial graph view of the same cells. The public website introduces the product, demonstrates the transformation, distributes installers and explains connection setup. An installed, authenticated runtime executes native Python and manages local or remote devices. The static website is not the runtime.</p>
 <p>The first experience should present three clear choices: <strong>Explore the demo</strong>, <strong>Use this computer</strong>, and <strong>Connect an existing MainAIger</strong>. A user can inspect the design without creating an account. Authentication is required before accessing a private runtime. A future MainAIger cloud account can synchronize account-level preferences, but must remain distinct from permission to execute on a particular device.</p>
@@ -169,6 +170,11 @@
 </ul>
 <p>References support platform constraints and implementation options. The proposed MainAIger behaviors, schema and milestones are design decisions, not claims that upstream tools already implement this complete product.</p></section>
 <section><h1>Publish MainAIger on GitHub Pages</h1>
+<p>Current status: repository <code>tanaypatel7/mainaiger-web</code> has been created and the prototype is live at <a href="https://tanaypatel7.github.io/mainaiger-web/.">https://tanaypatel7.github.io/mainaiger-web/.</a> The workflow completed successfully. Do not repeat repository creation for this project. The domain uses Cloudflare, according to the owner. Cloudflare returned “Unable to sign in” after Google authentication; no DNS records were changed. Resume with the domain steps below once authenticated DNS access is available.</p>
+<p>For future edits, clone the existing repository, make a focused change, test, commit and push. The create commands below are retained for recreating this setup in a different empty repository.</p>
+<pre><code>git clone https://github.com/tanaypatel7/mainaiger-web.git
+cd mainaiger-web
+python3 -m http.server 8080 --bind 127.0.0.1 --directory site</code></pre>
 <p>This project publishes the contents of <code>site/</code>. The repository also contains design documents and a deployment workflow; those are not uploaded to the website artifact. No Node build or Python backend is required for this static prototype.</p>
 <p>Intended repository: <code>tanaypatel7/mainaiger-web</code>.</p>
 <p>Intended final address: <code><a href="https://mainaiger.org/">https://mainaiger.org/</a></code>.</p>
@@ -208,6 +214,7 @@ gh run list --workflow pages.yml --limit 5</code></pre>
 <p>In the GitHub account&#x27;s <strong>Settings → Pages</strong>, add <code>mainaiger.org</code> under verified domains. Copy GitHub&#x27;s exact generated TXT record into the DNS provider; do not invent its value. Verify in GitHub when DNS has propagated, and retain that TXT record. This proves domain control; it does not deploy the website or create MainAIger user authentication. <a href="https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/verifying-your-custom-domain-for-github-pages">Domain verification</a></p>
 <p>Before changing website routing, record the current DNS settings and identify whether another site currently uses the apex or <code>www</code>. Preserve all unrelated records, especially MX and mail-related TXT records (SPF, DKIM, DMARC). If an existing website must remain, test this project on its GitHub URL or a separately chosen subdomain first.</p>
 <h2>5. Connect mainaiger.org</h2>
+<p>In Cloudflare, select the account containing <code>mainaiger.org</code>, open the domain&#x27;s <strong>DNS → Records</strong> page, and inspect its existing entries first. Record the current website-routing values for rollback. Add or edit only the website records in the table below. Use <strong>DNS only</strong> during initial GitHub Pages setup and certificate validation, with TTL <strong>Auto</strong>. Keep MX, SPF, DKIM, DMARC, verification records and unrelated subdomains unchanged. This task does not require changing nameservers. Cloudflare&#x27;s record-management guide: <a href="https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/">https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/</a></p>
 <p>Set <strong>repository Settings → Pages → Custom domain</strong> to <code>mainaiger.org</code> and save <strong>before</strong> changing its DNS routing. At the authoritative DNS provider, use the records below. Replace only conflicting website-routing records after reviewing their current purpose. Do not change nameservers or email records for this task.</p>
 <div class="table-wrap"><table>
 <tr><th>Type</th><th>Name</th><th>Value</th></tr>
@@ -268,6 +275,14 @@ git push</code></pre>
 <p>Checked on 25 October 2026. This report describes this package, not an installed MainAIger runtime on a private device.</p>
 <h2>Passed</h2>
 <ul>
+<li>Created public repository <code>tanaypatel7/mainaiger-web</code>, uploaded this package,</li>
+</ul>
+<p>enabled GitHub Actions as the Pages source, and verified successful deployment run <code>40262814140</code> (attempt 2). The first attempt occurred before Pages was enabled.</p>
+<ul>
+<li>Opened the published HTTPS site at <code><a href="https://tanaypatel7.github.io/mainaiger-web/">https://tanaypatel7.github.io/mainaiger-web/</a></code></li>
+</ul>
+<p>and verified its interface and export dialog. Downloaded its <code>.ipymb</code> example and successfully validated it with the real Python bridge.</p>
+<ul>
 <li>Python document bridge: <strong>10 unit tests passed</strong>. Coverage includes lossless</li>
 </ul>
 <p>notebook JSON round-trip, unknown metadata, Markdown preservation, missing and duplicate original cell IDs, invalid references/types, unsupported schema versions, incomplete drafts, changed execution order, advanced graph export guards, Unicode, and overwrite protection.</p>
@@ -292,18 +307,14 @@ git push</code></pre>
 <ul>
 <li>GitHub Actions YAML parsed; the official action release tags referenced by the</li>
 </ul>
-<p>workflow were verified. This is configuration validation, not a successful GitHub Actions deployment.</p>
+<p>workflow were verified and the workflow deployed successfully.</p>
 <h2>Corrected during review</h2>
 <p>The initial graph default fitted the whole document at an unreadably small zoom. It now opens at a readable zoom with an explicit <strong>Fit overview</strong> action. The <strong>Try a missing dependency</strong> action now performs the simulated preflight check instead of only selecting its cell.</p>
 <h2>Still unverified or unimplemented</h2>
 <ul>
-<li>GitHub repository creation/upload, Pages deployment, authoritative DNS settings,</li>
+<li>Authoritative DNS settings, custom-domain routing and custom-domain HTTPS</li>
 </ul>
-<p>custom-domain routing and HTTPS certificate issuance. The domain could not be loaded by the web retrieval service; that does not prove the domain is down.</p>
-<ul>
-<li>GitHub sign-in and repository-creation access remain prerequisites for publishing</li>
-</ul>
-<p>from this session. The existing GitHub connection did not expose a MainAIger repository and does not provide a create-repository operation.</p>
+<p>certificate issuance. Cloudflare returned “Unable to sign in” after the Google authentication attempt. No DNS records or custom-domain routing were changed. The domain could not be loaded by the web retrieval service; that does not prove the domain is down. The GitHub Pages URL remains available.</p>
 <ul>
 <li>Native Python/Jupyter execution, runtime pairing, authentication, shell execution,</li>
 </ul>
