@@ -1,0 +1,30 @@
+services:
+  companion:
+    build:
+      context: ..
+      dockerfile: companion/Dockerfile
+    ports:
+      - "127.0.0.1:8793:8793"
+    volumes:
+      - local-state:/state
+      - type: bind
+        source: ${MAINAIGER_WORKSPACE:?Set MAINAIGER_WORKSPACE to one dedicated folder}
+        target: /workspace
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1
+    networks:
+      - local-only
+volumes:
+  local-state:
+networks:
+  local-only:
+    internal: true

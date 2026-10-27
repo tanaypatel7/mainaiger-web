@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Discover MainAIger spaces whose owners choose to share a public summary. Request access while each owner retains control of their devices.">
+  <meta name="color-scheme" content="light dark">
+  <title>Shared spaces · MainAIger</title>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="directory.css">
+  <script src="../auth-config.js" defer></script>
+  <script src="../auth-client.js" defer></script>
+  <script src="directory-client.js" defer></script>
+  <script src="directory.js" defer></script>
+</head>
+<body class="directory-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="wordmark" href="../" aria-label="MainAIger home">Main<span>AI</span>ger<span class="brand-stop" aria-hidden="true">.</span></a>
+    <a class="home-link" href="../">Home</a>
+    <div class="header-actions">
+      <label class="theme-control"><span class="sr-only">Appearance</span><select id="theme"><option value="system">Device theme</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <button class="button button-outline compact" id="account-button" type="button">Sign in</button>
+    </div>
+  </header>
+  <main id="main" class="wrap directory-main">
+    <section class="directory-intro" aria-labelledby="directory-title">
+      <div><p class="eyebrow"><span></span> MainAIger network</p><h1 id="directory-title">Shared spaces.<br><em>Owner controlled.</em></h1><p class="intro-copy">Find people offering selected compute, devices and APIs. Every space is independent. Its owner decides what to publish and who may use it.</p></div>
+      <aside class="privacy-card"><span class="small-label">Private by default</span><p>A listing is a summary the owner chooses to share. It does not expose their subnet, connect you to a machine or grant access to files.</p><a href="#privacy">How information is handled <span aria-hidden="true">↓</span></a></aside>
+    </section>
+    <section class="directory-stats" aria-label="Published directory totals">
+      <div><strong id="stat-spaces">—</strong><span>Published spaces</span></div>
+      <div><strong id="stat-devices">—</strong><span>Reported shared devices</span></div>
+      <div><strong id="stat-members">—</strong><span>Reported memberships</span></div>
+    </section>
+    <p class="small-print">Totals include only published, owner-reported summaries. Memberships may overlap. These are not counts of all users or currently reachable machines.</p>
+    <nav class="section-nav" aria-label="Directory sections"><button type="button" data-section="browse" aria-current="page">Explore spaces</button><button type="button" data-section="mine">My spaces</button><button type="button" data-section="requests">Access requests</button></nav>
+    <p id="page-status" class="status-line" role="status" aria-live="polite"></p>
+    <section id="section-browse" aria-label="Explore spaces">
+      <form id="filter-form" class="filter-row"><label>Search space names<input id="search" type="search" maxlength="80" placeholder="Find a space"></label><label>Region<select id="region-filter"><option value="">All regions</option></select></label><button class="button button-outline compact" type="submit">Search</button><button class="button button-quiet compact" id="refresh" type="button">Refresh</button></form>
+      <div class="list-heading"><h2>Public directory</h2><span id="refresh-status" class="small-print">Loading published summaries…</span></div>
+      <div id="public-list" class="space-grid" aria-live="polite"></div>
+      <div class="pagination"><button type="button" id="previous-page" class="button button-outline compact" disabled>Previous</button><span id="page-number">Page 1</span><button type="button" id="next-page" class="button button-outline compact" disabled>Next</button></div>
+    </section>
+    <section id="section-mine" aria-label="My spaces" hidden>
+      <div class="list-heading"><div><h2>Your public presence</h2><p class="small-print">Create a private draft, choose its shared fields and review the exact public summary.</p></div><button id="new-space" type="button" class="button button-primary compact">Add a space</button></div>
+      <p class="signed-out-note">Sign in to manage your spaces. No local installation is registered automatically.</p>
+      <div id="my-list" class="space-grid"></div>
+    </section>
+    <section id="section-requests" aria-label="Access requests" hidden>
+      <h2>Requests, then local permission</h2><p class="section-explainer">An accepted request starts a conversation. The owner must still configure a scoped permission on their own MainAIger installation before any device or API access works.</p>
+      <p><a class="button button-outline compact" href="https://github.com/tanaypatel7/mainaiger-web/blob/main/docs/LOCAL_OWNER_PERMISSIONS.md" target="_blank" rel="noopener noreferrer">Set up local permissions <span aria-hidden="true">↗</span></a></p><p class="small-print">Current companion supports selected-folder read access. Automatic website pairing and code execution are not enabled.</p>
+      <p class="signed-out-note">Sign in to see requests you sent and requests to your spaces.</p>
+      <div id="request-list" class="request-grid"></div>
+      <div id="requests-pagination" class="pagination" hidden><button type="button" id="requests-previous" class="button button-outline compact" disabled>Previous</button><span id="requests-page">Page 1</span><button type="button" id="requests-next" class="button button-outline compact" disabled>Next</button></div>
+    </section>
+    <section id="privacy" class="privacy-details" aria-labelledby="privacy-title"><h2 id="privacy-title">What is shared?</h2><div class="privacy-columns"><div><h3>You choose the public fields</h3><p>A space name and description, with optional broad region, device categories, counts, compute totals and API categories. Location is manually selected. This page does not scan your network or request GPS access.</p></div><div><h3>Files and activity stay elsewhere</h3><p>The directory does not collect files, commands, notebook contents or activity logs. Each installation must enforce its own permissions. API keys, connection addresses and folder paths do not belong in a listing or request.</p></div><div><h3>Account metadata is central</h3><p>MainAIger’s operator can administer website account records, saved listing drafts and access requests. Requests are visible in the application only to the sender and space owner. Hosting and authentication services may retain connection metadata.</p></div></div><p class="small-print">Unpublishing removes a listing from this directory. It cannot recall copies others already saved. Deleting a space removes its directory listing and associated requests; it does not revoke permissions already configured on an independent server.</p></section>
+  </main>
+  <footer class="wrap directory-footer"><a href="../">MainAIger</a><span>Your installation. Your decisions.</span></footer>
+
+  <dialog id="account-dialog" class="directory-dialog small-dialog" aria-labelledby="account-title"><div class="dialog-heading"><h2 id="account-title">Your MainAIger account</h2><button class="close-button" type="button" data-close="account-dialog" aria-label="Close account">×</button></div><p class="small-print">Email access is invitation-only. Your session remains in this tab and is cleared when the page reloads.</p><form id="email-form"><label>Registered email<input id="email" type="email" autocomplete="email" required maxlength="254"></label><button id="send-code" type="submit" class="button button-primary">Send sign-in code</button></form><form id="code-form" hidden><label>Eight-digit email code<input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" required></label><button type="submit" class="button button-primary">Sign in</button></form><div id="account-details" hidden><p>Signed in as <strong id="account-email"></strong></p><button id="sign-out" type="button" class="button button-outline">Sign out</button></div><p id="auth-status" role="status" class="status-line"></p></dialog>
+
+  <dialog id="editor-dialog" class="directory-dialog" aria-labelledby="editor-title"><div class="dialog-heading"><div><span class="small-label">Your space</span><h2 id="editor-title">Create a listing</h2></div><button class="close-button" type="button" data-close="editor-dialog" aria-label="Close listing editor">×</button></div><form id="listing-form"><div class="editor-columns"><div class="editor-fields"><label>Space name<input id="space-title" maxlength="80" required placeholder="A name you want to share publicly"></label><label>Description<textarea id="space-description" maxlength="400" rows="3" placeholder="What would you like to offer or collaborate on?"></textarea></label><p class="small-print">Use public descriptions. Do not enter IP addresses, hostnames, folder paths, credentials or private activity.</p>
+      <fieldset><legend><label class="check-row"><input id="share-region" type="checkbox"> Share a broad region</label></legend><div data-share-fields="region" hidden><label>Region<select id="space-region"><option value="">Choose a region</option></select></label></div></fieldset>
+      <fieldset><legend><label class="check-row"><input id="share-devices" type="checkbox"> Share device categories and count</label></legend><div data-share-fields="devices" hidden><div id="device-options" class="check-options"></div><label>Number of devices you choose to advertise<input id="device-count" type="number" min="0" max="10000" step="1" placeholder="Optional"></label></div></fieldset>
+      <fieldset><legend><label class="check-row"><input id="share-compute" type="checkbox"> Share compute totals</label></legend><div data-share-fields="compute" class="compute-inputs" hidden><label>CPU threads<input id="cpu-threads" type="number" min="0" max="1000000" step="1" placeholder="Optional"></label><label>Memory (GB)<input id="memory-gb" type="number" min="0" max="100000000" step="1" placeholder="Optional"></label><label>GPUs<input id="gpu-count" type="number" min="0" max="100000" step="1" placeholder="Optional"></label></div></fieldset>
+      <fieldset><legend><label class="check-row"><input id="share-members" type="checkbox"> Share a membership count</label></legend><div data-share-fields="members" hidden><label>Members you choose to report<input id="member-count" type="number" min="0" max="10000" step="1" placeholder="Optional"></label><p class="small-print">Only include people whose participation may be publicly counted. No member names are collected here.</p></div></fieldset>
+      <fieldset><legend><label class="check-row"><input id="share-apis" type="checkbox"> Share API categories</label></legend><div id="api-options" class="check-options" data-share-fields="apis" hidden></div></fieldset>
+    </div><aside class="preview-panel"><span class="small-label">Review before publishing</span><h3>Your public summary</h3><p class="small-print">Unchecked categories are cleared from the saved summary. Nothing is read from your devices.</p><div id="listing-preview-readable"></div><details class="metadata-details"><summary>View metadata JSON</summary><pre id="listing-preview" tabindex="0"></pre></details><label class="check-row publish-consent"><input id="publish-consent" type="checkbox"> I want this exact summary to be public.</label><p class="small-print">Public summaries also show when they were last updated. Saving privately stores this metadata in your MainAIger account. The platform operator can administer it.</p></aside></div><p id="editor-status" role="status" class="status-line"></p><div class="dialog-actions"><button type="submit" name="intent" value="private" class="button button-outline">Save privately</button><button type="submit" name="intent" value="public" class="button button-primary" id="publish-button">Publish summary</button></div></form></dialog>
+
+  <dialog id="request-dialog" class="directory-dialog small-dialog" aria-labelledby="request-title"><div class="dialog-heading"><h2 id="request-title">Request access</h2><button class="close-button" type="button" data-close="request-dialog" aria-label="Close access request">×</button></div><p id="request-space" class="small-print"></p><form id="request-form"><label>Display name for this request<input id="request-name" required maxlength="60" autocomplete="nickname" placeholder="Name or alias"></label><fieldset><legend>Permissions you want to discuss</legend><div id="capability-options" class="check-options"></div></fieldset><label>Message to the owner <span class="small-print">(optional)</span><textarea id="request-message" rows="3" maxlength="500" placeholder="Describe your intended collaboration. Do not include secrets or private files."></textarea></label><p class="small-print">This request is stored centrally and is visible to you, the owner and platform administrators. Sending or accepting it does not activate any machine permission.</p><p id="request-status" role="status" class="status-line"></p><button type="submit" class="button button-primary">Send access request</button></form></dialog>
+  <dialog id="delete-dialog" class="directory-dialog small-dialog" aria-labelledby="delete-title"><div class="dialog-heading"><h2 id="delete-title">Delete this space?</h2><button class="close-button" type="button" data-close="delete-dialog" aria-label="Cancel deletion">×</button></div><p id="delete-name"></p><p>The saved listing and its access requests will be deleted. Existing permissions on your server must be revoked there separately.</p><p id="delete-status" role="status" class="status-line"></p><div class="dialog-actions"><button type="button" class="button button-outline" data-close="delete-dialog">Keep space</button><button type="button" id="confirm-delete" class="button button-primary">Delete space</button></div></dialog>
+</body>
+</html>

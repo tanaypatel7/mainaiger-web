@@ -27,6 +27,12 @@ jobs:
           persist-credentials: false
       - name: Check website entry point
         run: test -f site/index.html
+      - name: Check authentication and directory client
+        run: node --test tests/*.test.js
+      - name: Check local permissions and notebook tools
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Exclude local browser fixtures from publication
+        run: python3 -c "from pathlib import Path; assert not list(Path('site').rglob('__qa*')), 'Local QA fixtures must not be deployed'"
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6.0.0
       - name: Upload static website

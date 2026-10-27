@@ -1,0 +1,8 @@
+**
+!companion/
+!companion/**
+**/__pycache__/
+**/*.pyc
+**/*.key
+**/*.sqlite*
+**/.env*
