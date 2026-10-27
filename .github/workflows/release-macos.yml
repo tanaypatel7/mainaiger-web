@@ -70,14 +70,17 @@ jobs:
           python3 - <<'EOF'
           import re
           text = open('python-tests.log', encoding='utf-8', errors='replace').read()
-          for block in re.split(r'\n=+\n', text)[1:]:
-              lines = block.strip().splitlines()
-              if not lines or not lines[0].startswith(('FAIL:', 'ERROR:')): continue
+          blocks = [b.strip().splitlines() for b in re.split(r'\n=+\n', text)[1:]]
+          blocks = [b for b in blocks if b and b[0].startswith(('FAIL:', 'ERROR:'))]
+          blocks.sort(key=lambda b: 0 if b[0].startswith('FAIL:') else 1)  # assertion failures first
+          for index, lines in enumerate(blocks):
+              block = '\n'.join(lines)
               detail = [l for l in lines if l.lstrip().startswith(('File "', 'AssertionError', 'Error', 'assert')) or ': ' in l and 'Error' in l]
               where = re.search(r'File "([^"]+)", line (\d+)', block)
               loc = f'file={where.group(1)},line={where.group(2)}' if where else ''
               message = (lines[0] + ' | ' + ' | '.join(detail[-3:]))[:900].replace('\n', ' ')
-              print(f'::error {loc}::{message}')
+              level = 'error' if index < 10 else 'warning'  # GitHub keeps at most 10 annotations per level per step
+              print(f'::{level} {loc}::{message}')
           m = re.search(r'^(FAILED|OK).*$', text, re.M)
           print('::notice::python unittest result: ' + (m.group(0) if m else 'unknown'))
           EOF
