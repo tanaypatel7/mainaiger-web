@@ -7,6 +7,8 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from local_lab import setup
 from local_lab.runner import command, validate_settings, execute
 from local_lab.server import LabServer, initialize_state
 
@@ -33,7 +35,9 @@ class SettingsTests(unittest.TestCase):
         for change in ({'workspace':'/'},{'workspace':str(self.root)},{'workspace':str(self.state)},{'workspace':str(self.workspace)+',rw'},{'cpus':'--privileged'},{'memory':'8g'},{'extra':'x'}):
             with self.subTest(change=change),self.assertRaises(ValueError):validate_settings({**base,**change},self.state)
     def test_missing_docker_does_not_run_host_python(self):
-        result=execute('print(1)',{'workspace':None,'cpus':'1','memory':'512m'},find=lambda _:None,popen=lambda *a,**k:self.fail('host process launched'))
+        # On a Mac execute() consults Docker Desktop instead of PATH; patch both so the test is platform-neutral.
+        with patch.object(setup,'_local_docker',return_value=(None,'Docker was not found. Install and start Docker Desktop first.')):
+            result=execute('print(1)',{'workspace':None,'cpus':'1','memory':'512m'},find=lambda _:None,popen=lambda *a,**k:self.fail('host process launched'))
         self.assertIn('Docker was not found',result['error'])
     def test_code_length_and_empty(self):
         for text in ['', 'x'*20001]:
@@ -44,7 +48,8 @@ class SettingsTests(unittest.TestCase):
         try:
             start=time.monotonic()
             def stalled(_args,**kwargs):return subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],**kwargs)
-            result=execute('x'*19000,{'workspace':None,'cpus':'1','memory':'512m'},popen=stalled,run=lambda *a,**k:None,find=lambda _:True)
+            with patch.object(setup,'_local_docker',return_value=('docker','verified')):
+                result=execute('x'*19000,{'workspace':None,'cpus':'1','memory':'512m'},popen=stalled,run=lambda *a,**k:None,find=lambda _:True)
             self.assertLess(time.monotonic()-start,4)
             self.assertIn('Cleanup was attempted',result['output'])
         finally:runner.TIMEOUT=timeout
