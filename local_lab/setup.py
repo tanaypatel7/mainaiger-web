@@ -4,6 +4,7 @@ import platform
 import hashlib
 import http.client
 import shutil
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -91,6 +92,33 @@ def _verify_signature(dmg, stage):
         except OSError: pass
     return verified, message
 
+SYSTEM_ROOTS = '/System/Library/Keychains/SystemRootCertificates.keychain'
+
+def _system_roots():
+    """Apple's root certificates as PEM text, exported with the system `security` tool."""
+    proc = subprocess.run(['/usr/bin/security', 'find-certificate', '-a', '-p', SYSTEM_ROOTS],
+                          stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False, env=_env())
+    pem = proc.stdout.decode('ascii', 'replace')
+    if proc.returncode != 0 or '-----BEGIN CERTIFICATE-----' not in pem or len(pem) > 4 * 1024 * 1024:
+        raise ValueError('The macOS system root certificates could not be read.')
+    return pem
+
+def _ssl_context():
+    """A verifying TLS context that works inside the packaged app.
+
+    The app bundles its own Python, whose OpenSSL looks for a certificate file at
+    the path that existed on the build machine. On another Mac that path is absent,
+    so the default context trusts nothing and every HTTPS download fails with
+    CERTIFICATE_VERIFY_FAILED. In that case load Apple's own system roots, the same
+    trust store Safari uses. Verification is never disabled.
+    """
+    context = ssl.create_default_context()
+    if context.cert_store_stats().get('x509_ca', 0) == 0 and platform.system() == 'Darwin':
+        context.load_verify_locations(cadata=_system_roots())
+    if context.cert_store_stats().get('x509_ca', 0) == 0:
+        raise ValueError('No trusted root certificates are available for the download.')
+    return context
+
 class _DockerRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         u = urlsplit(newurl)
@@ -111,7 +139,7 @@ def download_installer(state_dir, progress_callback=None):
             digest = hashlib.sha256()
             received = 0
             deadline = time.monotonic() + 1800
-            opener = urllib.request.build_opener(_DockerRedirect())
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_context()), _DockerRedirect())
             with os.fdopen(fd, 'wb') as out, opener.open(url, timeout=30) as response:
                 declared = response.headers.get('Content-Length')
                 total = int(declared) if declared and declared.isdigit() else None

@@ -141,3 +141,57 @@ class SetupHttpTests(unittest.TestCase):
             pull.assert_called_once_with()
 
 if __name__ == '__main__': unittest.main()
+
+
+class DownloadTrustTests(unittest.TestCase):
+    """The packaged app's Python has no certificate file on another Mac; Apple's roots must be used."""
+    def _one_real_root_pem(self):
+        import ssl as _ssl
+        for cert in _ssl.create_default_context().get_ca_certs(binary_form=True):
+            return _ssl.DER_cert_to_PEM_cert(cert)
+        self.skipTest('no CA certificates available on this machine')
+    def test_empty_default_trust_on_mac_loads_system_roots(self):
+        import ssl as _ssl
+        pem = self._one_real_root_pem()
+        empty = lambda: _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)  # what the bundled Python gets on a user's Mac
+        with patch.object(setup.ssl, 'create_default_context', empty), patch.object(setup.platform, 'system', return_value='Darwin'), \
+             patch.object(setup, '_system_roots', return_value=pem) as roots:
+            context = setup._ssl_context()
+        roots.assert_called_once_with()
+        self.assertGreater(context.cert_store_stats()['x509_ca'], 0)
+        self.assertEqual(context.verify_mode, _ssl.CERT_REQUIRED)  # verification is never relaxed
+    def test_empty_default_trust_elsewhere_is_an_error_not_a_bypass(self):
+        import ssl as _ssl
+        empty = lambda: _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        with patch.object(setup.ssl, 'create_default_context', empty), patch.object(setup.platform, 'system', return_value='Linux'):
+            with self.assertRaises(ValueError): setup._ssl_context()
+    def test_populated_default_trust_is_used_without_touching_the_keychain(self):
+        with patch.object(setup, '_system_roots') as roots:
+            context = setup._ssl_context()
+        roots.assert_not_called()
+        self.assertGreater(context.cert_store_stats()['x509_ca'], 0)
+    def test_system_roots_rejects_non_pem_output(self):
+        class Result: returncode=0; stdout=b'not a certificate'
+        with patch.object(setup.subprocess, 'run', return_value=Result()):
+            with self.assertRaises(ValueError): setup._system_roots()
+        class Failed: returncode=1; stdout=b''
+        with patch.object(setup.subprocess, 'run', return_value=Failed()):
+            with self.assertRaises(ValueError): setup._system_roots()
+    def test_download_uses_verifying_context(self):
+        payload=b'x'; digest=hashlib.sha256(payload).hexdigest()
+        class Response(io.BytesIO):
+            headers={'Content-Length':'1'}
+        captured={}
+        def build_opener(*handlers):
+            captured['handlers']=handlers
+            class Opener:
+                def open(self, url, timeout): return Response(payload)
+            return Opener()
+        with tempfile.TemporaryDirectory() as temp, patch.object(setup,'_installed',return_value=False), \
+             patch.object(setup,'_installer_spec',return_value=('https://desktop.docker.com/test',digest)), \
+             patch.object(setup.urllib.request,'build_opener',side_effect=build_opener), patch.object(setup,'_verify_signature',return_value=(True,'ok')):
+            root=Path(temp); root.chmod(0o700)
+            self.assertTrue(setup.download_installer(root)['ok'])
+        https=[h for h in captured['handlers'] if isinstance(h, setup.urllib.request.HTTPSHandler)]
+        self.assertEqual(len(https),1)
+        self.assertEqual(https[0]._context.verify_mode, setup.ssl.CERT_REQUIRED)

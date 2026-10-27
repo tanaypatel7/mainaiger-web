@@ -104,6 +104,23 @@ jobs:
           left=$(xattr -lr "$APP" 2>/dev/null | grep -c com.apple.quarantine || true)
           info "5 open-anyway: quarantine removed recursively (approximates the Open Anyway exception); remaining quarantine attrs=$left"
 
+      - name: 5b Simulate a user's Mac — hide the build machine's certificate file
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          # The bundled Python's OpenSSL was compiled with the build machine's certificate
+          # path. On a user's Mac that path does not exist, so HTTPS verification found no
+          # roots (the owner observed CERTIFICATE_VERIFY_FAILED). Reproduce that here so the
+          # keychain fallback in local_lab/setup.py is what gets exercised.
+          cafile=$(python3 -c 'import ssl; print(ssl.get_default_verify_paths().openssl_cafile or "")')
+          capath=$(python3 -c 'import ssl; print(ssl.get_default_verify_paths().openssl_capath or "")')
+          moved=""
+          for p in "$cafile" "$capath"; do
+            if [ -n "$p" ] && [ -e "$p" ]; then sudo mv "$p" "$p.hidden-for-acceptance"; moved="$moved $p"; fi
+          done
+          unset SSL_CERT_FILE SSL_CERT_DIR
+          cas=$(python3 -c 'import ssl; print(ssl.create_default_context().cert_store_stats()["x509_ca"])' 2>/dev/null || echo unknown)
+          info "5b trust: hid [$moved]; the build Python now sees $cas CA certificates (0 reproduces the owner's Mac)"
+
       - name: 6 Launch the app and wait for the local service
         run: |
           source .github/scripts/acceptance-lib.sh
