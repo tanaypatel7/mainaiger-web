@@ -148,6 +148,39 @@ process (`tests/test_graph.py`) and the canvas was exercised end to end in a
 headless browser. Running the graph inside Docker on a Mac is the same
 unverified step as the session itself.
 
+## Local models (Ollama)
+
+**Models (Ollama) →** in the Lab header opens `/models`, a second Mainbook:
+
+1. **Device** — memory, chip and free disk read live (`local_lab/models.py:
+   device()`); on Apple silicon Ollama uses the GPU through Metal with the same
+   unified memory, so RAM is the budget.
+2. **Get Ollama** — Ollama runs natively (not in Docker, which cannot reach the
+   Mac GPU). The Lab downloads the pinned release (`OLLAMA_VERSION`,
+   `OLLAMA_SHA256` from the release's `sha256sum.txt`), checks the SHA-256,
+   mounts the image read-only, requires `Ollama.app` to pass
+   `codesign --verify --strict`, to be signed by a Developer ID certificate
+   naming Ollama, and to be accepted by Gatekeeper (`spctl --assess`), then
+   opens the installer. The owner drags Ollama to Applications and opens it;
+   the Lab re-checks every 5 s until Ollama answers on 127.0.0.1:11434.
+3. **Models that fit** — a curated catalog with approximate sizes and the RAM
+   each needs, marked fits / tight / too large for this device; Ollama reports
+   exact sizes when a download starts. **Download** pulls through Ollama's
+   local API with progress.
+4. **Chat API** — `POST /api/models/chat {model, messages}` on the Lab's
+   loopback port, owner session only, forwarded to Ollama's `/api/chat`
+   (non-streaming for now). The page includes a one-message test. A chat
+   interface, streaming, tool use and model-backed graph cells are future work.
+
+Ollama is never exposed beyond loopback by the Lab, and the Lab never sends
+prompts anywhere else.
+
+**Status:** the API client (version, tags, streaming pull, chat), catalog
+fit rules, the routes and the page are tested against a fake Ollama server
+(`tests/test_models.py`) and in a headless browser. The real installer
+download and its signature/notarization checks run in the macOS acceptance
+workflow; installing and running Ollama, and model downloads, need a real Mac.
+
 ## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it

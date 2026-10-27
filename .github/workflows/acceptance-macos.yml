@@ -211,6 +211,26 @@ jobs:
             info "10 open-installer: service reported ok ('$out') but no /Volumes/Docker mount was observed within 60 s (DiskImageMounter may need the GUI session)"
           fi
 
+      - name: 10b Models Mainbook — device, catalog, Ollama installer download and verification (live)
+        continue-on-error: true
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          t0=$SECONDS
+          body=$(api GET /api/models)
+          [ "$(code)" = 200 ] || fail "10b models status HTTP $(code): $body"
+          ram=$(field device.ram_bytes <<< "$body"); chip=$(field device.chip <<< "$body"); installed=$(field installed <<< "$body"); running=$(field running <<< "$body")
+          fits=$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(c["name"]+"="+c["fit"] for c in d["catalog"][:6]))' <<< "$body")
+          info "10b device: ram=$ram chip='$chip' ollama_installed=$installed running=$running; catalog fit: $fits"
+          body=$(api POST /api/models/installer/download '{"confirm":true}')
+          [ "$(code)" = 202 ] || fail "10b ollama download start HTTP $(code): $body"
+          for i in $(seq 1 240); do
+            job=$(api GET /api/setup/job); running=$(field running <<< "$job"); phase=$(field phase <<< "$job"); bytes=$(field bytes <<< "$job"); total=$(field total <<< "$job")
+            [ "$running" = False ] && break; sleep 5
+          done
+          ok=$(field result.ok <<< "$job"); out=$(field result.output <<< "$job")
+          size=$(stat -f%z "$STATE_DIR/installers/Ollama.dmg" 2>/dev/null || echo 0)
+          if [ "$ok" = True ]; then pass "10b ollama-download: ok in $((SECONDS-t0)) s; staged Ollama.dmg=$size bytes; result='$out'"; else fail "10b ollama-download: FAILED after $((SECONDS-t0)) s; phase=$phase bytes=$bytes/$total result='$out'"; fi
+
       - name: 11 Session start is refused without Docker Desktop
         continue-on-error: true
         run: |

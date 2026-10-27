@@ -16,6 +16,7 @@ from .runner import execute, preview, validate_settings, session_preview, sessio
 from .kernel_session import KernelSession, KernelError, KernelBusy
 from . import setup as lab_setup
 from . import graph as graph_module
+from . import models as lab_models
 from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
@@ -135,18 +136,20 @@ class LabServer(ThreadingHTTPServer):
     def server_close(self):
         try: self.stop_kernel()
         finally: super().server_close()
-    def start_setup_job(self, action):
+    def start_setup_job(self, action, runner=None):
+        """Run one long setup operation in the background; `runner(progress)` returns {'ok','output'}."""
         with self.lock:
             if self.setup_running:return False
             self.setup_running=True
-            self.setup_job={'running':True,'action':action,'phase':'starting','bytes':0,'total':None,'result':None}
+            self.setup_job={'running':True,'action':action,'phase':'starting','bytes':0,'total':None,'result':None,'detail':None}
         def progress(data):
             with self.lock:
-                for key in ('phase','bytes','total'):
+                for key in ('phase','bytes','total','detail'):
                     if key in data:self.setup_job[key]=data[key]
         def worker():
             try:
-                if action=='download': result=lab_setup.download_installer(self.state_dir,progress)
+                if runner is not None: result=runner(progress)
+                elif action=='download': result=lab_setup.download_installer(self.state_dir,progress)
                 else: result=lab_setup.open_installer(self.state_dir)
             except Exception:
                 result={'ok':False,'output':'The setup action failed. Check the installer and try again.'}
@@ -199,7 +202,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
-        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8')}
+        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8')}
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
         if path=='/api/state':
@@ -227,6 +230,12 @@ class LabHandler(BaseHTTPRequestHandler):
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             run=self.server.graph_run
             return self.out(200,{'run':run.snapshot() if run else None,'session':self.server.kernel_status(),'revision':self.server.graph_revision})
+        if path=='/api/models':
+            session=self.session()
+            if not session:return self.out(401,{'error':'Local owner sign-in required'})
+            data=lab_models.status(self.server.state_dir);data['csrf']=session['csrf']
+            with self.server.lock: data['job']=dict(self.server.setup_job)
+            return self.out(200,data)
         if path=='/api/setup':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             return self.out(200,lab_setup.status(self.server.state_dir))
@@ -238,7 +247,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.host_ok() or not self.origin_ok():return self.out(403,{'error':'Local same-origin request required'})
         try:
-            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path=='/api/graph' else 25000)
+            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path=='/api/graph' else 600000 if path=='/api/models/chat' else 25000)
             if path=='/api/login':
                 if set(data)!={'key'} or not isinstance(data['key'],str):raise ValueError('Key required')
                 with self.server.lock:
@@ -254,6 +263,22 @@ class LabHandler(BaseHTTPRequestHandler):
             if path=='/api/logout':
                 with self.server.lock:self.server.sessions={k:v for k,v in self.server.sessions.items() if v is not session}
                 return self.out(200,{'ok':True},cookie='mainaiger_lab_owner=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+            if path in ('/api/models/installer/download','/api/models/installer/open','/api/models/app/open'):
+                if data != {'confirm': True} or type(data.get('confirm')) is not bool:raise ValueError('Explicit confirmation is required')
+                if path.endswith('/app/open'):return self.out(200,lab_models.open_app())
+                state_dir=self.server.state_dir
+                runner=(lambda progress: lab_models.download_installer(state_dir,progress)) if path.endswith('/download') else (lambda progress: lab_models.open_installer(state_dir))
+                if not self.server.start_setup_job('ollama-download' if path.endswith('/download') else 'ollama-open',runner):return self.out(409,{'error':'A setup action is already running'})
+                return self.out(202,{'ok':True})
+            if path=='/api/models/pull':
+                if set(data)!={'model','confirm'} or data['confirm'] is not True or not isinstance(data['model'],str) or not lab_models.MODEL_NAME.match(data['model']):raise ValueError('Choose a model and confirm the download')
+                model=data['model']
+                if not self.server.start_setup_job('ollama-pull:'+model,lambda progress: lab_models.pull(model,progress)):return self.out(409,{'error':'A setup action is already running'})
+                return self.out(202,{'ok':True,'model':model})
+            if path=='/api/models/chat':
+                if set(data)!={'model','messages'}:raise ValueError('Send {model, messages}')
+                result=lab_models.chat(data['model'],data['messages'])
+                return self.out(200 if result.get('ok') else 409,result)
             if path=='/api/setup/docker/open':
                 if data != {'confirm': True} or type(data.get('confirm')) is not bool:raise ValueError('Explicit confirmation is required')
                 return self.out(200,lab_setup.open_docker())

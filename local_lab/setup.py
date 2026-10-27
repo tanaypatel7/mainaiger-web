@@ -137,12 +137,54 @@ def _ssl_context():
         raise ValueError('No trusted root certificates are available for the download.')
     return context
 
-class _DockerRedirect(urllib.request.HTTPRedirectHandler):
+class _PinnedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to an approved set of HTTPS hosts."""
+    def __init__(self, hosts, label):
+        super().__init__(); self.hosts, self.label = set(hosts), label
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         u = urlsplit(newurl)
-        if u.scheme != 'https' or u.hostname != 'desktop.docker.com' or u.username or u.password or u.port not in (None, 443):
-            raise ValueError('Docker download redirected to an unapproved address.')
+        if u.scheme != 'https' or u.hostname not in self.hosts or u.username or u.password or u.port not in (None, 443):
+            raise ValueError(self.label + ' download redirected to an unapproved address.')
         return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+class _DockerRedirect(_PinnedRedirect):
+    def __init__(self):
+        super().__init__(['desktop.docker.com'], 'Docker')
+
+def fetch_verified(url, expected_sha256, stage, final_name, progress, hosts, label, timeout=1800):
+    """Download to a temp file in `stage`, enforce size/time limits, require the pinned SHA-256, rename to final_name.
+
+    Returns the final path. Raises ValueError/OSError/TimeoutError on any failure; the partial file is removed.
+    """
+    fd, tmpname = tempfile.mkstemp(prefix=label.lower() + '-', suffix='.part', dir=stage)
+    tmp = Path(tmpname)
+    try:
+        digest = hashlib.sha256()
+        received = 0
+        deadline = time.monotonic() + timeout
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_context()), _PinnedRedirect(hosts, label))
+        with os.fdopen(fd, 'wb') as out, opener.open(url, timeout=30) as response:
+            declared = response.headers.get('Content-Length')
+            total = int(declared) if declared and declared.isdigit() else None
+            if total is not None and total > MAX_DOWNLOAD: raise ValueError(label + ' download exceeds the size limit.')
+            progress({'phase':'downloading', 'bytes':0, 'total':total})
+            while True:
+                if time.monotonic() > deadline: raise TimeoutError(label + ' download timed out.')
+                chunk = response.read(1024 * 1024)
+                if not chunk: break
+                received += len(chunk)
+                if received > MAX_DOWNLOAD: raise ValueError(label + ' download exceeds the size limit.')
+                digest.update(chunk); out.write(chunk)
+                progress({'phase':'downloading', 'bytes':received, 'total':total})
+            if total is not None and received != total: raise ValueError(label + ' download was incomplete.')
+        if digest.hexdigest() != expected_sha256: raise ValueError(label + ' checksum did not match the pinned release.')
+        progress({'phase':'verifying', 'bytes':received, 'total':total})
+        final = Path(stage) / final_name
+        os.replace(tmp, final)
+        return final
+    finally:
+        try: tmp.unlink(missing_ok=True)
+        except OSError: pass
 
 def download_installer(state_dir, progress_callback=None):
     progress = progress_callback or (lambda event: None)
