@@ -58,9 +58,11 @@ as the checksum matched.
 
 ## Status
 
-- **Tested (GitHub runners):** only once a run has completed; check the Actions
-  tab. The workflow smoke test confirms the bundled service starts, serves the
-  panel on loopback and contains the kernel program.
+- **Tested (GitHub runners, 27 Oct 2026):** both architectures built, were
+  ad-hoc signed and packaged, and passed the smoke test: the bundled service
+  started, served the panel on loopback and contained the kernel program
+  (run 40554004016, ~9.5 MB per disk image). The full Python and Node test
+  suites also pass on macOS runners.
 - **Unverified:** that the downloaded app opens on a real Mac after the
   Gatekeeper step, that Docker Desktop installation from the setup Mainbook
   works, and that a session container starts. Those need a real Mac.
