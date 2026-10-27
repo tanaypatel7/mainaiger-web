@@ -8,7 +8,11 @@ app bundles the Python service, so a person running the built app does not need
 to install Python separately. Docker Desktop and the Python image are still
 separate requirements; the Lab setup page explains their status.
 
-From a repository checkout on a Mac, run:
+Prefer a prebuilt download: the GitHub Actions workflow in
+`.github/workflows/release-macos.yml` builds the app for Apple silicon and
+Intel on every Lab change; `docs/RELEASE.md` explains how to download, verify
+and open it (ad-hoc signed, Gatekeeper warns once). To build locally instead,
+from a repository checkout on a Mac, run:
 
 ```bash
 bash macos/build-dev-app.sh
