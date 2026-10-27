@@ -125,8 +125,10 @@ class InstallerTests(unittest.TestCase):
                 result = models.download_installer(root)
             self.assertFalse(result['ok']); self.assertFalse((root / 'installers' / 'Ollama.dmg').exists())  # rejected file is removed
     def test_signature_check_requires_ollama_developer_id_and_gatekeeper(self):
-        outputs = {'hdiutil': (0, ''), 'codesign-verify': (0, ''), 'codesign-dv': (0, 'Authority=Developer ID Application: Ollama Inc. (XXXX)\nTeamIdentifier=XXXX'), 'spctl': (0, 'accepted')}
+        outputs = {'hdiutil': (0, ''), 'codesign-verify': (0, ''), 'codesign-dv': (0, 'Authority=Developer ID Application: Someone Else (YYYY)\nTeamIdentifier=YYYY'), 'spctl': (0, 'accepted')}
+        seen = []
         def run(args, timeout=10):
+            seen.append(args)
             if args[0] == '/usr/bin/hdiutil': return outputs['hdiutil'] if args[1] == 'attach' else (0, '')
             if args[0] == '/usr/bin/codesign': return outputs['codesign-dv'] if args[1] == '-dv' else outputs['codesign-verify']
             if args[0] == '/usr/bin/spctl': return outputs['spctl']
@@ -136,9 +138,11 @@ class InstallerTests(unittest.TestCase):
             def mounted(path): return True
             with patch.object(Path, 'is_dir', mounted), patch.object(Path, 'is_symlink', lambda p: False):
                 self.assertTrue(models._verify_ollama(stage / 'Ollama.dmg', stage)[0])
-                outputs['codesign-dv'] = (0, 'Authority=Developer ID Application: Someone Else\nTeamIdentifier=YYYY')
-                ok, message = models._verify_ollama(stage / 'Ollama.dmg', stage); self.assertFalse(ok); self.assertIn('naming Ollama', message)
-                outputs['codesign-dv'] = (0, 'Authority=Developer ID Application: Ollama Inc.\nTeamIdentifier=XXXX'); outputs['spctl'] = (3, 'rejected')
+                verify = next(a for a in seen if a[0] == '/usr/bin/codesign' and '--verify' in a)
+                self.assertIn('-R', verify); self.assertIn('3MU9H2V9Y9', verify[verify.index('-R') + 1]); self.assertIn('com.electron.ollama', verify[verify.index('-R') + 1])
+                outputs['codesign-verify'] = (1, 'code failed to satisfy specified code requirement(s)')
+                ok, message = models._verify_ollama(stage / 'Ollama.dmg', stage); self.assertFalse(ok); self.assertIn('Team ID 3MU9H2V9Y9', message); self.assertIn('Someone Else', message)
+                outputs['codesign-verify'] = (0, ''); outputs['spctl'] = (3, 'rejected')
                 ok, message = models._verify_ollama(stage / 'Ollama.dmg', stage); self.assertFalse(ok); self.assertIn('Gatekeeper', message)
 
 

@@ -35,6 +35,12 @@ OLLAMA_VERSION = '0.40.12'
 OLLAMA_URL = 'https://github.com/ollama/ollama/releases/download/v%s/Ollama.dmg' % OLLAMA_VERSION
 OLLAMA_SHA256 = '348d75eac8370e69cdb9e85ef3fda8b2d9f8e01a01443860fd60bd552d42a433'  # from the release's sha256sum.txt
 OLLAMA_HOSTS = ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com']
+# Signing identity observed on the official 0.40.12 release (both Apple silicon and Intel):
+#   Developer ID Application: Infra Technologies, Inc (3MU9H2V9Y9), bundle id com.electron.ollama.
+# Re-verify these with `codesign -dv --verbose=2 Ollama.app` whenever the version pin changes.
+OLLAMA_TEAM_ID = '3MU9H2V9Y9'
+OLLAMA_BUNDLE_ID = 'com.electron.ollama'
+OLLAMA_REQUIREMENT = '=anchor apple generic and identifier "%s" and certificate leaf[subject.OU] = "%s"' % (OLLAMA_BUNDLE_ID, OLLAMA_TEAM_ID)
 OLLAMA_HOST, OLLAMA_PORT = '127.0.0.1', 11434
 MODEL_NAME = re.compile(r'^[a-z0-9][a-z0-9._/-]{0,80}(:[a-z0-9][a-z0-9._-]{0,40})?$')
 GiB = 1024 ** 3
@@ -166,7 +172,7 @@ def status(state_dir=None):
             'running': bool(version), 'version': version, 'endpoint': 'http://%s:%d' % (OLLAMA_HOST, OLLAMA_PORT),
             'models': models, 'catalog': catalog(dev['ram_bytes'], dev['free_bytes'], [m['name'] for m in models]),
             'installer': {'version': OLLAMA_VERSION, 'url': OLLAMA_URL, 'sha256': OLLAMA_SHA256, 'staged': staged,
-                          'verification': 'Pinned release SHA-256; Developer ID signature naming Ollama and Apple notarization checked before opening.'},
+                          'verification': 'Pinned release SHA-256, pinned Developer ID Team ID %s for %s, and Apple notarization checked before opening.' % (OLLAMA_TEAM_ID, OLLAMA_BUNDLE_ID)},
             'chat_endpoint': '/api/models/chat (loopback, owner session only)'}
 
 
@@ -187,20 +193,19 @@ def _verify_ollama(dmg, stage):
             if not app.is_dir() or app.is_symlink():
                 message = 'The image did not contain Ollama.app.'
             else:
-                code, output = lab_setup._run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], timeout=180)
+                # Same pattern as the Docker installer: a strict signature check against the pinned
+                # bundle identifier and Team ID, then Gatekeeper's own assessment (notarization).
+                code, output = lab_setup._run(['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', OLLAMA_REQUIREMENT, str(app)], timeout=180)
                 if code != 0:
-                    message = 'Ollama.app signature verification failed. ' + output[:300]
+                    code2, details = lab_setup._run(['/usr/bin/codesign', '-dv', '--verbose=2', str(app)], timeout=60)
+                    identity = ' | '.join(l.strip() for l in details.splitlines() if l.strip().startswith(('Authority=', 'TeamIdentifier=', 'Identifier=')))
+                    message = ('Ollama.app signature or signing identity verification failed (expected Team ID %s, bundle %s). ' % (OLLAMA_TEAM_ID, OLLAMA_BUNDLE_ID)) + (identity or output[:300])[:400]
                 else:
-                    code, details = lab_setup._run(['/usr/bin/codesign', '-dv', '--verbose=2', str(app)], timeout=60)
-                    authority_ok = code == 0 and 'Developer ID Application: Ollama' in details and 'TeamIdentifier=' in details
                     code, assess = lab_setup._run(['/usr/bin/spctl', '--assess', '--type', 'execute', str(app)], timeout=120)
-                    if not authority_ok:
-                        identity = ' | '.join(l.strip() for l in details.splitlines() if l.strip().startswith(('Authority=', 'TeamIdentifier=', 'Identifier=')))
-                        message = 'Ollama.app is not signed by a Developer ID certificate naming Ollama. Signature: ' + (identity or details[:300])[:400]
-                    elif code != 0:
+                    if code != 0:
                         message = 'Gatekeeper did not accept Ollama.app (notarization check failed). ' + assess[:300]
                     else:
-                        verified, message = True, 'SHA-256, Ollama Developer ID signature and Apple notarization verified.'
+                        verified, message = True, 'SHA-256, pinned Ollama signing identity (Team ID %s) and Apple notarization verified.' % OLLAMA_TEAM_ID
     finally:
         if attached:
             code, _ = lab_setup._run(['/usr/bin/hdiutil', 'detach', str(mount)], timeout=30)
