@@ -80,7 +80,7 @@ jobs:
           source .github/acceptance/lab.sh
           set +e
           cross=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Origin: https://mainaiger.org' -H 'Content-Type: application/json' --data '{"key":"x"}' "$LAB_URL/api/login")
-          lab_post /api/login '{"key":"not-the-key"}' > /dev/null; wrong=$LAB_STATUS
+          lab_post /api/login '{"key":"not-the-key"}' > /dev/null; wrong=$(lab_status)
           lab_login; login=$?
           state=$(lab_get /api/state)
           if [[ "$cross" == 403 && "$wrong" == 403 && $login == 0 ]] && jq -e '.docker_available == true and .session.alive == false' <<<"$state" > /dev/null; then
@@ -94,7 +94,7 @@ jobs:
           set +e
           body=$(lab_post /api/run "$(jq -cn --argjson r "$(lab_revision)" '{code:"print(1+1)",confirm:true,revision:$r}')" 60)
           out=$(jq -r .output <<<"$body"); code=$(jq -r .exit_code <<<"$body")
-          if [[ "$LAB_STATUS" == 200 && "$out" == "2" && "$code" == "0" ]]; then pass a "one-shot run printed 2, exit 0"; else fail a "status=$LAB_STATUS body=$body"; fi
+          if [[ "$(lab_status)" == 200 && "$out" == "2" && "$code" == "0" ]]; then pass a "one-shot run printed 2, exit 0"; else fail a "status=$(lab_status) body=$body"; fi
 
       - name: b. Save settings - read-only folder, 1 CPU, 256 MB
         continue-on-error: true
@@ -104,7 +104,7 @@ jobs:
           ws="$RUNNER_TEMP/workspace"; mkdir -p "$ws"; echo hello > "$ws/hello.txt"; chmod 755 "$ws"; chmod 644 "$ws/hello.txt"
           body=$(lab_post /api/settings "$(jq -cn --arg w "$ws" '{workspace:$w,cpus:"1",memory:"256m"}')")
           state=$(lab_get /api/state)
-          if [[ "$LAB_STATUS" == 200 ]] && jq -e --arg w "$ws" '.workspace == $w and .limits.cpus == "1" and .limits.memory == "256m"' <<<"$state" > /dev/null; then
+          if [[ "$(lab_status)" == 200 ]] && jq -e --arg w "$ws" '.workspace == $w and .limits.cpus == "1" and .limits.memory == "256m"' <<<"$state" > /dev/null; then
             pass b "settings saved: $(jq -c '{workspace,limits}' <<<"$state")"; else fail b "settings=$body state=$state"; fi
 
       - name: c. Start a persistent session (kernel in a container)
@@ -113,10 +113,10 @@ jobs:
           source .github/acceptance/lab.sh
           set +e
           body=$(lab_start_session)
-          if [[ "$LAB_STATUS" == 200 ]] && jq -e '.alive == true and (.python | test("^3\\."))' <<<"$body" > /dev/null; then
+          if [[ "$(lab_status)" == 200 ]] && jq -e '.alive == true and (.python | test("^3\\."))' <<<"$body" > /dev/null; then
             pass c "session alive, python $(jq -r .python <<<"$body"), container $(containers | tr '\n' ' ')"
             docker inspect "$(containers | head -1)" --format 'HostConfig: Memory={{.HostConfig.Memory}} NanoCpus={{.HostConfig.NanoCpus}} PidsLimit={{.HostConfig.PidsLimit}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} NetworkMode={{.HostConfig.NetworkMode}} CapDrop={{.HostConfig.CapDrop}} User={{.Config.User}} Mounts={{range .Mounts}}{{.Source}}->{{.Destination}}(rw={{.RW}}) {{end}}'
-          else fail c "status=$LAB_STATUS body=$body"; fi
+          else fail c "status=$(lab_status) body=$body"; fi
 
       - name: d. Variables persist between cells
         continue-on-error: true
@@ -169,7 +169,7 @@ jobs:
           lab_exec $'import time\nwhile True: time.sleep(0.01)' 90 > "$LAB_DIR/interrupted.json" &
           bg=$!
           sleep 2
-          busy=$(lab_exec 'print(1)'); busy_status=$LAB_STATUS
+          busy=$(lab_exec 'print(1)'); busy_status=$(lab_status)
           irq=$(lab_post /api/kernel/interrupt '{}')
           wait $bg
           res=$(cat "$LAB_DIR/interrupted.json")

@@ -11,29 +11,33 @@ JAR="$LAB_DIR/cookies"
 CSRF_FILE="$LAB_DIR/csrf"
 RESULTS="$LAB_DIR/results.txt"
 
-# lab_post PATH JSON [MAX_SECONDS]  -> prints the response body; LAB_STATUS holds the HTTP code
+# lab_post PATH JSON [MAX_SECONDS]  -> prints the response body; lab_status prints the HTTP code
 lab_post() {
   local path=$1 body=$2 maxtime=${3:-30} out
   out=$(curl -sS -m "$maxtime" -o - -w '\n%{http_code}' -b "$JAR" ${LAB_SAVE_COOKIES:+-c "$JAR"} \
         -H "Origin: $LAB_URL" -H 'Content-Type: application/json' \
         -H "X-CSRF-Token: $(cat "$CSRF_FILE" 2>/dev/null)" --data "$body" "$LAB_URL$path")
-  LAB_STATUS=${out##*$'\n'}
+  printf '%s' "${out##*$'\n'}" > "$LAB_DIR/last_status"
   printf '%s' "${out%$'\n'*}"
 }
 
-# lab_get PATH -> prints the response body; LAB_STATUS holds the HTTP code
+# lab_get PATH -> prints the response body; lab_status prints the HTTP code of the last call
 lab_get() {
   local out
   out=$(curl -sS -m 30 -o - -w '\n%{http_code}' -b "$JAR" "$LAB_URL$1")
-  LAB_STATUS=${out##*$'\n'}
+  printf '%s' "${out##*$'\n'}" > "$LAB_DIR/last_status"
   printf '%s' "${out%$'\n'*}"
 }
+
+# HTTP status of the most recent lab_post/lab_get (functions run in command
+# substitution subshells, so a plain variable would not survive).
+lab_status() { cat "$LAB_DIR/last_status" 2>/dev/null; }
 
 lab_login() {
   local key body
   key=$(cat "$STATE_DIR/owner.key")
   body=$(LAB_SAVE_COOKIES=1 lab_post /api/login "$(jq -cn --arg k "$key" '{key:$k}')")
-  [[ "$LAB_STATUS" == 200 ]] || { echo "login failed: $LAB_STATUS $body" >&2; return 1; }
+  [[ "$(lab_status)" == 200 ]] || { echo "login failed: $(lab_status) $body" >&2; return 1; }
   jq -r .csrf <<<"$body" > "$CSRF_FILE"
 }
 
