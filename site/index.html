@@ -114,7 +114,7 @@
     <section class="setup-section" aria-labelledby="setup-title">
       <div class="wrap setup-inner">
         <div><p class="eyebrow">Designed to start simply</p><h2 id="setup-title">Your computer.<br>Your starting point.</h2><p>The first guided setup is planned for macOS, with a graphical installer and expandable command details.</p><button class="button button-primary" type="button" data-open="setup">Preview the setup path <span aria-hidden="true">↗</span></button></div>
-        <ol class="setup-steps"><li><span class="step-index">1</span><div><h3>Sign in</h3><p>Use Google, GitHub or an email code to access the download.</p></div></li><li><span class="step-index">2</span><div><h3>Set up your device</h3><p>Install the local runtime and choose its workspace and permissions.</p></div></li><li><span class="step-index">3</span><div><h3>Open your Lab</h3><p>Pair the browser with your device and begin your experiment.</p></div></li></ol>
+        <ol class="setup-steps"><li><span class="step-index">1</span><div><h3>Sign in</h3><p>Use an email code for an invited MainAIger account.</p></div></li><li><span class="step-index">2</span><div><h3>Set up your device</h3><p>Download the source and follow the local Python and Docker setup guide.</p></div></li><li><span class="step-index">3</span><div><h3>Open your Lab</h3><p>Run your experiment locally. Website-to-device pairing is planned.</p></div></li></ol>
       </div>
     </section>
 
@@ -135,24 +135,23 @@
       </section>
       <section data-dialog-panel="setup" hidden>
         <p class="platform-tag">First platform: macOS</p>
-        <ol class="dialog-steps"><li><strong>Sign in to access the download</strong><span>Google, GitHub or an email sign-in code.</span></li><li><strong>Install and choose your workspace</strong><span>A guided installer with expandable command details.</span></li><li><strong>Review access and connect</strong><span>Choose folders, runtime settings and when MainAIger starts.</span></li></ol>
-        <button type="button" class="button button-primary button-full" data-open="signin">See sign-in options <span aria-hidden="true">↗</span></button>
-        <p class="dialog-note">The installer is not available in this preview. No software is installed and no permissions are requested.</p>
+        <ol class="dialog-steps"><li><strong>Choose how to start</strong><span>Run a local Python Lab or explore another person's shared space.</span></li><li><strong>Prepare your computer</strong><span>Follow the prototype setup, then choose a folder and resource limits on your own device.</span></li><li><strong>Review connections separately</strong><span>Requests and device permissions require the owner's approval.</span></li></ol>
+        <a class="button button-primary button-full" href="get-started/">See the setup choices <span aria-hidden="true">↗</span></a>
+        <button type="button" class="button button-outline button-full" data-open="signin">Account and sign in <span aria-hidden="true">↗</span></button>
+        <p class="dialog-note">The local Lab is an early prototype; the guided desktop installer and automatic pairing are not available yet.</p>
       </section>
       <section data-dialog-panel="workspace" hidden aria-labelledby="workspace-heading">
         <div class="workspace-state"><span aria-hidden="true">●</span><div><strong id="workspace-heading">No device connected</strong><p>Your account is signed in. Device access requires a separate connection.</p></div></div>
-        <ol class="dialog-steps workspace-steps">
-          <li><strong>Choose a device</strong><span>Start with your Mac or an existing private MainAIger server. The connector and pairing flow are not available yet.</span></li>
-          <li><strong>Choose your workspace</strong><span>Select folders and permissions on your device when setup is available. The website cannot access files or run commands yet.</span></li>
-          <li><strong>Open your Lab</strong><span>Notebook editing, code execution, terminal actions and Ollama connections are planned; none are connected in this preview.</span></li>
-        </ol>
-        <p class="dialog-note">The macOS installer is not available yet. You can continue exploring the site while setup is developed.</p>
-        <a class="button button-primary button-full" href="directory/">Open shared spaces <span aria-hidden="true">↗</span></a>
-        <p class="dialog-note">Browse public listings or sign in on the directory page to manage sharing. Sign-in is kept only in the page where you enter your code.</p>
+        <p class="dialog-note">Choose a starting point. You control what your installation shares.</p>
+        <a class="button button-primary button-full" href="get-started/#local">Set up my local Lab <span aria-hidden="true">↗</span></a>
+        <a class="button button-outline button-full" href="directory/">Discover shared spaces <span aria-hidden="true">↗</span></a>
+        <a class="button button-outline button-full" href="directory/?view=requests">View my access requests <span aria-hidden="true">↗</span></a>
+        <a class="button button-outline button-full" href="directory/?view=mine">Create or manage my space <span aria-hidden="true">↗</span></a>
+        <p class="dialog-note">Accepted requests still need local permission. Automatic connections are not available yet.</p>
         <button type="button" class="button button-outline button-full workspace-account" data-open="signin">Account and sign out <span aria-hidden="true">↗</span></button>
       </section>
       <section data-dialog-panel="signin" hidden>
-        <div class="auth-options"><button type="button" class="button button-outline button-full" disabled>Continue with Google · later</button><button type="button" class="button button-outline button-full" disabled>Continue with GitHub · later</button></div>
+        <div class="auth-options"><button id="auth-google" type="button" class="button button-outline button-full" disabled>Continue with Google · setup pending</button><button type="button" class="button button-outline button-full" disabled>Continue with GitHub · later</button></div>
         <form id="auth-email-form" class="auth-form">
           <label for="auth-email">Registered email</label><input id="auth-email" type="email" autocomplete="email" required maxlength="254" disabled>
           <button id="auth-send" type="submit" class="button button-primary button-full" disabled>Send sign-in code</button>

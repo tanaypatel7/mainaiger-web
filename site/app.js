@@ -35,7 +35,7 @@
     },
     workspace: {
       title: 'Your starting point',
-      description: 'Sign-in is the first step. Next, connect the device that will run your work.'
+      description: 'Set up on your own device, or find a space whose owner chooses to share.'
     }
   };
   theme.addEventListener('change', () => {
@@ -54,6 +54,7 @@
     button.addEventListener('click', () => openPanel(button.dataset.open));
   });
   document.addEventListener('mainaiger:signin', () => openPanel('workspace'));
+  if (new URLSearchParams(window.location.search).get('open') === 'signin') openPanel('signin');
   document.addEventListener('mainaiger:session-ended', () => {
     if (dialog.open && !document.querySelector('[data-dialog-panel="workspace"]').hidden) openPanel('signin');
   });

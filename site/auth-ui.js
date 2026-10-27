@@ -14,6 +14,7 @@
     $('auth-send').textContent=state.resendSeconds?'Request another code in '+state.resendSeconds+'s':'Send sign-in code';
     $('auth-verify').disabled=busy||!state.configured;$('auth-code').disabled=busy||!state.configured;
     $('auth-signout').disabled=busy;
+    const google=$('auth-google');if(google){google.disabled=busy||!client.googleAvailable;google.textContent=client.googleAvailable?'Continue with Google':'Continue with Google · setup pending';}
   }
   async function run(fn){busy=true;render();try{await fn();}catch(e){message(e.message||'Sign-in could not be completed.');}finally{busy=false;render();}}
   emailForm.addEventListener('submit',e=>{e.preventDefault();run(async()=>{
@@ -26,6 +27,7 @@
     document.dispatchEvent(new Event('mainaiger:signin'));
   });});
   $('auth-signout').addEventListener('click',()=>run(async()=>{await client.signOut();message('Signed out.');}));
+  $('auth-google')?.addEventListener('click',()=>run(()=>client.startGoogle()));
   $('entry-dialog').addEventListener('close',()=>{
     $('auth-code').value='';$('auth-email').value='';delete codeForm.dataset.requested;client.cancelPending();render();
   });
@@ -34,6 +36,7 @@
   window.addEventListener('pagehide',()=>{clearInterval(timer);timer=null;client.cancelPending();});
   window.addEventListener('pageshow',()=>{if(!timer)timer=setInterval(render,1000);render();});
   if(!client.enabled)message('Email sign-in is being configured. No email is sent and no account is created.');
-  else message('Invite-only access. Enter the email address registered for MainAIger. This tab does not save your session.');
+  else message('Invite-only access. Your sign-in stays in this tab across page changes and reloads until it expires or you sign out. Another tab or browser restart may require sign-in again.');
   render();
+  client.completeGoogle().then(ok=>{if(ok){message('Signed in.');document.dispatchEvent(new Event('mainaiger:signin'));}}).catch(e=>{document.querySelector('[data-open="signin"]')?.click();message(e.message||'Google sign-in could not be completed.');});
 })();

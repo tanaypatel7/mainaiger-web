@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Choose how to begin with your own MainAIger Lab or explore shared spaces.">
+  <title>Get started · MainAIger</title>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="start.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="wordmark" href="../" aria-label="MainAIger home">Main<span>AI</span>ger<span class="brand-stop" aria-hidden="true">.</span></a>
+    <nav aria-label="Main navigation" class="start-nav"><a href="../">Home</a><a href="../directory/">Shared spaces</a></nav>
+    <div class="header-actions"><a class="button button-outline compact" href="../?open=signin">Account</a></div>
+  </header>
+  <main id="main" class="wrap start-main">
+    <section class="start-intro" aria-labelledby="start-title">
+      <p class="eyebrow"><span></span> Your starting point</p>
+      <h1 id="start-title">Your device.<br><em>Your choice.</em></h1>
+      <p>Start a small Python Lab on your computer, or explore spaces whose owners choose to share. Your account and your device permissions are separate.</p>
+    </section>
+    <section aria-labelledby="choose-title">
+      <div class="section-heading"><p class="eyebrow">Choose a path</p><h2 id="choose-title">How would you like to begin?</h2></div>
+      <div class="choice-grid">
+        <article class="choice-card featured"><span class="small-label">Start on your computer</span><h3>Set up my local Lab</h3><p>Run a Python code cell in a container and open or download a single-cell notebook.</p><a class="button button-primary" href="#local">Local setup <span aria-hidden="true">↓</span></a></article>
+        <article class="choice-card"><span class="small-label">Discover</span><h3>Find a shared space</h3><p>Browse public summaries and send an access request to an owner.</p><a class="button button-outline" href="../directory/">Explore spaces <span aria-hidden="true">↗</span></a></article>
+        <article class="choice-card"><span class="small-label">Already requested?</span><h3>Check my requests</h3><p>Review your requests. An accepted request still needs the owner's local permission.</p><a class="button button-outline" href="../directory/?view=requests">View requests <span aria-hidden="true">↗</span></a></article>
+        <article class="choice-card"><span class="small-label">Share by choice</span><h3>Create my space</h3><p>Prepare a private directory summary, then choose whether to publish it.</p><a class="button button-outline" href="../directory/?view=mine">Manage my spaces <span aria-hidden="true">↗</span></a></article>
+      </div>
+      <p class="start-note">Browsing public spaces does not require an account. Creating a space and sending requests require an invited account. <a href="../?open=signin">Sign in or view your account</a>.</p>
+    </section>
+    <section id="local" class="local-section" aria-labelledby="local-title">
+      <div class="local-copy"><p class="eyebrow">Local Lab prototype</p><h2 id="local-title">Start with a small Python experiment.</h2><p>The source includes an early local browser interface. Your computer runs the container; the public website does not receive your code or files through this setup.</p><p>The setup guide currently uses Terminal to start the prototype. A packaged desktop installer and automatic website pairing are still in development.</p><a class="button button-primary" href="https://github.com/tanaypatel7/mainaiger-web/archive/refs/heads/main.zip">Download project source <span aria-hidden="true">↗</span></a><a class="guide-link" href="https://github.com/tanaypatel7/mainaiger-web/blob/main/docs/LOCAL_LAB_SETUP.md">Read local Lab setup instructions ↗</a></div>
+      <div class="local-details"><h3>What you choose locally</h3><ol><li><strong>Folder</strong><span>Optionally select one folder; the prototype mounts it read-only for the run.</span></li><li><strong>Compute</strong><span>Choose one of the available CPU and memory limits before running.</span></li><li><strong>Run</strong><span>Review and run one Python code cell in a container without network access.</span></li><li><strong>Notebook</strong><span>Open a standard .ipynb file with exactly one code cell, edit that cell and download a copy. Previous outputs are cleared; files are not saved automatically.</span></li></ol><p class="start-note">Multi-cell notebook editing, persistent kernels, GPU access, extra languages and full MainAIger setup are planned. The prototype does not configure those features yet.</p></div>
+    </section>
+    <section class="future-section" aria-labelledby="future-title"><p class="eyebrow">Grow at your pace</p><h2 id="future-title">Lab first. More control later.</h2><p>Full MainAIger is intended to add independently owned servers, devices and richer permissions. Local setup today is limited to the Python Lab prototype and a separate read-only permission companion.</p><a class="guide-link" href="https://github.com/tanaypatel7/mainaiger-web/blob/main/docs/LOCAL_OWNER_PERMISSIONS.md">Read about the permission companion ↗</a></section>
+  </main>
+  <footer class="wrap start-footer"><a class="wordmark" href="../">Main<span>AI</span>ger<span class="brand-stop" aria-hidden="true">.</span></a><span>Your installation. Your decisions.</span></footer>
+</body>
+</html>

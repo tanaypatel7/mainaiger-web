@@ -20,6 +20,7 @@
   function renderAuth(){
     const state=auth.state(),identity=state.user?.id||null,changed=identity!==lastIdentity;
     $('account-button').textContent=state.signedIn?'Account':'Sign in';
+    const google=$('google-signin');if(google){google.disabled=busy||!auth.googleAvailable;google.textContent=auth.googleAvailable?'Continue with Google':'Continue with Google · setup pending';}
     $('email-form').hidden=state.signedIn;$('code-form').hidden=state.signedIn||!$('code-form').dataset.requested;
     $('account-details').hidden=!state.signedIn;$('account-email').textContent=state.user?.email||'';
     $('send-code').disabled=busy||!state.configured||state.resendSeconds>0;
@@ -168,6 +169,7 @@
   document.querySelectorAll('[data-section]').forEach(el=>el.addEventListener('click',()=>showSection(el.dataset.section)));
   document.querySelectorAll('[data-close]').forEach(el=>el.addEventListener('click',()=>$(el.dataset.close).close()));
   $('account-button').addEventListener('click',account);$('new-space').addEventListener('click',()=>openEditor());
+  $('google-signin')?.addEventListener('click',()=>action(()=>auth.startGoogle(),'auth-status'));
   $('filter-form').addEventListener('submit',event=>{event.preventDefault();offset=0;refreshPublic();});
   $('refresh').addEventListener('click',()=>{refreshPublic();if(auth.state().signedIn)refreshPrivate();});
   $('previous-page').addEventListener('click',()=>{if(offset){offset-=50;refreshPublic();}});
@@ -197,4 +199,7 @@
   window.addEventListener('pagehide',()=>{clearInterval(polling);clearInterval(authTimer);polling=authTimer=null;publicVersion++;privateVersion++;auth.cancelPending();});
   window.addEventListener('pageshow',()=>{startTimers();refreshVisible();});
   renderAuth();message('auth-status','Use the email address registered for MainAIger.');startTimers();refreshPublic();
+  auth.completeGoogle().then(ok=>{if(ok)message('page-status','Signed in. You can manage listings and access requests.');}).catch(e=>{account();message('auth-status',e.message||'Google sign-in could not be completed.',true);});
+  const requestedSection=new URLSearchParams(window.location.search).get('view');
+  if(['browse','mine','requests'].includes(requestedSection))showSection(requestedSection);
 })();

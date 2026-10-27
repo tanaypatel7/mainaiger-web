@@ -43,11 +43,18 @@ service keys are in this repository. Earlier email planning/validation documents
 describe the pre-activation state and are not a current delivery test report.
 
 The client sends email/code requests directly to the configured identity
-provider, confirms identity using its authenticated user endpoint, and holds the
-session in page memory only. Reloading or navigating to another page requires
-signing in there again. Google/GitHub provider buttons remain disabled. The full
-graphical macOS installer, automatic website/device pairing, isolated code
-execution and integration into the live Nexus runtime remain unimplemented.
+provider and confirms identity with its authenticated user endpoint. The access
+token is held in browser session storage in the current tab, allowing navigation
+and reload until it expires. No refresh token is stored; a new tab or browser
+restart may require another sign-in. Google/GitHub providers remain disabled
+until configured. The full graphical macOS installer, automatic website/device
+pairing and integration into the live Nexus runtime remain unimplemented.
+
+`local_lab/` is a separate, manually started local Python Lab prototype. It
+requires Docker Desktop and a separately downloaded Python image, offers a
+single Python cell and `.ipynb` import/export, and asks before each constrained
+container run. It does not configure remote pairing, network access or GPUs.
+See `docs/LOCAL_LAB_SETUP.md`. Docker and macOS acceptance remain unverified.
 
 The website is hosted at mainaiger.org through GitHub Pages and Cloudflare DNS.
 This directory implementation does not change DNS, mail records, Tailscale or
@@ -59,13 +66,15 @@ The earlier notebook/graph design is retained at `site/lab-preview/index.html`. 
 
 ## Login preparation
 
-- `site/auth-client.js`: dependency-free, memory-only, invite-only email OTP adapter.
+- `site/auth-client.js`: dependency-free, session-storage, invite-only email OTP adapter.
 - `site/auth-config.js`: public Supabase URL and publishable key; sign-in enabled.
 - `site/auth-ui.js`: modal state, resend cooldown, expiry and logout.
 - `tests/auth-client.test.js`: negative authentication, identity, expiry and race checks.
 - `templates/`: prepared login-code and welcome messages; not wired or sent.
 
-Run `node tests/auth-client.test.js` for the client tests. Supabase stores the registered identity records; memory-only browser sessions do not mean zero provider-side processing or retention. Login alone does not grant access to Nexus resources.
+Run `node --test tests/*.test.js` for the client tests. Supabase stores registered
+identity records. Browser session storage is accessible to scripts running on
+the website; no website login alone grants access to Nexus resources.
 
 ## Validation
 
