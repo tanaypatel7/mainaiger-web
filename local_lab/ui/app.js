@@ -3,7 +3,7 @@
   const $=id=>document.getElementById(id);
   let csrf='',generation=0,reviewed='',revision=null,reviewedRevision=null,running=false,configuring=false,dockerAvailable=false,notebook=null;
   const status=(id,text)=>{$(id).textContent=text;};
-  function locked(){generation++;csrf='';reviewed='';notebook=null;revision=reviewedRevision=null;$('owner-key').value='';$('code').value='';$('notebook-file').value='';$('folder').value='';$('workspace').textContent='';$('command-preview').textContent='';$('output').textContent='Your output will appear here.';$('lab').hidden=true;$('logout').hidden=true;$('login-panel').hidden=false;if($('review-dialog').open)$('review-dialog').close();window.dispatchEvent(new CustomEvent('mainaiger:locked'));}
+  function locked(){generation++;csrf='';reviewed='';notebook=null;revision=reviewedRevision=null;$('owner-key').value='';$('code').value='';$('notebook-file').value='';$('folder').value='';$('workspace').textContent='';$('command-preview').textContent='';$('output').textContent='Your output will appear here.';$('lab').hidden=true;$('logout').hidden=true;$('graph-link').hidden=true;$('login-panel').hidden=false;if($('review-dialog').open)$('review-dialog').close();window.dispatchEvent(new CustomEvent('mainaiger:locked'));}
   async function request(path,body){
     const options={credentials:'same-origin',cache:'no-store',redirect:'error',headers:{'Content-Type':'application/json',...(csrf?{'X-CSRF-Token':csrf}:{})}};
     if(body!==undefined){options.method='POST';options.body=JSON.stringify(body);}
@@ -19,7 +19,7 @@
     csrf=state.csrf;revision=state.revision;$('workspace').textContent=state.workspace||'No folder selected';$('cpu').textContent=String(state.limits.cpus)+' CPU cores';$('memory').textContent=String(state.limits.memory);
     $('folder').value=state.workspace||'';$('cpus').value=String(state.limits.cpus);$('memory-select').value=String(state.limits.memory);$('command-preview').textContent=Array.isArray(state.command)?state.command.map(x=>JSON.stringify(x)).join(' '):'Unavailable';
     dockerAvailable=!!state.docker_available;status('docker-status',dockerAvailable?'Docker command found. Starting a run checks Docker Desktop and the Python image.':'Docker command not found. Install Docker Desktop and restart the local Lab.');
-    $('review').disabled=!dockerAvailable||running||configuring;$('login-panel').hidden=true;$('lab').hidden=false;$('logout').hidden=false;
+    $('review').disabled=!dockerAvailable||running||configuring;$('review-hint').hidden=dockerAvailable;$('login-panel').hidden=true;$('lab').hidden=false;$('logout').hidden=false;$('graph-link').hidden=false;
     window.dispatchEvent(new CustomEvent('mainaiger:state',{detail:state}));
   }
   const inSession=()=>!!(window.MainaigerSession&&window.MainaigerSession.alive());

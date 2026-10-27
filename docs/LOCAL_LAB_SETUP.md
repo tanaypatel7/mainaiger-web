@@ -88,6 +88,55 @@ container on a Mac — including the read-only bind mount of the kernel
 directory from the app bundle and `docker kill --signal=INT` reaching the
 kernel — is **unverified** until it is tried on a real Mac.
 
+## Graph canvas (trigger flow)
+
+**Open graph canvas →** in the Lab header opens `/graph`: a canvas where code
+cells are cards and arrows are *triggers*. The document behind it is an
+`.ipymb` file (schema version 2): an ordinary nbformat-4 notebook holding the
+cells, plus `graph` (nodes and edges) and `layout` (positions). Jupyter can
+still read the embedded notebook; MainAIger reads the whole file.
+
+What the pieces do, and which file implements them:
+
+- **Nodes** — one green *Start*, one *Finish*, any number of code cells and
+  notes. A cell card shows its execution count, status badge, editable code
+  and output. `local_lab/graph.py` validates the document (one start, one
+  finish, cells referenced exactly once, no control cycles).
+- **Triggers (control edges, solid)** — drag from a cell's bottom port to
+  another cell's top port. "A → B" means *when A finishes successfully, B may
+  run*. A cell with several incoming triggers runs after all of them.
+  Loops are refused in this version.
+- **Data edges (dashed, labelled)** — not drawn by hand. `graph.analyze()`
+  reads each cell with Python's `ast`: names a cell reads without defining are
+  its *inputs*, names it defines are *outputs*; the nearest upstream producer
+  of each input is drawn as a data edge. This is advisory (static analysis
+  cannot see `globals()[...]`, `exec` or `import *`); the inspector lets you
+  override a cell's declared inputs/outputs.
+- **Run all / Run from selected / Run selected only** — `graph.plan()` picks the
+  cells, in topological order, and `graph.preflight()` lists inputs that would
+  be missing, which cell produces each, and whether the value already exists in
+  the session. The review dialog can include those prerequisite cells. Then
+  `local_lab/graph_run.py` executes the plan **one cell at a time in the same
+  kernel session** used by the single-cell editor; after a cell finishes with
+  status ok its outgoing triggers *fire* (the canvas animates them). A failure,
+  interrupt, timeout or dead kernel marks the remaining cells *skipped* and ends
+  the run. Cancel interrupts the current cell and skips the rest.
+- Outputs and execution counts are written back into the notebook cells, so
+  **Download .ipymb** carries results; **Open** accepts `.ipymb` or a plain
+  `.ipynb` (converted into a sequential Start → cells → Finish chain).
+
+The canvas is a view, not a sandbox: all execution happens inside the session
+container with the same limits as before. A branching picture is still one
+Python process running serially; parallel branches, nested graphs, loops,
+conditional triggers and other languages are future work and are refused
+rather than simulated.
+
+**Status:** the document model, analysis, planning, preflight and serial run
+(fire, fail-and-skip, cancel) are tested with the real kernel as a local
+process (`tests/test_graph.py`) and the canvas was exercised end to end in a
+headless browser. Running the graph inside Docker on a Mac is the same
+unverified step as the session itself.
+
 ## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it

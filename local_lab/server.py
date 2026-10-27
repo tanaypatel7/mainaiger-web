@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 from .runner import execute, preview, validate_settings, session_preview, session_command, session_control, resolve_docker, stage_kernel
 from .kernel_session import KernelSession, KernelError, KernelBusy
 from . import setup as lab_setup
+from . import graph as graph_module
+from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
 
@@ -68,7 +70,51 @@ class LabServer(ThreadingHTTPServer):
         # One persistent kernel at a time. The factory builds a KernelSession for the
         # given settings; the default runs the kernel inside a Docker container.
         self.kernel=None;self.kernel_factory=kernel_factory or docker_kernel;self.kernel_lock=threading.Lock()
+        # One graph document in memory (the browser opens/downloads .ipymb files) and at most one run.
+        self.graph_doc=graph_module.new_document();self.graph_revision=0;self.graph_run=None;self.graph_lock=threading.RLock()
         super().__init__(address,LabHandler)
+    def graph_view(self):
+        with self.graph_lock:
+            doc=graph_module.validate(self.graph_doc)
+            return {'document':doc,'revision':self.graph_revision,'analysis':graph_module.analysis(doc),'data_edges':graph_module.data_edges(doc),
+                    'order':graph_module.order(doc),'disconnected':graph_module.disconnected(doc),'run':self.graph_run.snapshot() if self.graph_run else None}
+    def graph_running(self):
+        return self.graph_run is not None and self.graph_run.state in ('pending','running')
+    def set_graph(self,document):
+        doc=graph_module.validate(document)
+        with self.graph_lock:
+            if self.graph_running():raise graph_module.GraphError('A graph run is in progress; cancel it before editing')
+            self.graph_doc=doc;self.graph_revision+=1
+            return self.graph_view()
+    def graph_plan(self,mode,nodes,include_prerequisites=False):
+        with self.graph_lock:
+            doc=self.graph_doc
+            plan=graph_module.plan(doc,mode,nodes)
+            present=[]
+            kernel=self.kernel
+            if kernel is not None and kernel.alive and not kernel.executing:
+                try:present=[v['name'] for v in kernel.variables()]
+                except KernelError:present=[]
+            check=graph_module.preflight(doc,plan,present)
+            if include_prerequisites and check['prerequisites']:
+                plan=[i for i in graph_module.order(doc) if i in set(plan)|set(check['prerequisites'])]
+                check=graph_module.preflight(doc,plan,present)
+            check['mode']=mode;check['session_alive']=bool(kernel is not None and kernel.alive)
+            return plan,check
+    def start_graph_run(self,mode,nodes,include_prerequisites):
+        kernel=self.kernel
+        if kernel is None or not kernel.alive:raise KernelError('Start a session before running the graph')
+        with self.graph_lock:
+            if self.graph_running():raise KernelError('A graph run is already in progress')
+            if kernel.executing:raise KernelError('A cell is already running; interrupt it or wait')
+            plan,check=self.graph_plan(mode,nodes,include_prerequisites)
+            if not plan:raise graph_module.GraphError('Nothing to run: no code nodes are reachable in this plan')
+            doc=self.graph_doc
+            def record(ident,result):
+                with self.graph_lock:
+                    graph_module.record_result(doc,ident,result)
+            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record).start()
+            return self.graph_run.snapshot()
     def kernel_status(self):
         kernel=self.kernel
         if kernel is None: return {'alive':False,'executing':False,'label':None,'count':0,'python':None,'started_at':None,'ended':None}
@@ -142,10 +188,10 @@ class LabHandler(BaseHTTPRequestHandler):
         with self.server.lock:
             self.server.sessions={k:v for k,v in self.server.sessions.items() if v['expires']>time.time()}
             return self.server.sessions.get(value.value) if value else None
-    def body(self):
+    def body(self,limit=25000):
         if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Type','').split(';')[0]!='application/json':raise ValueError('Expected JSON')
         size=int(self.headers.get('Content-Length','0'))
-        if not 0<size<=25000: raise ValueError('Request too large')
+        if not 0<size<=limit: raise ValueError('Request too large')
         data=json.loads(self.rfile.read(size))
         if not isinstance(data,dict):raise ValueError('Expected JSON object')
         return data
@@ -153,7 +199,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
-        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
+        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8')}
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
         if path=='/api/state':
@@ -172,6 +218,15 @@ class LabHandler(BaseHTTPRequestHandler):
             if kernel.executing:return self.out(409,{'error':'A cell is still running'})
             try:return self.out(200,{'variables':kernel.variables()})
             except KernelError as e:return self.out(409,{'error':str(e)})
+        if path=='/api/graph':
+            session=self.session()
+            if not session:return self.out(401,{'error':'Local owner sign-in required'})
+            view=self.server.graph_view();view['csrf']=session['csrf'];view['session']=self.server.kernel_status()
+            return self.out(200,view)
+        if path=='/api/graph/run':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            run=self.server.graph_run
+            return self.out(200,{'run':run.snapshot() if run else None,'session':self.server.kernel_status(),'revision':self.server.graph_revision})
         if path=='/api/setup':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             return self.out(200,lab_setup.status(self.server.state_dir))
@@ -183,7 +238,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.host_ok() or not self.origin_ok():return self.out(403,{'error':'Local same-origin request required'})
         try:
-            path=urlsplit(self.path).path;data=self.body()
+            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path=='/api/graph' else 25000)
             if path=='/api/login':
                 if set(data)!={'key'} or not isinstance(data['key'],str):raise ValueError('Key required')
                 with self.server.lock:
@@ -240,6 +295,26 @@ class LabHandler(BaseHTTPRequestHandler):
                 except KernelError as e:return self.out(409,{'error':str(e)})
                 result['session']=kernel.status()
                 return self.out(200,result)
+            if path=='/api/graph':
+                if set(data)!={'document'}:raise ValueError('Send {document}')
+                try:return self.out(200,self.server.set_graph(data['document']))
+                except graph_module.GraphError as e:return self.out(409 if 'in progress' in str(e) else 400,{'error':str(e)})
+            if path=='/api/graph/preflight':
+                mode=data.get('mode');nodes=data.get('nodes',[])
+                if mode not in ('all','from','one','selected') or not isinstance(nodes,list) or not all(isinstance(n,str) for n in nodes):raise ValueError('Send a run mode and node ids')
+                try:plan,check=self.server.graph_plan(mode,nodes,bool(data.get('include_prerequisites')))
+                except graph_module.GraphError as e:return self.out(400,{'error':str(e)})
+                check['plan']=plan;return self.out(200,check)
+            if path=='/api/graph/run':
+                mode=data.get('mode');nodes=data.get('nodes',[])
+                if data.get('confirm') is not True or mode not in ('all','from','one','selected') or not isinstance(nodes,list) or not all(isinstance(n,str) for n in nodes):raise ValueError('Explicit confirmation is required')
+                try:return self.out(202,{'run':self.server.start_graph_run(mode,nodes,bool(data.get('include_prerequisites')))})
+                except graph_module.GraphError as e:return self.out(400,{'error':str(e)})
+                except KernelError as e:return self.out(409,{'error':str(e)})
+            if path=='/api/graph/cancel':
+                run=self.server.graph_run
+                if run is None or not self.server.graph_running():return self.out(409,{'error':'No graph run is in progress'})
+                run.cancel();return self.out(200,{'run':run.snapshot()})
             if path=='/api/run':
                 if set(data)!={'code','confirm','revision'} or data['confirm'] is not True or type(data['revision']) is not int:raise ValueError('Explicit confirmation is required')
                 with self.server.lock:
