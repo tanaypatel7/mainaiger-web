@@ -49,6 +49,8 @@ class KernelSession:
         self.count = 0
         self.ended = None          # human-readable reason the session ended, if it did
         self.reader = None
+        self.stderr_tail = b''      # last bytes the child wrote to stderr (e.g. a Docker error)
+        self.err_reader = None
 
     # ---- process lifetime --------------------------------------------------
     def start(self, timeout=START_TIMEOUT):
@@ -56,14 +58,16 @@ class KernelSession:
             raise KernelError('Session already started')
         kwargs = {'env': self.env} if self.env is not None else {}
         self.proc = self._popen(self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, shell=False, **kwargs)
+                                stderr=subprocess.PIPE, shell=False, **kwargs)
         self.alive = True
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
+        self.err_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.err_reader.start()
         message = self._next_message(timeout)
         if message is None or message.get('type') != 'ready' or message.get('protocol') != 1:
             self._terminate('The kernel did not report ready. ' + (self.ended or 'Check Docker Desktop and the image.'))
-            raise KernelError(self.ended)
+            raise KernelError(self.ended + self._stderr_note())
         self.info = {'python': str(message.get('python', ''))[:40], 'cwd': str(message.get('cwd', ''))[:200]}
         self.started_at = time.time()
         return self.status()
@@ -101,7 +105,9 @@ class KernelSession:
                 self.proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            for stream in (self.proc.stdin, self.proc.stdout):
+            if self.err_reader is not None and self.err_reader is not threading.current_thread():
+                self.err_reader.join(timeout=2)  # collect Docker's last words before closing the pipe
+            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
                 try:
                     stream.close()
                 except (OSError, ValueError):
@@ -218,6 +224,23 @@ class KernelSession:
         self.alive = False
         self.ended = self.ended or 'The kernel process exited.'
         self.replies.put(None)
+
+    def _read_stderr(self):
+        # The container's stderr carries Docker's own errors ("mounts denied",
+        # "No such image"); keep the tail so a failed start can be explained.
+        stream = self.proc.stderr
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                self.stderr_tail = (self.stderr_tail + chunk)[-2048:]
+        except (OSError, ValueError):
+            pass
+
+    def _stderr_note(self):
+        text = self.stderr_tail.decode('utf-8', 'replace').strip()
+        return (' Details: ' + ' '.join(text.split())[-600:]) if text else ''
 
     def _next_message(self, timeout):
         try:

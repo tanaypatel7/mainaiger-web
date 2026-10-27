@@ -138,6 +138,14 @@ class KernelSessionFailureTests(unittest.TestCase):
             session.start(timeout=5)
         self.assertIn('exited', session.ended)
 
+    def test_start_failure_includes_the_childs_stderr(self):
+        # Docker writes its own errors (mounts denied, missing image) to stderr; the owner must see them.
+        session = KernelSession([sys.executable, '-c', 'import sys; sys.stderr.write("docker: Error response from daemon: Mounts denied\\n"); sys.exit(125)'])
+        with self.assertRaises(KernelError) as caught:
+            session.start(timeout=5)
+        self.assertIn('Mounts denied', str(caught.exception))
+        self.assertIn('Mounts denied', session.ended + session._stderr_note())
+
 
 class DockerSessionCommandTests(unittest.TestCase):
     def test_session_container_keeps_limits_and_mounts_kernel_read_only(self):
