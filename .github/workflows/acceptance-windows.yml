@@ -101,7 +101,8 @@ jobs:
           python - <<'EOF'
           import json, subprocess, sys, time, threading, signal, os
           def spawn():
-              return subprocess.Popen([sys.executable, '-I', 'local_lab/kernel/kernel.py'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+              # New process group so a console Ctrl event targets the kernel, not this driver.
+              return subprocess.Popen([sys.executable, '-I', 'local_lab/kernel/kernel.py'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
           def readline_timeout(p, seconds):
               box = {}
               def go():
@@ -119,30 +120,28 @@ jobs:
           try:
               p = spawn()
               ready = readline_timeout(p, 15)
-              if ready is None:
+              if not ready:
                   try: p.wait(5)
                   except subprocess.TimeoutExpired: pass
-                  err = ''
-                  if p.poll() is not None:
-                      err = p.stderr.read().strip().replace('\n', ' | ')
-                  print(f"::notice title=6 kernel did not report ready::returncode={p.returncode} stderr={err[-700:]}")
+                  err = p.stderr.read().strip().replace('\r', '').replace('\n', ' | ') if p.poll() is not None else '(still running, no output)'
+                  print(f"::notice title=6 kernel did not report ready::returncode={p.returncode} stderr={err[-900:] or '(empty)'}", flush=True)
               else:
-                  print(f"::notice title=6 kernel ready::{ready.strip()[:300]}")
+                  print(f"::notice title=6 kernel ready::{ready.strip()[:300]}", flush=True)
               if ready:
                   r1 = ask(p, {'id': 1, 'op': 'execute', 'code': 'import os,sys\nx=2\nprint(x*21)\nos.write(1,b"fd\\n")\nsys.stderr.write("err\\n")'})
                   r2 = ask(p, {'id': 2, 'op': 'execute', 'code': 'x+1'})
                   r3 = ask(p, {'id': 3, 'op': 'variables'})
                   r4 = ask(p, {'id': 4, 'op': 'execute', 'code': '1/0'})
-                  print(f"::notice title=6 execute::r1={json.dumps(r1)[:300]} r2={json.dumps(r2)[:200]}")
+                  print(flush=True); print(f"::notice title=6 execute::r1={json.dumps(r1)[:300]} r2={json.dumps(r2)[:200]}")
                   print(f"::notice title=6 variables and error::vars={json.dumps(r3)[:250]} err={json.dumps((r4 or {}).get('error'))[:200]}")
                   # Interrupt semantics on Windows
                   p.stdin.write(json.dumps({'id': 5, 'op': 'execute', 'code': 'while True: pass'}) + '\n'); p.stdin.flush()
                   time.sleep(1.0)
                   how = 'none'
                   try:
-                      p.send_signal(signal.CTRL_C_EVENT); how = 'CTRL_C_EVENT sent'
+                      p.send_signal(signal.CTRL_BREAK_EVENT); how = 'CTRL_BREAK_EVENT sent (CTRL_C_EVENT cannot target a new process group)'
                   except Exception as e:
-                      how = 'CTRL_C_EVENT failed: ' + repr(e)
+                      how = 'CTRL_BREAK_EVENT failed: ' + repr(e)
                       try: p.send_signal(signal.SIGINT); how += '; SIGINT sent'
                       except Exception as e2: how += '; SIGINT failed: ' + repr(e2)
                   line = readline_timeout(p, 5)
