@@ -20,10 +20,11 @@ def main():
     os.umask(0o077)
     state,key=initialize_state(args.state_dir)
     server=LabServer(('127.0.0.1',args.port),state,key)
-    print(f'Lab panel: http://127.0.0.1:{args.port}',flush=True)
-    print(f'Local owner key file: {state / "owner.key"} (never enter it on mainaiger.org)',flush=True)
-    signal.signal(signal.SIGTERM,_terminate)
-    try: server.serve_forever()
+    signal.signal(signal.SIGTERM,_terminate)  # installed before the launcher is told we are ready
+    try:
+        print(f'Lab panel: http://127.0.0.1:{args.port}',flush=True)
+        print(f'Local owner key file: {state / "owner.key"} (never enter it on mainaiger.org)',flush=True)
+        server.serve_forever()
     except KeyboardInterrupt: pass
     finally:
         server.server_close()  # stops any session container

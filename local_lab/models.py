@@ -195,7 +195,8 @@ def _verify_ollama(dmg, stage):
                     authority_ok = code == 0 and 'Developer ID Application: Ollama' in details and 'TeamIdentifier=' in details
                     code, assess = lab_setup._run(['/usr/bin/spctl', '--assess', '--type', 'execute', str(app)], timeout=120)
                     if not authority_ok:
-                        message = 'Ollama.app is not signed by a Developer ID certificate naming Ollama. ' + details[:300]
+                        identity = ' | '.join(l.strip() for l in details.splitlines() if l.strip().startswith(('Authority=', 'TeamIdentifier=', 'Identifier=')))
+                        message = 'Ollama.app is not signed by a Developer ID certificate naming Ollama. Signature: ' + (identity or details[:300])[:400]
                     elif code != 0:
                         message = 'Gatekeeper did not accept Ollama.app (notarization check failed). ' + assess[:300]
                     else:
