@@ -28,7 +28,7 @@ class SettingsTests(unittest.TestCase):
     def test_only_explicit_folder_read_only(self):
         settings=validate_settings({'workspace':str(self.workspace),'cpus':'1','memory':'512m'},self.state)
         args=command(settings,'test')
-        self.assertIn('type=bind,src='+str(self.workspace)+',dst=/workspace,readonly',args)
+        self.assertIn('type=bind,src='+str(self.workspace.resolve())+',dst=/workspace,readonly',args)  # mounts use the real path
         self.assertNotIn('/var/run/docker.sock',' '.join(args))
     def test_reject_injection_state_and_unsafe_limits(self):
         base={'workspace':str(self.workspace),'cpus':'1','memory':'512m'}
