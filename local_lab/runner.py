@@ -4,6 +4,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 
 IMAGE = 'python:3.13.18-slim'
@@ -40,7 +41,7 @@ def validate_settings(data, state_dir):
 
 
 def command(settings, name):
-    args = ['docker', 'run', '--rm', '--name', name, '--pull=never', '--network=none',
+    args = ['docker'] + (['--context', 'desktop-linux'] if sys.platform == 'darwin' else []) + ['run', '--rm', '--name', name, '--pull=never', '--network=none',
             '--read-only', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m', '--cap-drop=ALL',
             '--security-opt=no-new-privileges', '--pids-limit=64', '--cpus='+settings['cpus'],
             '--memory='+settings['memory'], '--memory-swap='+settings['memory'], '--user=65534:65534', '--interactive']
@@ -60,9 +61,17 @@ def execute(code, settings, popen=subprocess.Popen, run=subprocess.run, find=shu
         raise ValueError('Enter Python code up to 20 KB')
     if not find('docker'):
         return {'output': '', 'exit_code': None, 'error': 'Docker was not found. Install and start Docker Desktop first.'}
+    env = None
+    if sys.platform == 'darwin':
+        from .setup import _env, _local_docker
+        docker, message = _local_docker()
+        if not docker:
+            return {'output': '', 'exit_code': None, 'error': message}
+        env = _env()
     name = 'mainaiger-lab-'+secrets.token_hex(12)
     args = command(settings, name)
-    proc = popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=False)
+    if env is not None: args[0] = docker
+    proc = popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=False, **({'env': env} if env is not None else {}))
     chunks, size, overflow = [], [0], [False]
     def read_output():
         while True:
@@ -96,7 +105,8 @@ def execute(code, settings, popen=subprocess.Popen, run=subprocess.run, find=shu
     finally:
         # Killing a Docker client does not necessarily stop its container.
         try:
-            run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
+            cleanup = ([docker, '--context', 'desktop-linux'] if env is not None else ['docker']) + ['rm', '-f', name]
+            run(cleanup, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False, **({'env': env} if env is not None else {}))
         except (OSError, subprocess.TimeoutExpired):
             pass
         reader.join(timeout=5)
