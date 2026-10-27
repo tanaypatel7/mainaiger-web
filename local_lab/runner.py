@@ -65,10 +65,48 @@ def command(settings, name):
     return _base(settings, name) + [IMAGE, 'python', '-I', '-']
 
 
+def stage_kernel(state_dir):
+    """Copy the kernel program into the private state directory and verify it.
+
+    Docker Desktop on a Mac only shares /Users, /Volumes, /private, /tmp and
+    /var/folders with containers, so a bind mount from inside an app bundle in
+    /Applications is refused. The state directory lives under the home folder.
+    The copy is compared by hash with the bundled source before every session
+    start, so the container always runs the shipped kernel. It is world-readable
+    (0755/0644) because the container user (uid 65534) must be able to read it;
+    the kernel is public source, and the surrounding state directory stays 0700.
+    """
+    import hashlib
+    source = KERNEL_DIR / 'kernel.py'
+    state = Path(state_dir).resolve(strict=True)
+    if any(x in str(state) for x in (',', '\n', '\r', '\x00')):
+        raise ValueError('The Lab state directory path contains characters Docker mounts cannot express')
+    staged_dir = state / 'kernel'
+    if staged_dir.is_symlink():
+        raise ValueError('Kernel staging directory cannot be a symlink')
+    staged_dir.mkdir(mode=0o755, exist_ok=True)
+    os.chmod(staged_dir, 0o755)
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    staged = staged_dir / 'kernel.py'
+    if staged.is_symlink():
+        raise ValueError('Staged kernel cannot be a symlink')
+    if not staged.is_file() or hashlib.sha256(staged.read_bytes()).hexdigest() != expected:
+        tmp = staged_dir / ('.kernel-%s.part' % secrets.token_hex(4))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, 'wb') as out:
+            out.write(source.read_bytes())
+        os.replace(tmp, staged)
+    if hashlib.sha256(staged.read_bytes()).hexdigest() != expected:
+        raise ValueError('The staged kernel does not match the bundled kernel')
+    os.chmod(staged, 0o644)
+    return staged_dir
+
+
 def session_command(settings, name, kernel_dir=KERNEL_DIR):
     """Persistent session: the same container limits, but the process is the kernel.
 
-    The kernel source directory is mounted read-only; the container cannot alter it.
+    The kernel directory is mounted read-only; the container cannot alter it.
+    In the running Lab, kernel_dir is the staged copy from stage_kernel().
     """
     return _base(settings, name) + ['--mount', 'type=bind,src='+str(kernel_dir)+',dst='+KERNEL_MOUNT+',readonly',
                                     IMAGE, 'python', '-I', KERNEL_MOUNT+'/kernel.py']

@@ -248,7 +248,7 @@ def main():
         if kernel.executing:
             raise KeyboardInterrupt
     signal.signal(signal.SIGINT, on_interrupt)
-    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+    signal.signal(signal.SIGTERM, lambda signum, frame: os._exit(0))  # not catchable by cell code
     kernel.serve()
 
 

@@ -46,8 +46,12 @@ Instead of a fresh container per run, **Review and start session** starts one
 container that stays up until you stop it. Inside it runs
 `local_lab/kernel/kernel.py`, a small standard-library Python program that
 reads cells as JSON messages on its standard input and keeps a shared
-namespace, so a variable made by one cell is visible to the next. The kernel
-directory is bind-mounted read-only at `/opt/mainaiger`; every other container
+namespace, so a variable made by one cell is visible to the next. Before each
+session the kernel is copied into the Lab's private state directory
+(`<state>/kernel/`, world-readable because the container user must read it)
+and verified by hash — Docker Desktop cannot mount paths inside
+`/Applications` — and that copy is bind-mounted read-only at `/opt/mainaiger`;
+every other container
 limit (no network, read-only root, dropped capabilities, CPU/memory/process
 caps, nonroot user) is identical to the one-shot run. The container cannot
 alter the kernel program, and the host never runs cell code itself.
@@ -61,7 +65,8 @@ kernel (`docker kill --signal=INT`), which raises `KeyboardInterrupt` in the
 running cell; the session continues. A cell that runs longer than 60 seconds
 is interrupted automatically. If a cell ignores the interrupt for 5 more
 seconds, the whole session container is removed and the panel says so.
-**Stop session** removes the container; its variables are gone.
+**Stop session** removes the container; its variables are gone. Quitting the
+launcher or pressing Ctrl-C also removes a running session container.
 
 The variables table lists names in the session with a type and a limited
 summary. Summaries never call your objects' own `repr` or methods; arrays

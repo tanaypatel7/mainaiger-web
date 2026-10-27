@@ -12,8 +12,8 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
-from .runner import execute, preview, validate_settings, session_preview, session_command, session_control, resolve_docker
-from .kernel_session import KernelSession, KernelError
+from .runner import execute, preview, validate_settings, session_preview, session_command, session_control, resolve_docker, stage_kernel
+from .kernel_session import KernelSession, KernelError, KernelBusy
 from . import setup as lab_setup
 
 ASSETS=Path(__file__).parent/'ui'
@@ -44,12 +44,14 @@ def initialize_state(path):
     if len(key)<32 or len(key)>128: raise ValueError('Invalid owner key file')
     return state,key
 
-def docker_kernel(settings):
+def docker_kernel(settings,state_dir):
     """Build a session whose kernel runs inside a limited Docker container."""
     docker,env,error=resolve_docker()
     if error: raise KernelError(error)
+    try: kernel_dir=stage_kernel(state_dir)
+    except (OSError,ValueError) as e: raise KernelError('The kernel could not be staged: %s'%e)
     name='mainaiger-lab-session-'+secrets.token_hex(8)
-    args=session_command(settings,name);args[0]=docker
+    args=session_command(settings,name,kernel_dir);args[0]=docker
     control=session_control(name)
     for cmd in control.values(): cmd[0]=docker
     return KernelSession(args,env=env,interrupt_args=control['interrupt'],kill_args=control['kill'],label=name)
@@ -74,7 +76,7 @@ class LabServer(ThreadingHTTPServer):
     def start_kernel(self,settings):
         with self.kernel_lock:
             if self.kernel is not None and self.kernel.alive: raise KernelError('A session is already running')
-            kernel=self.kernel_factory(settings)
+            kernel=self.kernel_factory(settings,self.state_dir)
             kernel.start()
             self.kernel=kernel
             return kernel.status()
@@ -233,8 +235,8 @@ class LabHandler(BaseHTTPRequestHandler):
                 if set(data)!={'code','confirm'} or data['confirm'] is not True:raise ValueError('Explicit confirmation is required')
                 kernel=self.server.kernel
                 if kernel is None or not kernel.alive:return self.out(409,{'error':'Start a session first'})
-                if kernel.executing:return self.out(409,{'error':'A cell is already running; interrupt it or wait'})
                 try:result=kernel.execute(data['code'])
+                except KernelBusy as e:return self.out(409,{'error':str(e)})
                 except KernelError as e:return self.out(409,{'error':str(e)})
                 result['session']=kernel.status()
                 return self.out(200,result)

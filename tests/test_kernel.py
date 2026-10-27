@@ -164,3 +164,55 @@ class DockerSessionCommandTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class KernelStagingTests(unittest.TestCase):
+    """stage_kernel() places a verified copy of the kernel where Docker Desktop can mount it."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.state = Path(self.tmp.name) / 'state'; self.state.mkdir(mode=0o700)
+    def tearDown(self):
+        self.tmp.cleanup()
+    def test_copy_matches_bundled_kernel_and_is_readable_by_container_user(self):
+        from local_lab.runner import stage_kernel
+        import stat as st
+        staged_dir = stage_kernel(self.state)
+        staged = staged_dir / 'kernel.py'
+        self.assertEqual(staged.read_bytes(), KERNEL.read_bytes())
+        self.assertEqual(st.S_IMODE(staged_dir.stat().st_mode), 0o755)
+        self.assertEqual(st.S_IMODE(staged.stat().st_mode), 0o644)
+        self.assertEqual(st.S_IMODE(self.state.stat().st_mode), 0o700)  # the private state dir is untouched
+        args = session_command({'workspace': None, 'cpus': '1', 'memory': '512m'}, 'n', staged_dir)
+        self.assertIn('type=bind,src=' + str(staged_dir) + ',dst=/opt/mainaiger,readonly', args)
+    def test_tampered_copy_is_replaced_before_a_session_starts(self):
+        from local_lab.runner import stage_kernel
+        staged = stage_kernel(self.state) / 'kernel.py'
+        staged.write_text('print("not the kernel")')
+        stage_kernel(self.state)
+        self.assertEqual(staged.read_bytes(), KERNEL.read_bytes())
+    def test_symlinked_staging_refused(self):
+        from local_lab.runner import stage_kernel
+        elsewhere = Path(self.tmp.name) / 'elsewhere'; elsewhere.mkdir()
+        (self.state / 'kernel').symlink_to(elsewhere)
+        with self.assertRaises(ValueError):
+            stage_kernel(self.state)
+
+
+class ServiceShutdownTests(unittest.TestCase):
+    def test_sigterm_from_launcher_runs_clean_shutdown(self):
+        import os, socket
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.Popen([sys.executable, '-m', 'local_lab', '--port', str(port), '--state-dir', tmp + '/state'],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(Path(__file__).resolve().parent.parent))
+            try:
+                line = proc.stdout.readline()
+                self.assertIn('Lab panel: http://127.0.0.1:%d' % port, line)
+                proc.stdout.readline()  # owner key line
+                proc.send_signal(signal.SIGTERM)
+                rest = proc.stdout.read()
+                self.assertEqual(proc.wait(timeout=10), 0)
+                self.assertIn('Lab stopped.', rest)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()

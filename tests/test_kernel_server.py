@@ -23,7 +23,7 @@ class KernelHttpTests(unittest.TestCase):
         state, key = initialize_state(Path(self.tmp.name) / 'private')
         self.key = key
         self.started = []
-        def factory(settings):
+        def factory(settings, state_dir):
             self.started.append(settings)
             return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local-test')
         self.server = LabServer(('127.0.0.1', 0), state, key, executor=lambda c, s: self.fail('one-shot run used'), kernel_factory=factory)

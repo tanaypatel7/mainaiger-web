@@ -28,6 +28,10 @@ class KernelError(RuntimeError):
     """The session is unusable; the caller should report it and start a new one."""
 
 
+class KernelBusy(KernelError):
+    """A cell is already running; the request was not queued."""
+
+
 class KernelSession:
     def __init__(self, args, *, env=None, interrupt_args=None, kill_args=None, label='local',
                  popen=subprocess.Popen, run=subprocess.run):
@@ -111,7 +115,9 @@ class KernelSession:
             raise ValueError('Enter Python code to run')
         if len(code.encode('utf-8')) > MAX_CODE:
             raise ValueError('Cell exceeds %d bytes' % MAX_CODE)
-        with self.lock:
+        if not self.lock.acquire(blocking=False):
+            raise KernelBusy('A cell is already running; interrupt it or wait')
+        try:
             if not self.alive:
                 raise KernelError(self.ended or 'No running session')
             ident = self._ident()
@@ -135,6 +141,8 @@ class KernelSession:
             result = self._clean_result(reply)
             self.count = result['count']
             return result
+        finally:
+            self.lock.release()
 
     def interrupt(self):
         """Deliver SIGINT to the kernel; a running cell receives KeyboardInterrupt."""

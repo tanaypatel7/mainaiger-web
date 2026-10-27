@@ -4,7 +4,7 @@
   // app.js owns the editor and decides whether a run goes to the session or a fresh container.
   const $ = id => document.getElementById(id);
   let session = {alive: false, executing: false, count: 0, python: null, started_at: null, ended: null};
-  let csrf = '', busy = false, limitsText = '';
+  let csrf = '', busy = false, limitsText = '', dockerAvailable = false;
   const note = text => { $('session-note').textContent = text; };
   async function json(path, body) {
     const options = {credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {'Content-Type': 'application/json', ...(csrf ? {'X-CSRF-Token': csrf} : {})}};
@@ -25,7 +25,7 @@
     $('session-state').textContent = state;
     $('session-count').textContent = String(session.count || 0);
     $('session-python').textContent = alive && session.python ? session.python : '—';
-    $('session-start').disabled = busy || alive;
+    $('session-start').disabled = busy || alive || !dockerAvailable;
     $('session-interrupt').disabled = busy || !alive || !session.executing;
     $('session-stop').disabled = busy || !alive;
     $('variables-refresh').disabled = busy || !alive || !!session.executing;
@@ -78,8 +78,8 @@
     const state = event.detail || {}; csrf = state.csrf || csrf;
     limitsText = 'Folder: ' + (state.workspace || 'No folder selected') + ' · CPU: ' + (state.limits ? state.limits.cpus : '?') + ' cores · Memory: ' + (state.limits ? state.limits.memory : '?');
     $('session-command').textContent = Array.isArray(state.session_command) ? state.session_command.map(x => JSON.stringify(x)).join(' ') : 'Unavailable';
-    $('session-start').disabled = !state.docker_available;
-    update(state.session); if (!state.docker_available) $('session-start').disabled = true;
+    dockerAvailable = !!state.docker_available;
+    update(state.session);
   });
   window.addEventListener('mainaiger:cell-finished', event => { update(event.detail); refreshVariables(); });
   window.addEventListener('mainaiger:cell-started', () => { session.executing = true; render(); });
