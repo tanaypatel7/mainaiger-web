@@ -76,3 +76,5 @@ button.small{padding:6px 12px;font-size:13px}
 .node-output{border-radius:0}
 .finish-note{font-size:11px;color:var(--muted);padding:0 10px 8px}
 body[data-view="notebook"] .viewport{background-image:none;cursor:default}body[data-view="notebook"] .node.code{width:720px;--node-w:720px}body[data-view="notebook"] .node.markdown{width:720px}body[data-view="notebook"] .port{display:none}body[data-view="notebook"] .legend{display:none}body[data-view="notebook"] .node-head{cursor:default}
+
+.quiet-select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:13px;width:auto}.import-warnings{font-size:13px;padding-left:18px;max-height:40vh;overflow:auto}.import-warnings li{margin:3px 0}.import-warnings .kind{font-size:10px;letter-spacing:.08em;font-weight:700;color:var(--warn);margin-right:6px}

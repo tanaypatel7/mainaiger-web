@@ -428,3 +428,110 @@ def record_result(doc, node_id, result):
     cell.setdefault('metadata', {}).setdefault('mainaiger', {})['last_run'] = {
         'status': result.get('status'), 'elapsed_ms': result.get('elapsed_ms'), 'count': result.get('count'),
         'source_hash': source_hash(source_text(cell))}
+
+
+# ---------------------------------------------------------------- notebook import
+RISKY = (('import *', 'from … import * hides which names are defined'), ('exec(', 'exec() can define names invisibly'),
+         ('globals()', 'globals() access is invisible to the analysis'), ('get_ipython', 'IPython magics are not available in this kernel'))
+
+
+def _cell_title(cell, index, number, heading):
+    own = cell.get('metadata', {}).get('mainaiger', {}) if isinstance(cell.get('metadata'), dict) else {}
+    if isinstance(own.get('title'), str) and own['title'].strip():
+        return own['title'].strip()[:120]
+    if cell['cell_type'] == 'markdown':
+        first = source_text(cell).strip().splitlines()
+        return (first[0].lstrip('# ').strip()[:120] if first else 'Note') or 'Note'
+    first = source_text(cell).strip().splitlines()
+    if first and first[0].startswith('#') and len(first[0]) > 2:
+        return first[0].lstrip('# ').strip()[:120]
+    return heading[:100] + (' (%d)' % number) if heading else 'Cell %d' % number
+
+
+def from_notebook(notebook):
+    """Convert an nbformat-4 notebook into a schema-2 document plus an import report.
+
+    Notebook order is the execution truth, so code cells form one chain
+    Start -> cell -> ... -> Finish. Markdown cells become notes (not executed).
+    Existing ids, outputs and execution counts are kept. The report lists what a
+    reader should know: inputs no earlier cell produces (hidden-state
+    candidates), constructs the static analysis cannot see, and magics.
+    """
+    _require(isinstance(notebook, dict) and notebook.get('nbformat') == 4 and isinstance(notebook.get('cells'), list),
+             'Choose an nbformat 4 notebook (.ipynb)')
+    _require(len(notebook['cells']) <= MAX_NODES, 'The notebook has more than %d cells' % MAX_NODES)
+    used, cells, nodes, edges = set(), [], [{'id': 'start', 'kind': 'start'}], []
+    previous, number, heading = 'start', 0, ''
+    report = {'code_cells': 0, 'notes': 0, 'dropped': 0, 'warnings': []}
+    for index, raw in enumerate(notebook['cells']):
+        if not isinstance(raw, dict) or raw.get('cell_type') not in ('code', 'markdown', 'raw'):
+            report['dropped'] += 1
+            continue
+        kind = 'markdown' if raw['cell_type'] == 'raw' else raw['cell_type']
+        ident = raw.get('id') if isinstance(raw.get('id'), str) and 0 < len(raw.get('id', '')) <= 64 else None
+        if not ident or ident in used or ident in ('start', 'finish'):
+            base = 'cell-%d' % (index + 1); ident = base; n = 1
+            while ident in used or ident in ('start', 'finish'):
+                n += 1; ident = '%s-%d' % (base, n)
+        used.add(ident)
+        source = source_text(raw)
+        _require(len(source.encode('utf-8')) <= MAX_SOURCE, 'Cell %d is too large' % (index + 1))
+        cell = {'id': ident, 'cell_type': kind, 'metadata': copy.deepcopy(raw.get('metadata')) if isinstance(raw.get('metadata'), dict) else {}, 'source': source}
+        if 'attachments' in raw and isinstance(raw['attachments'], dict):
+            cell['attachments'] = copy.deepcopy(raw['attachments'])
+        own = cell['metadata'].setdefault('mainaiger', {})
+        if not isinstance(own, dict):
+            own = cell['metadata']['mainaiger'] = {}
+        if kind == 'code':
+            number += 1
+            report['code_cells'] += 1
+            cell['outputs'] = [o for o in raw.get('outputs', []) if isinstance(o, dict)] if isinstance(raw.get('outputs'), list) else []
+            cell['execution_count'] = raw.get('execution_count') if isinstance(raw.get('execution_count'), int) else None
+            own['title'] = _cell_title(cell, index, number, heading)
+            for needle, why in RISKY:
+                if needle in source:
+                    report['warnings'].append({'cell': ident, 'kind': 'opaque', 'detail': why})
+            if source.lstrip().startswith(('%', '!')) or '\n%' in source or '\n!' in source:
+                report['warnings'].append({'cell': ident, 'kind': 'magic', 'detail': 'IPython magic or shell line (%/!) will fail in this kernel'})
+            nodes.append({'id': ident, 'kind': 'code', 'cell_index': len(cells)})
+            edges.append({'id': 'e%d' % (len(edges) + 1), 'kind': 'control', 'source': previous, 'target': ident})
+            previous = ident
+        else:
+            report['notes'] += 1
+            own['title'] = _cell_title(cell, index, number, heading)
+            first = source.strip().splitlines()
+            if first and first[0].startswith('#'):
+                heading = first[0].lstrip('# ').strip()
+            nodes.append({'id': ident, 'kind': 'markdown', 'cell_index': len(cells)})
+        cells.append(cell)
+    nodes.append({'id': 'finish', 'kind': 'finish'})
+    edges.append({'id': 'e%d' % (len(edges) + 1), 'kind': 'control', 'source': previous, 'target': 'finish'})
+    metadata = copy.deepcopy(notebook.get('metadata')) if isinstance(notebook.get('metadata'), dict) else {}
+    document = {'format': 'mainaiger', 'schema_version': SCHEMA_VERSION,
+                'notebook': {'nbformat': 4, 'nbformat_minor': notebook.get('nbformat_minor', 5) if isinstance(notebook.get('nbformat_minor'), int) else 5,
+                             'metadata': metadata, 'cells': cells},
+                'graph': {'nodes': nodes, 'edges': edges}, 'layout': {'nodes': {}, 'viewport': {'x': 40, 'y': 30, 'zoom': 1}}}
+    document = validate(document)
+    # Hidden-state candidates: inputs that no earlier code cell defines.
+    info = analysis(document)
+    produced = set()
+    for ident in [n['id'] for n in document['graph']['nodes'] if n['kind'] == 'code']:
+        for name in info[ident]['inputs']:
+            if name not in produced:
+                report['warnings'].append({'cell': ident, 'kind': 'input', 'detail': 'reads "%s" which no earlier cell defines' % name})
+        produced.update(info[ident]['outputs'])
+    report['unresolved_inputs'] = sorted({w['detail'].split('"')[1] for w in report['warnings'] if w['kind'] == 'input'})
+    return document, report
+
+
+def to_notebook(document):
+    """The embedded notebook with cells in trigger order; a lossy view of a branching graph."""
+    doc = validate(document)
+    ordered = [n for n in order(doc)]
+    cells = []
+    for ident in ordered:
+        node = node_by_id(doc, ident)
+        if node['kind'] in ('code', 'markdown'):
+            cells.append(copy.deepcopy(doc['notebook']['cells'][node['cell_index']]))
+    sequential = all(n['kind'] != 'code' or len([e for e in control_edges(doc) if e['target'] == n['id']]) <= 1 for n in doc['graph']['nodes'])
+    return {**copy.deepcopy(doc['notebook']), 'cells': cells}, {'lossy': not sequential or len(control_edges(doc)) != len([n for n in doc['graph']['nodes'] if n['kind'] == 'code']) + 1}

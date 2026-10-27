@@ -332,10 +332,31 @@
     try {
       if (file.size > 4000000) throw new Error('Choose a file smaller than 4 MB.');
       const data = JSON.parse(await file.text());
-      const doc = data && data.format === 'mainaiger' ? data : fromNotebook(data);
-      const view = await api('/api/graph', {document: doc}); applyView(view); state.run = null; state.dirty = false; $('save-state').textContent = 'Saved'; $('save-state').dataset.state = '';
-      const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x || 40, y: vp.y || 30}; state.zoom = vp.zoom || 1; buildNodes(); select(null); applyViewport(); if (!Object.keys(state.doc.layout.nodes).length) arrange(); toast('Opened ' + file.name);
+      let doc = data, report = null;
+      if (!(data && data.format === 'mainaiger')) { const imported = await api('/api/graph/import', {notebook: data}); doc = imported.document; report = imported.report; }
+      await openDocument(doc, file.name);
+      if (report) showImportReport(file.name, report);
     } catch (error) { toast(error.message || 'The file could not be opened.'); }
+  });
+  async function openDocument(doc, label) {
+    const view = await api('/api/graph', {document: doc}); applyView(view); state.run = null; state.dirty = false; $('save-state').textContent = 'Saved'; $('save-state').dataset.state = '';
+    const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x || 40, y: vp.y || 30}; state.zoom = vp.zoom || 1; buildNodes(); select(null); applyViewport(); if (!Object.keys(state.doc.layout.nodes).length) arrange(); layoutNotebook(); renderInspector(); toast('Opened ' + label);
+  }
+  function showImportReport(name, report) {
+    $('import-summary').textContent = `${name}: ${report.code_cells} code cell${report.code_cells === 1 ? '' : 's'}, ${report.notes} note${report.notes === 1 ? '' : 's'}` + (report.dropped ? `, ${report.dropped} unreadable cell(s) dropped` : '') + '.';
+    const list = $('import-warnings'); list.textContent = '';
+    if (!report.warnings.length) { const li = document.createElement('li'); li.textContent = 'No hidden-state or unsupported constructs found.'; list.append(li); }
+    for (const w of report.warnings) { const li = document.createElement('li'); const k = document.createElement('span'); k.className = 'kind'; k.textContent = w.kind === 'input' ? 'HIDDEN STATE' : w.kind.toUpperCase(); li.append(k); const n = nodeById(w.cell); li.append(`${n ? titleOf(n) : w.cell}: ${w.detail}`); list.append(li); }
+    $('import-dialog').showModal(); $('import-ok').focus();
+  }
+  $('import-ok').addEventListener('click', () => $('import-dialog').close());
+  $('open-example').addEventListener('change', async () => {
+    const name = $('open-example').value; $('open-example').value = ''; if (!name) return;
+    try { const data = await api('/examples/' + encodeURIComponent(name)); await openDocument(data.document, name); } catch (error) { toast(error.message); }
+  });
+  $('export-ipynb').addEventListener('click', async () => {
+    if (state.dirty) { clearTimeout(state.saveTimer); await save(); }
+    try { const data = await api('/api/graph/export'); const blob = new Blob([JSON.stringify(data.notebook, null, 1) + '\n'], {type: 'application/x-ipynb+json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'graph.ipynb'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast(data.note); } catch (error) { toast(error.message); }
   });
   function fromNotebook(nb) {
     if (!nb || nb.nbformat !== 4 || !Array.isArray(nb.cells)) throw new Error('Choose a .ipymb graph or an nbformat 4 .ipynb notebook.');
@@ -401,7 +422,7 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', drawEdges);

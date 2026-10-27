@@ -20,6 +20,7 @@ python3 -m venv "$build/venv"
   --name mainaiger-lab-service --paths "$root" \
   --add-data "$root/local_lab/ui:local_lab/ui" \
   --add-data "$root/local_lab/kernel:local_lab/kernel" \
+  --add-data "$root/examples:examples" \
   --distpath "$build/dist" --workpath "$build/work" --specpath "$build" \
   "$root/macos/service_entry.py"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

@@ -1,155 +1,137 @@
 {
-  "format": "mainaiger",
-  "schema_version": 1,
-  "notebook": {
-    "nbformat": 4,
-    "nbformat_minor": 5,
+ "format": "mainaiger",
+ "schema_version": 2,
+ "notebook": {
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+   "kernelspec": {
+    "display_name": "Python 3",
+    "language": "python",
+    "name": "python3"
+   },
+   "language_info": {
+    "name": "python"
+   },
+   "mainaiger_example": "No external dependencies; run in a Python notebook.",
+   "mainaiger": {
+    "example": true
+   }
+  },
+  "cells": [
+   {
+    "id": "plan",
+    "cell_type": "markdown",
     "metadata": {
-      "kernelspec": {
-        "display_name": "Python 3",
-        "language": "python",
-        "name": "python3"
-      },
-      "language_info": {
-        "name": "python"
-      },
-      "mainaiger_example": "No external dependencies; run in a Python notebook."
+     "mainaiger": {
+      "title": "Plan"
+     }
     },
-    "cells": [
-      {
-        "id": "plan",
-        "cell_type": "markdown",
-        "metadata": {},
-        "source": [
-          "# Plan → Code → Check\n",
-          "Create a small signal, remove its mean, and check the result. The imported graph preserves notebook execution order."
-        ]
-      },
-      {
-        "id": "load-signal",
-        "cell_type": "code",
-        "metadata": {},
-        "source": [
-          "signal = [1.0, 2.0, 4.0, 5.0]\n",
-          "print(signal)"
-        ],
-        "execution_count": null,
-        "outputs": []
-      },
-      {
-        "id": "center-signal",
-        "cell_type": "code",
-        "metadata": {},
-        "source": [
-          "mean = sum(signal) / len(signal)\n",
-          "centered = [value - mean for value in signal]\n",
-          "print(centered)"
-        ],
-        "execution_count": null,
-        "outputs": []
-      },
-      {
-        "id": "check-signal",
-        "cell_type": "code",
-        "metadata": {},
-        "source": [
-          "assert abs(sum(centered)) < 1e-12\n",
-          "print('Check passed: centered signal has zero sum.')"
-        ],
-        "execution_count": null,
-        "outputs": []
-      }
-    ]
-  },
-  "graph": {
-    "nodes": [
-      {
-        "id": "mainaiger-start",
-        "kind": "start"
-      },
-      {
-        "id": "plan",
-        "kind": "markdown",
-        "cell_index": 0
-      },
-      {
-        "id": "load-signal",
-        "kind": "code",
-        "cell_index": 1
-      },
-      {
-        "id": "center-signal",
-        "kind": "code",
-        "cell_index": 2
-      },
-      {
-        "id": "check-signal",
-        "kind": "code",
-        "cell_index": 3
-      },
-      {
-        "id": "mainaiger-finish",
-        "kind": "finish"
-      }
-    ],
-    "edges": [
-      {
-        "id": "control-1",
-        "kind": "control",
-        "source": "mainaiger-start",
-        "target": "load-signal"
-      },
-      {
-        "id": "control-2",
-        "kind": "control",
-        "source": "load-signal",
-        "target": "center-signal"
-      },
-      {
-        "id": "control-3",
-        "kind": "control",
-        "source": "center-signal",
-        "target": "check-signal"
-      },
-      {
-        "id": "control-4",
-        "kind": "control",
-        "source": "check-signal",
-        "target": "mainaiger-finish"
-      }
-    ]
-  },
-  "layout": {
-    "nodes": {
-      "mainaiger-start": {
-        "x": 320,
-        "y": 24
-      },
-      "plan": {
-        "x": 320,
-        "y": 120
-      },
-      "load-signal": {
-        "x": 320,
-        "y": 340
-      },
-      "center-signal": {
-        "x": 320,
-        "y": 560
-      },
-      "check-signal": {
-        "x": 320,
-        "y": 780
-      },
-      "mainaiger-finish": {
-        "x": 320,
-        "y": 1000
-      }
+    "source": "# Plan → Code → Check\nCreate a small signal, remove its mean, and check the result. The imported graph preserves notebook execution order.",
+    "outputs": []
+   },
+   {
+    "id": "load-signal",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Load signal"
+     }
     },
-    "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 1
-    }
+    "source": "signal = [1.0, 2.0, 4.0, 5.0]\nprint(signal)",
+    "outputs": [],
+    "execution_count": null
+   },
+   {
+    "id": "center-signal",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Center the signal"
+     }
+    },
+    "source": "mean = sum(signal) / len(signal)\ncentered = [value - mean for value in signal]\nprint(centered)",
+    "outputs": [],
+    "execution_count": null
+   },
+   {
+    "id": "check-signal",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Check the result"
+     }
+    },
+    "source": "assert abs(sum(centered)) < 1e-12\nprint('Check passed: centered signal has zero sum.')",
+    "outputs": [],
+    "execution_count": null
+   }
+  ]
+ },
+ "graph": {
+  "nodes": [
+   {
+    "id": "start",
+    "kind": "start"
+   },
+   {
+    "id": "plan",
+    "kind": "markdown",
+    "cell_index": 0
+   },
+   {
+    "id": "load-signal",
+    "kind": "code",
+    "cell_index": 1
+   },
+   {
+    "id": "center-signal",
+    "kind": "code",
+    "cell_index": 2
+   },
+   {
+    "id": "check-signal",
+    "kind": "code",
+    "cell_index": 3
+   },
+   {
+    "id": "finish",
+    "kind": "finish"
+   }
+  ],
+  "edges": [
+   {
+    "id": "e1",
+    "kind": "control",
+    "source": "start",
+    "target": "load-signal"
+   },
+   {
+    "id": "e2",
+    "kind": "control",
+    "source": "load-signal",
+    "target": "center-signal"
+   },
+   {
+    "id": "e3",
+    "kind": "control",
+    "source": "center-signal",
+    "target": "check-signal"
+   },
+   {
+    "id": "e4",
+    "kind": "control",
+    "source": "check-signal",
+    "target": "finish"
+   }
+  ]
+ },
+ "layout": {
+  "nodes": {},
+  "viewport": {
+   "x": 40,
+   "y": 30,
+   "zoom": 1
   }
+ }
 }

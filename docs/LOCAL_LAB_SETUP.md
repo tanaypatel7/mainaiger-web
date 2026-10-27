@@ -132,6 +132,16 @@ What the pieces do, and which file implements them:
   independently; **+** adds a cell triggered by this one.
 - **Export Python** writes the cells reachable from Start, in trigger order,
   as one `.py` with the notes as comments. **Clear outputs** resets counts.
+- **Open example…** lists the Mainbooks in `examples/` (`signal-demo`,
+  `csv-pipeline`, `branching-stats`); `tests/test_examples.py` runs each one
+  with the real kernel, so they cannot rot. **Open .ipymb / .ipynb** sends a
+  plain notebook to `POST /api/graph/import` (`graph.from_notebook()`): cells
+  are chained in notebook order, notes kept, ids/outputs/counts preserved,
+  titles taken from the nearest heading or first comment, and an import
+  report lists hidden-state inputs (names no earlier cell defines), IPython
+  magics and constructs the analysis cannot see. **Export .ipynb**
+  (`graph.to_notebook()`) writes the cells in trigger order and says whether
+  a branching graph was flattened.
 - Outputs and execution counts are written back into the notebook cells, so
   **Download .ipymb** carries results; **Open** accepts `.ipymb` or a plain
   `.ipynb` (converted into a sequential Start → cells → Finish chain).

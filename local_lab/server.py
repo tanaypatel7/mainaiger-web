@@ -20,6 +20,8 @@ from . import models as lab_models
 from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
+EXAMPLES=Path(__file__).resolve().parent.parent/'examples'
+EXAMPLE_NAME=__import__('re').compile(r'^[a-z0-9][a-z0-9-]{0,60}$')
 
 def initialize_state(path):
     path=Path(path).expanduser()
@@ -226,6 +228,27 @@ class LabHandler(BaseHTTPRequestHandler):
             if not session:return self.out(401,{'error':'Local owner sign-in required'})
             view=self.server.graph_view();view['csrf']=session['csrf'];view['session']=self.server.kernel_status()
             return self.out(200,view)
+        if path=='/api/examples':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            items=[]
+            for file in sorted(EXAMPLES.glob('*.ipymb')) if EXAMPLES.is_dir() else []:
+                if EXAMPLE_NAME.match(file.stem):
+                    try:
+                        doc=json.loads(file.read_text(encoding='utf-8'));cells=doc.get('notebook',{}).get('cells',[])
+                        intro=next((graph_module.source_text(c).strip().splitlines()[0].lstrip('# ') for c in cells if c.get('cell_type')=='markdown' and graph_module.source_text(c).strip()),file.stem)
+                        items.append({'name':file.stem,'title':intro[:80],'cells':len(cells)})
+                    except (OSError,ValueError,IndexError):continue
+            return self.out(200,{'examples':items})
+        if path.startswith('/examples/'):
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            name=path[len('/examples/'):]
+            if not EXAMPLE_NAME.match(name) or not (EXAMPLES/(name+'.ipymb')).is_file():return self.out(404,{'error':'No such example'})
+            try:return self.out(200,{'document':graph_module.validate(json.loads((EXAMPLES/(name+'.ipymb')).read_text(encoding='utf-8')))})
+            except (OSError,ValueError) as e:return self.out(500,{'error':'Example could not be read: %s'%e})
+        if path=='/api/graph/export':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            with self.server.graph_lock:notebook,info=graph_module.to_notebook(self.server.graph_doc)
+            return self.out(200,{'notebook':notebook,'lossy':info['lossy'],'note':'Cells are in trigger order; a branching graph is flattened to one sequence.' if info['lossy'] else 'The graph is one chain; this notebook runs identically in Jupyter.'})
         if path=='/api/graph/run':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             run=self.server.graph_run
@@ -247,7 +270,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.host_ok() or not self.origin_ok():return self.out(403,{'error':'Local same-origin request required'})
         try:
-            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path=='/api/graph' else 600000 if path=='/api/models/chat' else 25000)
+            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path in ('/api/graph','/api/graph/import') else 600000 if path=='/api/models/chat' else 25000)
             if path=='/api/login':
                 if set(data)!={'key'} or not isinstance(data['key'],str):raise ValueError('Key required')
                 with self.server.lock:
@@ -327,6 +350,11 @@ class LabHandler(BaseHTTPRequestHandler):
                 if set(data)!={'document'}:raise ValueError('Send {document}')
                 try:return self.out(200,self.server.set_graph(data['document']))
                 except graph_module.GraphError as e:return self.out(409 if 'in progress' in str(e) else 400,{'error':str(e)})
+            if path=='/api/graph/import':
+                if set(data)!={'notebook'}:raise ValueError('Send {notebook}')
+                try:document,report=graph_module.from_notebook(data['notebook'])
+                except graph_module.GraphError as e:return self.out(400,{'error':str(e)})
+                return self.out(200,{'document':document,'report':report})
             if path=='/api/graph/preflight':
                 mode=data.get('mode');nodes=data.get('nodes',[])
                 if mode not in ('all','from','one','selected') or not isinstance(nodes,list) or not all(isinstance(n,str) for n in nodes):raise ValueError('Send a run mode and node ids')
