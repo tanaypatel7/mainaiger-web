@@ -12,7 +12,8 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
-from .runner import execute, preview, validate_settings
+from .runner import execute, preview, validate_settings, session_preview, session_command, session_control, resolve_docker
+from .kernel_session import KernelSession, KernelError
 from . import setup as lab_setup
 
 ASSETS=Path(__file__).parent/'ui'
@@ -43,16 +44,49 @@ def initialize_state(path):
     if len(key)<32 or len(key)>128: raise ValueError('Invalid owner key file')
     return state,key
 
+def docker_kernel(settings):
+    """Build a session whose kernel runs inside a limited Docker container."""
+    docker,env,error=resolve_docker()
+    if error: raise KernelError(error)
+    name='mainaiger-lab-session-'+secrets.token_hex(8)
+    args=session_command(settings,name);args[0]=docker
+    control=session_control(name)
+    for cmd in control.values(): cmd[0]=docker
+    return KernelSession(args,env=env,interrupt_args=control['interrupt'],kill_args=control['kill'],label=name)
+
 class LabServer(ThreadingHTTPServer):
     daemon_threads=True
     allow_reuse_address=True
-    def __init__(self,address,state,key,executor=execute):
+    def __init__(self,address,state,key,executor=execute,kernel_factory=None):
         if address[0]!='127.0.0.1': raise ValueError('Lab listens on loopback only')
         self.state_dir=Path(state);self.key=key;self.executor=executor
         self.settings={'workspace':None,'cpus':'0.5','memory':'256m'}
         self.sessions={};self.failures=[];self.running=False;self.setup_running=False;self.revision=0;self.lock=threading.RLock();self.slots=threading.BoundedSemaphore(16)
         self.setup_job={'running':False,'action':None,'phase':'idle','bytes':0,'total':None,'result':None}
+        # One persistent kernel at a time. The factory builds a KernelSession for the
+        # given settings; the default runs the kernel inside a Docker container.
+        self.kernel=None;self.kernel_factory=kernel_factory or docker_kernel;self.kernel_lock=threading.Lock()
         super().__init__(address,LabHandler)
+    def kernel_status(self):
+        kernel=self.kernel
+        if kernel is None: return {'alive':False,'executing':False,'label':None,'count':0,'python':None,'started_at':None,'ended':None}
+        return kernel.status()
+    def start_kernel(self,settings):
+        with self.kernel_lock:
+            if self.kernel is not None and self.kernel.alive: raise KernelError('A session is already running')
+            kernel=self.kernel_factory(settings)
+            kernel.start()
+            self.kernel=kernel
+            return kernel.status()
+    def stop_kernel(self):
+        with self.kernel_lock:
+            kernel=self.kernel
+            if kernel is None: return self.kernel_status()
+            kernel.stop()
+            return kernel.status()
+    def server_close(self):
+        try: self.stop_kernel()
+        finally: super().server_close()
     def start_setup_job(self, action):
         with self.lock:
             if self.setup_running:return False
@@ -117,7 +151,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
-        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
+        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
         if path=='/api/state':
@@ -125,7 +159,17 @@ class LabHandler(BaseHTTPRequestHandler):
             if not session:return self.out(401,{'error':'Local owner sign-in required'})
             with self.server.lock: settings=dict(self.server.settings);revision=self.server.revision
             available=bool(lab_setup._find_docker()) if sys.platform=='darwin' else bool(shutil.which('docker'))
-            return self.out(200,{'csrf':session['csrf'],'workspace':settings['workspace'],'limits':{'cpus':settings['cpus'],'memory':settings['memory']},'docker_available':available,'command':preview(settings),'revision':revision})
+            return self.out(200,{'csrf':session['csrf'],'workspace':settings['workspace'],'limits':{'cpus':settings['cpus'],'memory':settings['memory']},'docker_available':available,'command':preview(settings),'session_command':session_preview(settings),'revision':revision,'session':self.server.kernel_status()})
+        if path=='/api/kernel':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            return self.out(200,self.server.kernel_status())
+        if path=='/api/kernel/variables':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            kernel=self.server.kernel
+            if kernel is None or not kernel.alive:return self.out(409,{'error':'No running session'})
+            if kernel.executing:return self.out(409,{'error':'A cell is still running'})
+            try:return self.out(200,{'variables':kernel.variables()})
+            except KernelError as e:return self.out(409,{'error':str(e)})
         if path=='/api/setup':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             return self.out(200,lab_setup.status(self.server.state_dir))
@@ -169,8 +213,31 @@ class LabHandler(BaseHTTPRequestHandler):
                 return self.out(202,{'ok':True})
             if path=='/api/settings':
                 settings=validate_settings(data,self.server.state_dir)
+                if self.server.kernel_status()['alive']:return self.out(409,{'error':'Stop the running session before changing the folder or limits; a session keeps the settings it started with.'})
                 with self.server.lock:self.server.settings=settings;self.server.revision+=1
                 return self.out(200,{'ok':True})
+            if path=='/api/kernel/start':
+                if set(data)!={'confirm','revision'} or data['confirm'] is not True or type(data['revision']) is not int:raise ValueError('Explicit confirmation is required')
+                with self.server.lock:
+                    if data['revision']!=self.server.revision:return self.out(409,{'error':'Settings changed after review. Review the current settings again.'})
+                    settings=dict(self.server.settings)
+                try:return self.out(200,self.server.start_kernel(settings))
+                except KernelError as e:return self.out(409,{'error':str(e)})
+            if path=='/api/kernel/stop':
+                return self.out(200,self.server.stop_kernel())
+            if path=='/api/kernel/interrupt':
+                kernel=self.server.kernel
+                if kernel is None or not kernel.alive:return self.out(409,{'error':'No running session'})
+                return self.out(200,{'ok':kernel.interrupt(),'session':kernel.status()})
+            if path=='/api/kernel/execute':
+                if set(data)!={'code','confirm'} or data['confirm'] is not True:raise ValueError('Explicit confirmation is required')
+                kernel=self.server.kernel
+                if kernel is None or not kernel.alive:return self.out(409,{'error':'Start a session first'})
+                if kernel.executing:return self.out(409,{'error':'A cell is already running; interrupt it or wait'})
+                try:result=kernel.execute(data['code'])
+                except KernelError as e:return self.out(409,{'error':str(e)})
+                result['session']=kernel.status()
+                return self.out(200,result)
             if path=='/api/run':
                 if set(data)!={'code','confirm','revision'} or data['confirm'] is not True or type(data['revision']) is not int:raise ValueError('Explicit confirmation is required')
                 with self.server.lock:

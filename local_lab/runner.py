@@ -40,8 +40,16 @@ def validate_settings(data, state_dir):
     return {'workspace': str(root), 'cpus': cpus, 'memory': memory}
 
 
-def command(settings, name):
-    args = ['docker'] + (['--context', 'desktop-linux'] if sys.platform == 'darwin' else []) + ['run', '--rm', '--name', name, '--pull=never', '--network=none',
+KERNEL_DIR = Path(__file__).resolve().parent / 'kernel'
+KERNEL_MOUNT = '/opt/mainaiger'
+
+
+def _docker_prefix():
+    return ['docker'] + (['--context', 'desktop-linux'] if sys.platform == 'darwin' else [])
+
+
+def _base(settings, name):
+    args = _docker_prefix() + ['run', '--rm', '--name', name, '--pull=never', '--network=none',
             '--read-only', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m', '--cap-drop=ALL',
             '--security-opt=no-new-privileges', '--pids-limit=64', '--cpus='+settings['cpus'],
             '--memory='+settings['memory'], '--memory-swap='+settings['memory'], '--user=65534:65534', '--interactive']
@@ -49,11 +57,48 @@ def command(settings, name):
         args += ['--mount', 'type=bind,src='+settings['workspace']+',dst=/workspace,readonly', '--workdir=/workspace']
     else:
         args += ['--workdir=/tmp']
-    return args + [IMAGE, 'python', '-I', '-']
+    return args
+
+
+def command(settings, name):
+    """One-shot run: a fresh container reads the program from stdin and exits."""
+    return _base(settings, name) + [IMAGE, 'python', '-I', '-']
+
+
+def session_command(settings, name, kernel_dir=KERNEL_DIR):
+    """Persistent session: the same container limits, but the process is the kernel.
+
+    The kernel source directory is mounted read-only; the container cannot alter it.
+    """
+    return _base(settings, name) + ['--mount', 'type=bind,src='+str(kernel_dir)+',dst='+KERNEL_MOUNT+',readonly',
+                                    IMAGE, 'python', '-I', KERNEL_MOUNT+'/kernel.py']
+
+
+def session_control(name):
+    """Commands the host uses to interrupt or remove a session container."""
+    return {'interrupt': _docker_prefix() + ['kill', '--signal=INT', name],
+            'kill': _docker_prefix() + ['rm', '-f', name]}
+
+
+def resolve_docker(find=shutil.which):
+    """Return (docker_executable, env, error). On a Mac only Docker Desktop's local engine is accepted."""
+    if sys.platform == 'darwin':
+        from .setup import _env, _local_docker
+        docker, message = _local_docker()
+        if not docker:
+            return None, None, message
+        return docker, _env(), None
+    if not find('docker'):
+        return None, None, 'Docker was not found. Install and start Docker Desktop first.'
+    return 'docker', None, None
 
 
 def preview(settings):
     return command(settings, '<generated-container-name>') + ['<Python source via stdin>']
+
+
+def session_preview(settings):
+    return session_command(settings, '<generated-container-name>')
 
 
 def execute(code, settings, popen=subprocess.Popen, run=subprocess.run, find=shutil.which):

@@ -41,6 +41,10 @@ After unlocking the local page:
    Docker Desktop engine is ready. Then review and download the Python image.
 5. Select limits, review the example code, and approve the run. The optional
    folder is read-only and settings last only for the current session.
+6. Optionally select **Review and start session** to keep one kernel container
+   running so variables persist between cells; see `docs/LOCAL_LAB_SETUP.md`.
+   The build bundles `local_lab/kernel/` and bind-mounts it read-only into the
+   container; that mount from inside the app bundle is untested on a Mac.
 
 If Docker is already installed, start the existing app and run the check; the
 setup does not overwrite it. An incomplete or rejected download does not open

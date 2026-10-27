@@ -28,7 +28,8 @@ and memory limit, save the settings, then write a small Python cell. Review the
 displayed container command and code, and explicitly approve each run. Output is
 displayed in the panel. The selected folder is mounted read-only, so the code
 cannot save results there in this version. A new container is created for each
-run, so variables do not persist across runs.
+run, so variables do not persist across runs — unless you start a persistent
+session (below).
 
 Runs use a nonroot user, no network, a read-only container root, a temporary
 directory, dropped Linux capabilities, CPU/memory/process limits, a 20-second
@@ -38,6 +39,51 @@ The browser does not receive the Docker socket.
 The local server invokes a fixed Docker command; it never invokes Python code on
 the host. GPU use is not implemented. The sandbox is defense in depth, not a
 guarantee against vulnerabilities in Docker or the host OS.
+
+## Persistent session (kernel)
+
+Instead of a fresh container per run, **Review and start session** starts one
+container that stays up until you stop it. Inside it runs
+`local_lab/kernel/kernel.py`, a small standard-library Python program that
+reads cells as JSON messages on its standard input and keeps a shared
+namespace, so a variable made by one cell is visible to the next. The kernel
+directory is bind-mounted read-only at `/opt/mainaiger`; every other container
+limit (no network, read-only root, dropped capabilities, CPU/memory/process
+caps, nonroot user) is identical to the one-shot run. The container cannot
+alter the kernel program, and the host never runs cell code itself.
+
+Each cell still needs approval. A result shows status, cell number, elapsed
+time and any error with a traceback. The last expression of a cell is echoed,
+as in Jupyter. Output is captured from Python's `print`, `sys.stderr` and raw
+writes to file descriptors 1 and 2, and is capped at 64 KB per cell. `input()`
+raises `EOFError` instead of waiting. **Interrupt cell** sends `SIGINT` to the
+kernel (`docker kill --signal=INT`), which raises `KeyboardInterrupt` in the
+running cell; the session continues. A cell that runs longer than 60 seconds
+is interrupted automatically. If a cell ignores the interrupt for 5 more
+seconds, the whole session container is removed and the panel says so.
+**Stop session** removes the container; its variables are gone.
+
+The variables table lists names in the session with a type and a limited
+summary. Summaries never call your objects' own `repr` or methods; arrays
+from numpy/pandas/torch show shape and dtype only. Settings (folder, limits)
+are locked while a session runs because the container was created with them.
+
+A kernel is an execution process, not a security boundary. Cell code can read
+and write anything the kernel process can, including the protocol pipe; the
+host validates every message and the container is the actual boundary.
+Nothing from a session is written to disk by Lab, and a saved notebook never
+contains a running kernel.
+
+**Status of this feature:** the kernel protocol, output capture, errors,
+interrupt, timeout escalation and HTTP endpoints are tested by running the
+real kernel as a plain local process (`tests/test_kernel.py`,
+`tests/test_kernel_server.py`) and the panel was exercised in a headless
+browser against that local process. Running the kernel inside a Docker
+container on a Mac — including the read-only bind mount of the kernel
+directory from the app bundle and `docker kill --signal=INT` reaching the
+kernel — is **unverified** until it is tried on a real Mac.
+
+## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it
 with Ctrl-C. Unmounting or changing a directory requires saving new settings in
@@ -51,6 +97,7 @@ normal network connection; execution containers are configured without network.
 
 This prototype was unit-tested without Docker; the image, actual container
 execution, Mac folder permissions and desktop setup have not yet been tested on
-a Mac. Next steps include multi-cell notebook editing, persistent kernels, validated
-installation packaging, and explicit, authenticated website pairing. Do not
+a Mac. Next steps include multi-cell notebook editing with a writable workspace,
+an executable graph over the same cells, validated installation packaging, and
+explicit, authenticated website pairing. Do not
 expose this local service to the internet or expand its listener beyond loopback.

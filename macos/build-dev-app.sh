@@ -19,6 +19,7 @@ python3 -m venv "$build/venv"
 "$build/venv/bin/python" -m PyInstaller --noconfirm --clean --onedir \
   --name mainaiger-lab-service --paths "$root" \
   --add-data "$root/local_lab/ui:local_lab/ui" \
+  --add-data "$root/local_lab/kernel:local_lab/kernel" \
   --distpath "$build/dist" --workpath "$build/work" --specpath "$build" \
   "$root/macos/service_entry.py"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
