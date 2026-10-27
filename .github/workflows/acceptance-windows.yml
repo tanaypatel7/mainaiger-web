@@ -33,6 +33,7 @@ jobs:
       - name: 1. Inventory and Docker container mode
         continue-on-error: true
         run: |
+          set +e
           py=$(python --version 2>&1); nd=$(node --version 2>&1); dv=$(docker --version 2>&1 || echo 'docker missing')
           os=$(docker info --format '{{.OSType}}' 2>&1 | tr -d '\r' | tail -1)
           pull=$(docker pull python:3.13.18-slim 2>&1 | tr -d '\r' | tail -2 | tr '\n' ' ')
@@ -54,6 +55,7 @@ jobs:
         continue-on-error: true
         working-directory: ${{ steps.zip.outputs.src }}
         run: |
+          set +e
           node --test tests/*.test.js > node-tests.log 2>&1; rc=$?
           echo "::notice title=3 node tests::exit=$rc $(grep -E '^# (pass|fail)' node-tests.log | tr '\n' ' ')"
 
@@ -61,6 +63,7 @@ jobs:
         continue-on-error: true
         working-directory: ${{ steps.zip.outputs.src }}
         run: |
+          set +e
           python -m unittest discover -s tests -p 'test_*.py' > python-tests.log 2>&1; rc=$?
           cat python-tests.log | tail -80
           python - <<'EOF'
@@ -84,6 +87,7 @@ jobs:
         continue-on-error: true
         working-directory: ${{ steps.zip.outputs.src }}
         run: |
+          set +e
           out=$(python tools/notebook_bridge.py validate examples/signal-demo.ipymb 2>&1 | tr -d '\r'); rc=$?
           exp=$(python tools/notebook_bridge.py export examples/signal-demo.ipymb "$RUNNER_TEMP/rt.ipynb" --force 2>&1 | tr -d '\r'); rc2=$?
           imp=$(python tools/notebook_bridge.py import "$RUNNER_TEMP/rt.ipynb" "$RUNNER_TEMP/rt.ipymb" --force 2>&1 | tr -d '\r'); rc3=$?
@@ -109,10 +113,21 @@ jobs:
               p.stdin.write(json.dumps(req) + '\n'); p.stdin.flush()
               line = readline_timeout(p, seconds)
               return json.loads(line) if line else None
+          feats = {n: hasattr(os, n) for n in ('getuid', 'O_NOFOLLOW', 'O_DIRECTORY', 'umask', 'dup2')}
+          feats['supports_dir_fd'] = os.open in os.supports_dir_fd
+          print(f"::notice title=6 posix features on windows::{feats}")
           try:
               p = spawn()
               ready = readline_timeout(p, 15)
-              print(f"::notice title=6 kernel ready::{(ready or 'NO READY LINE').strip()[:300]} stderr={p.stderr.readline()[:200] if ready is None else ''}")
+              if ready is None:
+                  try: p.wait(5)
+                  except subprocess.TimeoutExpired: pass
+                  err = ''
+                  if p.poll() is not None:
+                      err = p.stderr.read().strip().replace('\n', ' | ')
+                  print(f"::notice title=6 kernel did not report ready::returncode={p.returncode} stderr={err[-700:]}")
+              else:
+                  print(f"::notice title=6 kernel ready::{ready.strip()[:300]}")
               if ready:
                   r1 = ask(p, {'id': 1, 'op': 'execute', 'code': 'import os,sys\nx=2\nprint(x*21)\nos.write(1,b"fd\\n")\nsys.stderr.write("err\\n")'})
                   r2 = ask(p, {'id': 2, 'op': 'execute', 'code': 'x+1'})
@@ -142,6 +157,7 @@ jobs:
         continue-on-error: true
         working-directory: ${{ steps.zip.outputs.src }}
         run: |
+          set +e
           state="$RUNNER_TEMP/state"
           python -m local_lab --port 8794 --state-dir "$state" > service.log 2>&1 &
           pid=$!
@@ -162,6 +178,7 @@ jobs:
         continue-on-error: true
         working-directory: ${{ steps.zip.outputs.src }}
         run: |
+          set +e
           mkdir -p "$RUNNER_TEMP/cws"; echo hi > "$RUNNER_TEMP/cws/note.txt"
           python -m companion --state-dir "$RUNNER_TEMP/cstate" --workspace "$RUNNER_TEMP/cws" --port 8793 > companion.log 2>&1 &
           pid=$!
