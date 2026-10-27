@@ -121,6 +121,17 @@ What the pieces do, and which file implements them:
   status ok its outgoing triggers *fire* (the canvas animates them). A failure,
   interrupt, timeout or dead kernel marks the remaining cells *skipped* and ends
   the run. Cancel interrupts the current cell and skips the rest.
+- **Notebook | Graph** — the same cells in two views. Notebook view stacks
+  them in trigger order (no dragging, no edges); graph view shows what
+  triggers what. Switching never runs anything. Shift+Enter runs the cell you
+  are typing in; Ctrl/Cmd+Enter runs from it onward; the ▶ on Start runs all.
+- Each card shows `In [n]`, a status badge with timing, a **stale** badge when
+  the code changed after its last output (the service stores a hash of the
+  source with each result), and a red **needs: name** line when an input has no
+  producer upstream and is not in the session yet. Code and output collapse
+  independently; **+** adds a cell triggered by this one.
+- **Export Python** writes the cells reachable from Start, in trigger order,
+  as one `.py` with the notes as comments. **Clear outputs** resets counts.
 - Outputs and execution counts are written back into the notebook cells, so
   **Download .ipymb** carries results; **Open** accepts `.ipymb` or a plain
   `.ipynb` (converted into a sequential Start → cells → Finish chain).

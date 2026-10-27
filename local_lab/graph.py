@@ -42,7 +42,7 @@ def new_document():
         'format': 'mainaiger', 'schema_version': SCHEMA_VERSION,
         'notebook': {'nbformat': 4, 'nbformat_minor': 5,
                      'metadata': {'kernelspec': {'name': 'python3', 'display_name': 'Python 3', 'language': 'python'}},
-                     'cells': [{'id': 'cell-1', 'cell_type': 'code', 'metadata': {'mainaiger': {'title': 'First cell'}},
+                     'cells': [{'id': 'cell-1', 'cell_type': 'code', 'metadata': {'mainaiger': {'title': 'Cell 1'}},
                                 'source': 'print("Hello from the graph")', 'execution_count': None, 'outputs': []}]},
         'graph': {'nodes': [{'id': 'start', 'kind': 'start'}, {'id': 'cell-1', 'kind': 'code', 'cell_index': 0},
                             {'id': 'finish', 'kind': 'finish'}],
@@ -404,6 +404,14 @@ def preflight(doc, plan_ids, present_names=()):
             'unresolvable': [m for m in missing if not m['producers']]}
 
 
+def source_hash(text):
+    """32-bit FNV-1a of the source, as 8 hex chars; the browser computes the same to flag stale outputs."""
+    value = 0x811c9dc5
+    for byte in text.encode('utf-8'):
+        value = ((value ^ byte) * 0x01000193) & 0xffffffff
+    return '%08x' % value
+
+
 def record_result(doc, node_id, result):
     """Store a cell's run result in the notebook the way Jupyter would."""
     node = node_by_id(doc, node_id)
@@ -418,4 +426,5 @@ def record_result(doc, node_id, result):
                         'traceback': list(error.get('traceback', []))})
     cell['outputs'] = outputs
     cell.setdefault('metadata', {}).setdefault('mainaiger', {})['last_run'] = {
-        'status': result.get('status'), 'elapsed_ms': result.get('elapsed_ms'), 'count': result.get('count')}
+        'status': result.get('status'), 'elapsed_ms': result.get('elapsed_ms'), 'count': result.get('count'),
+        'source_hash': source_hash(source_text(cell))}

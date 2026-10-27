@@ -6,7 +6,7 @@
   const NODE_W = 320, TERMINAL_W = 132;
   const state = {doc: null, analysis: {}, dataEdges: [], order: [], disconnected: [], revision: 0, run: null,
                  session: {alive: false, executing: false}, csrf: '', selected: null, pan: {x: 40, y: 30}, zoom: 1,
-                 dirty: false, saveTimer: null, pollTimer: null, pendingRun: null, dragging: null, linking: null, panning: null};
+                 dirty: false, saveTimer: null, pollTimer: null, pendingRun: null, dragging: null, linking: null, panning: null, view: 'graph', notebookPos: null, variables: new Set()};
   let toastTimer = null;
   const toast = text => { $('toast').textContent = text; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4000); };
 
@@ -30,7 +30,7 @@
   const cellOf = node => cells()[node.cell_index];
   const meta = cell => { cell.metadata = cell.metadata || {}; cell.metadata.mainaiger = cell.metadata.mainaiger || {}; return cell.metadata.mainaiger; };
   const sourceOf = cell => Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
-  const titleOf = node => node.kind === 'start' ? '▶ Start' : node.kind === 'finish' ? '■ Finish' : (meta(cellOf(node)).title || (node.kind === 'markdown' ? 'Note' : node.id));
+  const titleOf = node => node.kind === 'start' ? 'Start' : node.kind === 'finish' ? 'Finish' : (meta(cellOf(node)).title || (node.kind === 'markdown' ? 'Note' : node.id));
   const widthOf = node => (node.kind === 'start' || node.kind === 'finish') ? TERMINAL_W : NODE_W;
   function freshId(prefix) { let n = 1; const taken = new Set([...nodes().map(x => x.id), ...edges().map(x => x.id), ...cells().map(c => c.id)]); while (taken.has(prefix + n)) n++; return prefix + n; }
   function position(id) { const layout = state.doc.layout.nodes; if (!layout[id]) layout[id] = {x: 60 + Math.random() * 200, y: 60 + Math.random() * 200}; return layout[id]; }
@@ -41,28 +41,39 @@
   }
 
   // ---------------------------------------------------------------- rendering
+  function fnv(text) { let h = 0x811c9dc5; for (const byte of new TextEncoder().encode(text)) { h ^= byte; h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); }
+  function button(cls, act, title, text) { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.dataset.act = act; b.title = title; b.textContent = text; b.setAttribute('aria-label', title); return b; }
+  function missingFor(id) {
+    // Inputs of this cell that no upstream cell produces and that are not in the session yet.
+    const info = state.analysis[id]; if (!info) return [];
+    const fed = new Set(state.dataEdges.filter(e => e.target === id).map(e => e.name));
+    return info.inputs.filter(n => !fed.has(n) && !state.variables.has(n));
+  }
   function buildNodes() {
     const root = $('nodes'); root.textContent = '';
     for (const node of nodes()) {
       const el = document.createElement('article');
       el.className = 'node ' + node.kind + ((node.kind === 'start' || node.kind === 'finish') ? ' terminal' : '');
       el.dataset.id = node.id;
-      if (node.kind !== 'start') { const pin = document.createElement('span'); pin.className = 'port in'; el.append(pin); }
+      if (node.kind !== 'start') { const pin = document.createElement('span'); pin.className = 'port in'; pin.title = 'Trigger input'; el.append(pin); }
       const head = document.createElement('div'); head.className = 'node-head';
-      if (node.kind === 'code') {
-        const count = document.createElement('span'); count.className = 'count'; head.append(count);
-      }
+      if (node.kind === 'code') { const count = document.createElement('span'); count.className = 'count'; count.title = 'Execution count in this session'; head.append(count); }
+      if (node.kind === 'start') head.append(button('node-run primary', 'all', 'Run the whole graph from Start', '▶'));
       const title = document.createElement('b'); head.append(title);
       if (node.kind === 'code') {
-        const status = document.createElement('span'); status.className = 'status'; head.append(status);
-        const one = document.createElement('button'); one.type = 'button'; one.className = 'node-run'; one.dataset.act = 'one'; one.title = 'Run only this cell'; one.textContent = '▶'; head.append(one);
-        const from = document.createElement('button'); from.type = 'button'; from.className = 'node-run'; from.dataset.act = 'from'; from.title = 'Run from this cell onward'; from.textContent = '▶▶'; head.append(from);
+        head.append(button('node-run', 'one', 'Run only this cell (Shift+Enter)', '▶'));
+        head.append(button('node-run', 'from', 'Run from this cell onward (Ctrl+Enter)', '▶▶'));
+        head.append(button('node-toggle', 'code', 'Show or hide code', '{ }'));
+        head.append(button('node-toggle', 'output', 'Show or hide output', '▤'));
+        head.append(button('node-run', 'add', 'Add a cell triggered by this one', '+'));
       }
       el.append(head);
+      if (node.kind === 'code') { const needs = document.createElement('div'); needs.className = 'node-needs'; needs.hidden = true; el.append(needs); }
       if (node.kind === 'code' || node.kind === 'markdown') {
-        const area = document.createElement('textarea'); area.spellcheck = false; area.value = sourceOf(cellOf(node)); area.placeholder = node.kind === 'code' ? '# Python' : 'Write a note…'; area.setAttribute('aria-label', node.kind === 'code' ? 'Python code' : 'Note'); el.append(area);
-        if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); }
+        const area = document.createElement('textarea'); area.spellcheck = false; area.value = sourceOf(cellOf(node)); area.placeholder = node.kind === 'code' ? '# Python — Shift+Enter runs this cell' : 'Write a note…'; area.setAttribute('aria-label', node.kind === 'code' ? 'Python code' : 'Note'); el.append(area);
+        if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); el.append(foot); }
       }
+      if (node.kind === 'finish') { const foot = document.createElement('div'); foot.className = 'finish-note'; el.append(foot); }
       if (node.kind !== 'finish' && node.kind !== 'markdown') { const pout = document.createElement('span'); pout.className = 'port out'; pout.title = 'Drag to another cell to add a trigger'; el.append(pout); }
       root.append(el);
       updateNode(node.id);
@@ -75,23 +86,46 @@
     el.querySelector('.node-head b').textContent = titleOf(node);
     el.classList.toggle('selected', state.selected && state.selected.type === 'node' && state.selected.id === id);
     el.classList.toggle('disconnected', state.disconnected.includes(id));
+    if (node.kind === 'finish') { const r = state.run; el.querySelector('.finish-note').textContent = r && r.finished_at ? `${r.state} · ${Object.values(r.nodes).filter(n => n.status === 'ok').length}/${r.plan.length} ok` : ''; return; }
     if (node.kind !== 'code') return;
-    const cell = cellOf(node), runNode = state.run && state.run.nodes[id];
-    const status = runNode ? runNode.status : (meta(cell).last_run ? meta(cell).last_run.status : null);
+    const cell = cellOf(node), own = meta(cell), runNode = state.run && state.run.nodes[id];
+    const last = own.last_run || null;
+    const status = runNode ? runNode.status : (last ? last.status : null);
+    el.dataset.status = status || '';
     const badge = el.querySelector('.status'); badge.textContent = status || 'not run'; badge.dataset.s = status || '';
-    el.querySelector('.count').textContent = '[' + (cell.execution_count == null ? ' ' : cell.execution_count) + ']';
+    const elapsed = runNode && runNode.elapsed_ms != null ? runNode.elapsed_ms : (last ? last.elapsed_ms : null);
+    el.querySelector('.timing').textContent = elapsed != null && status && status !== 'running' ? elapsed + ' ms' : '';
+    el.querySelector('.count').textContent = 'In [' + (cell.execution_count == null ? ' ' : cell.execution_count) + ']';
+    el.querySelector('.stale').hidden = !(last && last.source_hash && last.source_hash !== fnv(sourceOf(cell)) && !(runNode && runNode.status === 'running'));
+    const needs = missingFor(id), needsEl = el.querySelector('.node-needs'); needsEl.hidden = !needs.length; needsEl.textContent = needs.length ? 'needs: ' + needs.join(', ') : '';
     const out = el.querySelector('.node-output'); let text = '', hasError = false;
     if (runNode && runNode.output !== undefined) { text = runNode.output || ''; if (runNode.error) { text += (text ? '\n' : '') + (runNode.error.traceback || []).join('\n'); hasError = true; } if (runNode.note) text += (text ? '\n' : '') + runNode.note; }
     else for (const o of cell.outputs || []) { if (o.output_type === 'stream') text += Array.isArray(o.text) ? o.text.join('') : o.text; else if (o.output_type === 'error') { text += (o.traceback || []).join('\n'); hasError = true; } }
     out.textContent = text.length > 4000 ? text.slice(0, 4000) + '\n…' : (text || (status === 'running' ? 'Running…' : ''));
     out.classList.toggle('has-error', hasError);
+    const collapsed = own.collapsed || {};
+    el.querySelector('textarea').hidden = !!collapsed.code; out.hidden = !!collapsed.output || (!text && status !== 'running');
+    el.querySelector('.node-toggle[data-act="code"]').classList.toggle('off', !!collapsed.code); el.querySelector('.node-toggle[data-act="output"]').classList.toggle('off', !!collapsed.output);
     const area = el.querySelector('textarea'); if (area && document.activeElement !== area && area.value !== sourceOf(cell)) area.value = sourceOf(cell);
   }
-  function placeNode(id) { const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`), p = position(id); if (el) { el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; } }
-  function box(id) { const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`), p = position(id); return {x: p.x, y: p.y, w: el ? el.offsetWidth : widthOf(nodeById(id)), h: el ? el.offsetHeight : 60}; }
+  function notebookPositions() {
+    // Notebook view: the same cells, stacked in trigger order. Positions are computed, never saved.
+    const out = {}; let y = 30; const x = 40;
+    for (const id of state.order) { const n = nodeById(id); if (!n || n.kind === 'start' || n.kind === 'finish') continue; out[id] = {x, y}; y += box(id).h + 18; }
+    for (const n of nodes()) if (!out[n.id] && n.kind !== 'start' && n.kind !== 'finish') { out[n.id] = {x, y}; y += box(n.id).h + 18; }
+    return out;
+  }
+  function placeNode(id) {
+    const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`); if (!el) return;
+    if (state.view === 'notebook') { const n = nodeById(id); if (n.kind === 'start' || n.kind === 'finish') { el.style.display = 'none'; return; } el.style.display = ''; const p = (state.notebookPos || {})[id] || {x: 40, y: 30}; el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; return; }
+    el.style.display = ''; const p = position(id); el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
+  }
+  function layoutNotebook() { if (state.view !== 'notebook') return; state.notebookPos = {}; nodes().forEach(n => placeNode(n.id)); state.notebookPos = notebookPositions(); nodes().forEach(n => placeNode(n.id)); }
+  function box(id) { const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`), p = (state.view === 'notebook' && state.notebookPos && state.notebookPos[id]) || position(id); return {x: p.x, y: p.y, w: el ? el.offsetWidth : widthOf(nodeById(id)), h: el ? el.offsetHeight : 60}; }
   function curve(a, b) { const dy = Math.max(40, Math.abs(b.y - a.y) / 2); return `M${a.x} ${a.y} C${a.x} ${a.y + dy} ${b.x} ${b.y - dy} ${b.x} ${b.y}`; }
   function drawEdges() {
     const layer = $('edge-layer'); layer.textContent = '';
+    if (state.view === 'notebook') return;
     const fired = new Set(state.run ? state.run.fired : []);
     const svgNS = 'http://www.w3.org/2000/svg';
     for (const edge of edges().filter(e => e.kind === 'control')) {
@@ -135,7 +169,9 @@
     else {
       panel.hidden = false; const cell = cellOf(sel), info = state.analysis[sel.id] || {inputs: [], outputs: []};
       if (document.activeElement !== $('node-title')) $('node-title').value = meta(cell).title || '';
-      chips($('node-inputs'), info.inputs); chips($('node-outputs'), info.outputs);
+      chips($('node-inputs'), info.inputs, new Set(missingFor(sel.id))); chips($('node-outputs'), info.outputs);
+      const by = edges().filter(e => e.kind === 'control' && e.target === sel.id).map(e => titleOf(nodeById(e.source))), to = edges().filter(e => e.kind === 'control' && e.source === sel.id).map(e => titleOf(nodeById(e.target)));
+      $('node-links').textContent = `Triggered by: ${by.length ? by.join(', ') : '— (not connected)'} · Triggers: ${to.length ? to.join(', ') : '—'}`;
       $('node-analysis-note').textContent = info.error ? 'Analysis unavailable: ' + info.error : (info.declared ? 'Declared by you (overrides the automatic reading).' : 'Read automatically from the code; edit below to override.');
       const own = meta(cell); if (document.activeElement !== $('override-inputs')) $('override-inputs').value = (own.inputs || []).join(', '); if (document.activeElement !== $('override-outputs')) $('override-outputs').value = (own.outputs || []).join(', ');
       const r = state.run && state.run.nodes[sel.id]; const last = r || own.last_run;
@@ -164,7 +200,11 @@
     const sel = state.selected && state.selected.type === 'node' ? nodeById(state.selected.id) : null;
     const vp = $('viewport').getBoundingClientRect();
     const base = sel ? position(sel.id) : {x: (vp.width / 2 - state.pan.x) / state.zoom - NODE_W / 2, y: (vp.height / 3 - state.pan.y) / state.zoom};
-    state.doc.layout.nodes[id] = sel ? {x: base.x, y: base.y + box(sel.id).h + 80} : base;
+    const spot = sel ? {x: base.x, y: base.y + box(sel.id).h + 80} : base;
+    // Slide down until the new card does not overlap an existing one in this column.
+    const overlaps = () => nodes().some(n => n.id !== id && state.doc.layout.nodes[n.id] && Math.abs(state.doc.layout.nodes[n.id].x - spot.x) < NODE_W && spot.y < state.doc.layout.nodes[n.id].y + box(n.id).h + 20 && spot.y + 160 > state.doc.layout.nodes[n.id].y);
+    for (let i = 0; i < 40 && overlaps(); i++) spot.y += 60;
+    state.doc.layout.nodes[id] = spot;
     if (kind === 'code' && sel && sel.kind !== 'finish' && sel.kind !== 'markdown') {
       // Insert the new cell into the chain: S -> new, and if S pointed at Finish, new -> Finish instead.
       const finish = nodes().find(n => n.kind === 'finish');
@@ -216,6 +256,7 @@
     const portOut = event.target.closest('.port.out'), head = event.target.closest('.node-head'), nodeEl = event.target.closest('.node'), edgeEl = event.target.closest('path.edge.control');
     if (event.button !== 0) return;
     if (event.target.closest('button')) return;  // header buttons keep their click; no drag, no capture
+    if (state.view === 'notebook') { if (nodeEl) select('node', nodeEl.dataset.id); else if (!edgeEl) select(null); return; }  // notebook view: no dragging or linking
     if (portOut) { const id = nodeEl.dataset.id; state.linking = {source: id}; viewport.classList.add('linking'); viewport.setPointerCapture(event.pointerId); const p = worldPoint(event); $('pending-edge').hidden = false; $('pending-edge').setAttribute('d', curve({x: box(id).x + box(id).w / 2, y: box(id).y + box(id).h}, p)); event.preventDefault(); return; }
     if (head) { const id = nodeEl.dataset.id; select('node', id); const p = worldPoint(event), pos = position(id); state.dragging = {id, dx: p.x - pos.x, dy: p.y - pos.y}; viewport.setPointerCapture(event.pointerId); event.preventDefault(); return; }
     if (nodeEl) { select('node', nodeEl.dataset.id); return; }  // clicks inside textarea/output keep their default behavior
@@ -235,22 +276,51 @@
   viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', endPointer);
   viewport.addEventListener('wheel', event => {
     if (event.target.closest('textarea, .node-output')) return;
-    event.preventDefault(); const factor = Math.exp(-event.deltaY * 0.0015); const zoom = Math.max(0.2, Math.min(2.5, state.zoom * factor));
+    event.preventDefault();
+    if (state.view === 'notebook') { state.pan.y = Math.min(0, state.pan.y - event.deltaY); applyViewport(); return; }
+    const factor = Math.exp(-event.deltaY * 0.0015); const zoom = Math.max(0.2, Math.min(2.5, state.zoom * factor));
     const r = viewport.getBoundingClientRect(), mx = event.clientX - r.left, my = event.clientY - r.top;
     state.pan = {x: mx - (mx - state.pan.x) * (zoom / state.zoom), y: my - (my - state.pan.y) * (zoom / state.zoom)}; state.zoom = zoom; applyViewport();
   }, {passive: false});
   $('nodes').addEventListener('input', event => {
-    const area = event.target.closest('textarea'); if (!area) return; const node = nodeById(area.closest('.node').dataset.id); cellOf(node).source = area.value; markDirty();
+    const area = event.target.closest('textarea'); if (!area) return; const node = nodeById(area.closest('.node').dataset.id); cellOf(node).source = area.value; updateNode(node.id); markDirty();
   });
-  $('nodes').addEventListener('click', event => { const button = event.target.closest('.node-run'); if (!button) return; const id = button.closest('.node').dataset.id; select('node', id); reviewRun(button.dataset.act, [id]); });
+  $('nodes').addEventListener('click', event => {
+    const button = event.target.closest('.node-run, .node-toggle'); if (!button) return; const id = button.closest('.node').dataset.id; const act = button.dataset.act;
+    if (act === 'all') { reviewRun('all', []); return; }
+    if (act === 'add') { select('node', id); addNode('code'); return; }
+    if (button.classList.contains('node-toggle')) { const own = meta(cellOf(nodeById(id))); own.collapsed = own.collapsed || {}; own.collapsed[act] = !own.collapsed[act]; updateNode(id); drawEdges(); layoutNotebook(); markDirty(); return; }
+    select('node', id); reviewRun(act, [id]);
+  });
   document.addEventListener('keydown', event => {
-    const typing = event.target.closest('input, textarea'); if (typing) { if (event.key === 'Escape') event.target.blur(); return; }
+    const typing = event.target.closest('input, textarea');
+    if (typing) {
+      const cellEl = event.target.closest('.node.code');
+      if (cellEl && event.key === 'Enter' && (event.shiftKey || event.ctrlKey || event.metaKey)) { event.preventDefault(); select('node', cellEl.dataset.id); reviewRun(event.shiftKey ? 'one' : 'from', [cellEl.dataset.id]); return; }
+      if (event.key === 'Escape') event.target.blur(); return;
+    }
     if (event.key === 'Delete' || event.key === 'Backspace') { if (state.selected) { event.preventDefault(); deleteSelected(); } }
     if (event.key === 'Escape') select(null);
   });
 
   // ---------------------------------------------------------------- toolbar
   $('add-cell').addEventListener('click', () => addNode('code')); $('add-note').addEventListener('click', () => addNode('markdown'));
+  function setView(view) {
+    state.view = view; document.body.dataset.view = view; $('view-graph').classList.toggle('active', view === 'graph'); $('view-notebook').classList.toggle('active', view === 'notebook');
+    if (view === 'notebook') { state.savedPan = {pan: {...state.pan}, zoom: state.zoom}; state.zoom = 1; state.pan = {x: 0, y: 0}; applyViewport(); layoutNotebook(); }
+    else { if (state.savedPan) { state.pan = state.savedPan.pan; state.zoom = state.savedPan.zoom; } nodes().forEach(n => placeNode(n.id)); applyViewport(); }
+    drawEdges();
+  }
+  $('view-graph').addEventListener('click', () => setView('graph')); $('view-notebook').addEventListener('click', () => setView('notebook'));
+  $('export-py').addEventListener('click', () => {
+    // Export Python: cells reachable from Start, in trigger order. Branches are flattened serially — the same order the Lab runs them.
+    const lines = ['# Exported from MainAIger Lab — cells in trigger order (serial).', '# Notes become comments; outputs are not included.', ''];
+    const reach = new Set(); const stack = [nodes().find(n => n.kind === 'start').id]; while (stack.length) { const c = stack.pop(); if (reach.has(c)) continue; reach.add(c); edges().filter(e => e.kind === 'control' && e.source === c).forEach(e => stack.push(e.target)); }
+    for (const id of state.order) { const n = nodeById(id); if (!n || !reach.has(id)) continue; if (n.kind === 'code') lines.push(`# ---- ${titleOf(n)} (${id}) ----`, sourceOf(cellOf(n)).replace(/\s+$/, ''), ''); else if (n.kind === 'markdown') lines.push(...sourceOf(cellOf(n)).split('\n').map(l => '# ' + l), ''); }
+    const skipped = nodes().filter(n => n.kind === 'code' && !reach.has(n.id)); if (skipped.length) lines.push('# Not reachable from Start (not exported): ' + skipped.map(titleOf).join(', '));
+    const blob = new Blob([lines.join('\n') + '\n'], {type: 'text/x-python'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'graph.py'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  $('clear-outputs').addEventListener('click', () => { for (const c of cells()) if (c.cell_type === 'code') { c.outputs = []; c.execution_count = null; delete meta(c).last_run; } state.run = null; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector(); markDirty(); });
   $('delete').addEventListener('click', deleteSelected); $('arrange').addEventListener('click', arrange); $('fit').addEventListener('click', fit);
   $('show-data').addEventListener('change', drawEdges);
   $('node-title').addEventListener('input', () => { const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return; meta(cellOf(sel)).title = $('node-title').value; updateNode(sel.id); markDirty(); });
@@ -290,7 +360,7 @@
   $('variables-refresh').addEventListener('click', refreshVariables);
   async function refreshVariables() {
     if (!state.session.alive || state.session.executing) return;
-    try { const data = await api('/api/kernel/variables'); const body = $('variables').querySelector('tbody'); body.textContent = ''; for (const v of data.variables || []) { const tr = document.createElement('tr'); for (const k of ['name', 'type', 'summary']) { const td = document.createElement('td'); td.textContent = v[k]; tr.append(td); } body.append(tr); } $('variables').hidden = false; $('variables-note').textContent = (data.variables || []).length ? 'Names defined in this session.' : 'No variables defined yet.'; }
+    try { const data = await api('/api/kernel/variables'); state.variables = new Set((data.variables || []).map(v => v.name)); nodes().forEach(n => updateNode(n.id)); const body = $('variables').querySelector('tbody'); body.textContent = ''; for (const v of data.variables || []) { const tr = document.createElement('tr'); for (const k of ['name', 'type', 'summary']) { const td = document.createElement('td'); td.textContent = v[k]; tr.append(td); } body.append(tr); } $('variables').hidden = false; $('variables-note').textContent = (data.variables || []).length ? 'Names defined in this session.' : 'No variables defined yet.'; }
     catch (error) { $('variables-note').textContent = error.message; }
   }
 
@@ -323,7 +393,7 @@
     try {
       const data = await api('/api/graph/run'); state.run = data.run; state.session = data.session || state.session; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector();
       if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) { state.pollTimer = setTimeout(poll, 500); return; }
-      const view = await api('/api/graph'); const run = state.run; applyView(view); state.run = run; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector(); refreshVariables();
+      const view = await api('/api/graph'); const run = state.run; applyView(view); state.run = run; nodes().forEach(n => updateNode(n.id)); layoutNotebook(); drawEdges(); renderInspector(); refreshVariables();
       toast(state.run ? `Run ${state.run.state}${state.run.error ? ': ' + state.run.error : ''}` : 'Run finished');
       if (state.dirty) save();
     } catch (error) { toast(error.message); }
