@@ -1,0 +1,237 @@
+name: macOS acceptance (download, open, Mainbook)
+
+# Exercises, on GitHub's real macOS virtual machines, the steps a new Mac user
+# takes with the packaged app: download the .dmg, meet Gatekeeper, open the
+# launcher, unlock with the owner key, run the Setup Mainbook's device check,
+# download + verify + open Docker's installer, and quit. Docker Desktop itself
+# is not installed (its install needs interactive prompts and nested
+# virtualisation the runners do not provide), so a session start is expected
+# to be refused here. Each check reports its observed result as an annotation.
+#
+# Runs only on pushes to e2e/macos and on manual dispatch: it downloads a
+# ~600 MB installer from Docker, so it is not attached to every feature push.
+
+on:
+  push:
+    branches: ['e2e/macos']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: Acceptance (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            docker_arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            docker_arch: amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Python 3.13 for the bundled service
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: 1 Build and package the app
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          t0=$SECONDS
+          bash macos/build-dev-app.sh
+          bash macos/package-release.sh "0.1.0-test.${GITHUB_SHA:0:7}"
+          dmg=$(ls dist/*.dmg)
+          pass "1 build+package on $(sw_vers -productVersion) ${{ matrix.arch }}: $(basename "$dmg") $(stat -f%z "$dmg") bytes in $((SECONDS-t0)) s"
+
+      - name: 2 Simulate a browser download (quarantine) and verify checksum
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          mkdir -p "$RUNNER_TEMP/download"
+          cp dist/*.dmg dist/*.sha256 "$RUNNER_TEMP/download/"
+          cd "$RUNNER_TEMP/download"
+          dmg=$(ls *.dmg)
+          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" "$dmg"
+          shasum -a 256 -c ./*.sha256
+          echo "DMG=$RUNNER_TEMP/download/$dmg" >> "$GITHUB_ENV"
+          pass "2 download: $dmg quarantine='$(xattr -p com.apple.quarantine "$dmg")' sha256 matches .sha256 file"
+
+      - name: 3 Mount the disk image and copy the app to Applications
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$DMG" > /dev/null
+          ls "$mount"
+          test -d "$mount/MainAIger Lab.app"
+          test -L "$mount/Applications"
+          rm -rf "$APP"
+          cp -R "$mount/MainAIger Lab.app" /Applications/
+          hdiutil detach "$mount" > /dev/null
+          q=$(xattr -p com.apple.quarantine "$APP" 2>/dev/null || echo "(none)")
+          qs=$(xattr -p com.apple.quarantine "$APP/Contents/Resources/mainaiger-lab-service/mainaiger-lab-service" 2>/dev/null || echo "(none)")
+          pass "3 mount+copy: app copied to /Applications; quarantine on app='$q' on service binary='$qs'"
+
+      - name: 4 Gatekeeper verdict and signature validity
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          set +e
+          verdict=$(spctl --assess --type execute --verbose=4 "$APP" 2>&1); rc=$?
+          set -e
+          verdict=$(printf '%s' "$verdict" | tr '\n' ' ')
+          codesign --verify --strict --verbose=2 "$APP"
+          sig=$(codesign -dv "$APP" 2>&1 | grep -E '^(Signature|Authority|TeamIdentifier|Identifier)=' | tr '\n' ' ')
+          if [ "$rc" -eq 0 ]; then
+            info "4 gatekeeper: spctl ACCEPTED (unexpected for an ad-hoc signed app) verdict='$verdict' | $sig"
+          else
+            pass "4 gatekeeper: spctl rejected as documented (rc=$rc) verdict='$verdict' | codesign --verify --strict: valid | $sig"
+          fi
+
+      - name: 5 Simulate Privacy & Security → Open Anyway
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          xattr -dr com.apple.quarantine "$APP" || true
+          left=$(xattr -lr "$APP" 2>/dev/null | grep -c com.apple.quarantine || true)
+          info "5 open-anyway: quarantine removed recursively (approximates the Open Anyway exception); remaining quarantine attrs=$left"
+
+      - name: 6 Launch the app and wait for the local service
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          how=open
+          open "$APP" || how=open-failed
+          for i in $(seq 1 60); do lab_up && break; sleep 1; done
+          if ! lab_up; then
+            how=direct
+            nohup "$APP/Contents/MacOS/MainAIgerLab" > "$RUNNER_TEMP/launcher.log" 2>&1 &
+            for i in $(seq 1 60); do lab_up && break; sleep 1; done
+          fi
+          lab_up || fail "6 launch: the service never answered on 127.0.0.1:8794 (launch method tried: $how)"
+          procs=$(pgrep -fl 'MainAIgerLab|mainaiger-lab-service' | sed 's/ \/Applications.*//' | tr '\n' ';')
+          browser=$(pgrep -l 'Safari|Google Chrome|Firefox' | tr '\n' ';' || true)
+          page=$(curl -sS -H "Host: 127.0.0.1:8794" "$BASE/" | grep -o 'Unlock your local Lab' | head -1)
+          pass "6 launch: service answering (launched via $how); processes=[$procs] browser=[${browser:-none}] page='$page'"
+
+      - name: 7 Owner key file and local sign-in
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          test -f "$STATE_DIR/owner.key"
+          fmode=$(stat -f%Lp "$STATE_DIR/owner.key"); dmode=$(stat -f%Lp "$STATE_DIR")
+          [ "$fmode" = 600 ] && [ "$dmode" = 700 ] || fail "7 owner key modes wrong: file=$fmode dir=$dmode"
+          key=$(cat "$STATE_DIR/owner.key"); echo "::add-mask::$key"
+          body=$(api POST /api/login "{\"key\":\"$key\"}")
+          [ "$(code)" = 200 ] || fail "7 login returned HTTP $(code): $body"
+          csrf=$(field csrf <<< "$body"); echo "::add-mask::$csrf"; echo "CSRF=$csrf" >> "$GITHUB_ENV"
+          wrong=$(api POST /api/login '{"key":"not-the-key"}'); wrong_code=$(code)
+          pass "7 owner key: file mode $fmode in dir mode $dmode (length $(wc -c < "$STATE_DIR/owner.key" | tr -d ' ') bytes); login HTTP 200 with cookie+csrf; wrong key HTTP $wrong_code"
+
+      - name: 8 Mainbook cell 1 — Run check (GET /api/setup)
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          body=$(api GET /api/setup)
+          [ "$(code)" = 200 ] || fail "8 /api/setup HTTP $(code): $body"
+          url=$(field installer_url <<< "$body")
+          expected="https://desktop.docker.com/mac/main/${{ matrix.docker_arch }}/244472/Docker.dmg"
+          [ "$url" = "$expected" ] || fail "8 installer_url '$url' != '$expected'"
+          free=$(field free_bytes <<< "$body")
+          pass "8 run-check: device=$(field device <<< "$body") system=$(field system <<< "$body") arch=$(field architecture <<< "$body") free=$((free/1073741824)) GiB docker_ready=$(field docker_ready <<< "$body") msg='$(field docker_message <<< "$body")' image_ready=$(field image_ready <<< "$body") installer=$(field installer_version <<< "$body") url OK installed=$(field installer_installed <<< "$body")"
+
+      - name: 9 Mainbook cell 2 — download and verify Docker installer (live)
+        id: download
+        continue-on-error: true
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          t0=$SECONDS
+          body=$(api POST /api/setup/installer/download '{"confirm":true}')
+          [ "$(code)" = 202 ] || fail "9 download start HTTP $(code): $body"
+          samples=""; last=""
+          for i in $(seq 1 360); do
+            job=$(api GET /api/setup/job)
+            running=$(field running <<< "$job"); phase=$(field phase <<< "$job"); bytes=$(field bytes <<< "$job"); total=$(field total <<< "$job")
+            cur="$phase ${bytes}/${total}"
+            if [ $((i % 12)) -eq 1 ]; then samples="$samples[$((SECONDS-t0))s $cur] "; fi
+            [ "$running" = False ] && break
+            sleep 5
+          done
+          result=$(field result <<< "$job")
+          ok=$(field result.ok <<< "$job"); out=$(field result.output <<< "$job")
+          size=$(stat -f%z "$STATE_DIR/installers/Docker.dmg" 2>/dev/null || echo 0)
+          part=$(ls "$STATE_DIR/installers/" | tr '\n' ' ')
+          if [ "$ok" = True ]; then
+            pass "9 docker-download: ok in $((SECONDS-t0)) s; staged Docker.dmg=$size bytes; result='$out'; progress: $samples"
+          else
+            fail "9 docker-download: FAILED after $((SECONDS-t0)) s; phase=$phase result='$out'; installers dir=[$part]; progress: $samples"
+          fi
+
+      - name: 10 Mainbook cell 2b — re-verify and open the installer
+        id: open_installer
+        continue-on-error: true
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          [ "${{ steps.download.outcome }}" = success ] || { unverified "10 open-installer: skipped because the download/verification step did not succeed"; exit 0; }
+          t0=$SECONDS
+          body=$(api POST /api/setup/installer/open '{"confirm":true}')
+          [ "$(code)" = 202 ] || fail "10 open start HTTP $(code): $body"
+          for i in $(seq 1 120); do job=$(api GET /api/setup/job); [ "$(field running <<< "$job")" = False ] && break; sleep 3; done
+          ok=$(field result.ok <<< "$job"); out=$(field result.output <<< "$job")
+          [ "$ok" = True ] || fail "10 open-installer: result not ok after $((SECONDS-t0)) s: '$out'"
+          vol=""
+          for i in $(seq 1 60); do vol=$(hdiutil info | grep -E '^\s*/dev/disk.*\s/Volumes/Docker' | awk '{print $NF}' | head -1); [ -n "$vol" ] && break; sleep 1; done
+          if [ -n "$vol" ]; then
+            contents=$(ls "$vol" | tr '\n' ' ')
+            hdiutil detach "$vol" -force > /dev/null || true
+            pass "10 open-installer: ok in $((SECONDS-t0)) s; '$out'; installer volume mounted at $vol containing [$contents]; detached"
+          else
+            info "10 open-installer: service reported ok ('$out') but no /Volumes/Docker mount was observed within 60 s (DiskImageMounter may need the GUI session)"
+          fi
+
+      - name: 11 Session start is refused without Docker Desktop
+        continue-on-error: true
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          state=$(api GET /api/state)
+          [ "$(code)" = 200 ] || fail "11 /api/state HTTP $(code)"
+          rev=$(field revision <<< "$state"); avail=$(field docker_available <<< "$state")
+          last=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["session_command"][-1])' <<< "$state")
+          [ "$last" = "/opt/mainaiger/kernel.py" ] || fail "11 session_command does not end with the kernel: $last"
+          body=$(api POST /api/kernel/start "{\"confirm\":true,\"revision\":$rev}")
+          msg=$(field error <<< "$body" 2>/dev/null || echo "$body")
+          [ "$(code)" = 409 ] || fail "11 kernel start returned HTTP $(code) (expected 409): $body"
+          pass "11 session-refused: docker_available=$avail; POST /api/kernel/start → HTTP 409 '$msg'; session_command ends with /opt/mainaiger/kernel.py"
+
+      - name: 12 Quit the launcher and confirm the service stopped
+        if: always()
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          if ! pgrep -x MainAIgerLab > /dev/null; then info "12 quit: launcher was not running"; exit 0; fi
+          how=osascript
+          osascript -e 'tell application "MainAIger Lab" to quit' 2>&1 || how=osascript-failed
+          for i in $(seq 1 10); do pgrep -x MainAIgerLab > /dev/null || break; sleep 1; done
+          if pgrep -x MainAIgerLab > /dev/null; then how="$how+SIGTERM-launcher"; pkill -TERM -x MainAIgerLab || true; sleep 5; fi
+          svc=$(pgrep -fl mainaiger-lab-service | tr '\n' ';' || true)
+          if [ -n "$svc" ]; then
+            pkill -TERM -f mainaiger-lab-service || true; sleep 3
+            fail "12 quit ($how): launcher gone but the service was still running [$svc]; killed it manually"
+          fi
+          if lab_up; then fail "12 quit ($how): port 8794 still answers"; fi
+          test -f "$STATE_DIR/owner.key" || fail "12 quit: owner.key vanished"
+          dmg=$(stat -f%z "$STATE_DIR/installers/Docker.dmg" 2>/dev/null || echo "absent")
+          pass "12 quit ($how): launcher and service exited within 10 s, port closed; owner.key kept; staged Docker.dmg=$dmg"
+
+      - name: 13 Summary
+        if: always()
+        run: |
+          source .github/scripts/acceptance-lib.sh
+          cat "$RESULTS" || true
+          summary=$(awk '{printf "%s %s | ", $1, $2}' "$RESULTS")
+          echo "::notice::SUMMARY ${{ matrix.arch }}: $summary"
+          if grep -q '^FAIL' "$RESULTS"; then echo "::error::One or more checks failed on ${{ matrix.arch }}"; exit 1; fi
