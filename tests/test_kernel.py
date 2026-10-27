@@ -138,6 +138,14 @@ class KernelSessionFailureTests(unittest.TestCase):
             session.start(timeout=5)
         self.assertIn('exited', session.ended)
 
+    def test_launcher_stderr_is_reported_when_the_kernel_never_starts(self):
+        # The docker client explains refused mounts or a stopped engine on stderr.
+        session = KernelSession([sys.executable, '-c', 'import sys; sys.stderr.write("docker: Error response from daemon: mounts denied\\n"); sys.exit(125)'])
+        with self.assertRaises(KernelError) as caught:
+            session.start(timeout=5)
+        self.assertIn('mounts denied', session.ended)
+        self.assertIn('mounts denied', str(caught.exception))
+
 
 class DockerSessionCommandTests(unittest.TestCase):
     def test_session_container_keeps_limits_and_mounts_kernel_read_only(self):

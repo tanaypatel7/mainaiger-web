@@ -49,6 +49,8 @@ class KernelSession:
         self.count = 0
         self.ended = None          # human-readable reason the session ended, if it did
         self.reader = None
+        self.stderr_reader = None
+        self.stderr_tail = b''
 
     # ---- process lifetime --------------------------------------------------
     def start(self, timeout=START_TIMEOUT):
@@ -56,8 +58,11 @@ class KernelSession:
             raise KernelError('Session already started')
         kwargs = {'env': self.env} if self.env is not None else {}
         self.proc = self._popen(self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, shell=False, **kwargs)
+                                stderr=subprocess.PIPE, shell=False, **kwargs)
         self.alive = True
+        self.stderr_tail = b''
+        self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.stderr_reader.start()
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
         message = self._next_message(timeout)
@@ -101,9 +106,10 @@ class KernelSession:
                 self.proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            for stream in (self.proc.stdin, self.proc.stdout):
+            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
                 try:
-                    stream.close()
+                    if stream is not None:
+                        stream.close()
                 except (OSError, ValueError):
                     pass
         if self.reader is not None and self.reader is not threading.current_thread():
@@ -216,8 +222,37 @@ class KernelSession:
         except (OSError, ValueError):
             pass
         self.alive = False
-        self.ended = self.ended or 'The kernel process exited.'
+        if self.stderr_reader is not None:
+            self.stderr_reader.join(timeout=2)
+        self.ended = self.ended or self._exit_reason()
         self.replies.put(None)
+
+    def _read_stderr(self):
+        """Keep the tail of what the kernel launcher (e.g. the docker client) prints.
+
+        It is the only place Docker explains a refused mount, a missing image or a
+        stopped engine, so it is shown to the owner when the session ends early.
+        """
+        stream = self.proc.stderr
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = stream.read1(4096) if hasattr(stream, 'read1') else stream.read(4096)
+                if not chunk:
+                    break
+                self.stderr_tail = (self.stderr_tail + chunk)[-4096:]
+        except (OSError, ValueError):
+            pass
+
+    def _exit_reason(self):
+        text = self.stderr_tail.decode('utf-8', 'replace')
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if not lines:
+            return 'The kernel process exited.'
+        detail = ' | '.join(lines[-3:])
+        detail = ''.join(c if c.isprintable() else ' ' for c in detail)[:400]
+        return 'The kernel process exited: ' + detail
 
     def _next_message(self, timeout):
         try:
