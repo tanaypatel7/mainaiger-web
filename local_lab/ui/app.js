@@ -47,5 +47,6 @@
     finally{running=false;$('save-settings').disabled=false;if(version===generation)$('review').disabled=!dockerAvailable||configuring;}
   });
   window.addEventListener('pagehide',()=>{locked();});
+  window.addEventListener('mainaiger:refresh-state',()=>{if(csrf)showState().catch(()=>{});});
   showState().catch(()=>{});
 })();

@@ -59,8 +59,6 @@ def preview(settings):
 def execute(code, settings, popen=subprocess.Popen, run=subprocess.run, find=shutil.which):
     if not isinstance(code, str) or not code.strip() or len(code.encode('utf-8')) > MAX_CODE:
         raise ValueError('Enter Python code up to 20 KB')
-    if not find('docker'):
-        return {'output': '', 'exit_code': None, 'error': 'Docker was not found. Install and start Docker Desktop first.'}
     env = None
     if sys.platform == 'darwin':
         from .setup import _env, _local_docker
@@ -68,6 +66,8 @@ def execute(code, settings, popen=subprocess.Popen, run=subprocess.run, find=shu
         if not docker:
             return {'output': '', 'exit_code': None, 'error': message}
         env = _env()
+    elif not find('docker'):
+        return {'output': '', 'exit_code': None, 'error': 'Docker was not found. Install and start Docker Desktop first.'}
     name = 'mainaiger-lab-'+secrets.token_hex(12)
     args = command(settings, name)
     if env is not None: args[0] = docker

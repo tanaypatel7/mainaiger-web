@@ -8,6 +8,7 @@ import os
 import secrets
 import shutil
 import stat
+import sys
 import threading
 import time
 from urllib.parse import urlsplit
@@ -50,7 +51,28 @@ class LabServer(ThreadingHTTPServer):
         self.state_dir=Path(state);self.key=key;self.executor=executor
         self.settings={'workspace':None,'cpus':'0.5','memory':'256m'}
         self.sessions={};self.failures=[];self.running=False;self.setup_running=False;self.revision=0;self.lock=threading.RLock();self.slots=threading.BoundedSemaphore(16)
+        self.setup_job={'running':False,'action':None,'phase':'idle','bytes':0,'total':None,'result':None}
         super().__init__(address,LabHandler)
+    def start_setup_job(self, action):
+        with self.lock:
+            if self.setup_running:return False
+            self.setup_running=True
+            self.setup_job={'running':True,'action':action,'phase':'starting','bytes':0,'total':None,'result':None}
+        def progress(data):
+            with self.lock:
+                for key in ('phase','bytes','total'):
+                    if key in data:self.setup_job[key]=data[key]
+        def worker():
+            try:
+                if action=='download': result=lab_setup.download_installer(self.state_dir,progress)
+                else: result=lab_setup.open_installer(self.state_dir)
+            except Exception:
+                result={'ok':False,'output':'The setup action failed. Check the installer and try again.'}
+            with self.lock:
+                self.setup_job.update(running=False,phase='done' if result.get('ok') else 'failed',result=result)
+                self.setup_running=False
+        threading.Thread(target=worker,daemon=True).start()
+        return True
     def process_request(self,request,client_address):
         if not self.slots.acquire(blocking=False):return self.shutdown_request(request)
         try:super().process_request(request,client_address)
@@ -102,10 +124,15 @@ class LabHandler(BaseHTTPRequestHandler):
             session=self.session()
             if not session:return self.out(401,{'error':'Local owner sign-in required'})
             with self.server.lock: settings=dict(self.server.settings);revision=self.server.revision
-            return self.out(200,{'csrf':session['csrf'],'workspace':settings['workspace'],'limits':{'cpus':settings['cpus'],'memory':settings['memory']},'docker_available':bool(shutil.which('docker')),'command':preview(settings),'revision':revision})
+            available=bool(lab_setup._find_docker()) if sys.platform=='darwin' else bool(shutil.which('docker'))
+            return self.out(200,{'csrf':session['csrf'],'workspace':settings['workspace'],'limits':{'cpus':settings['cpus'],'memory':settings['memory']},'docker_available':available,'command':preview(settings),'revision':revision})
         if path=='/api/setup':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
-            return self.out(200,lab_setup.status())
+            return self.out(200,lab_setup.status(self.server.state_dir))
+        if path=='/api/setup/job':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            with self.server.lock: job=dict(self.server.setup_job)
+            return self.out(200,job)
         self.out(404,{'error':'Not found'})
     def do_POST(self):
         if not self.host_ok() or not self.origin_ok():return self.out(403,{'error':'Local same-origin request required'})
@@ -135,6 +162,11 @@ class LabHandler(BaseHTTPRequestHandler):
                 finally:
                     with self.server.lock:self.server.setup_running=False
                 return self.out(200,result)
+            if path in ('/api/setup/installer/download','/api/setup/installer/open'):
+                if data != {'confirm': True} or type(data.get('confirm')) is not bool:raise ValueError('Explicit confirmation is required')
+                action='download' if path.endswith('/download') else 'open'
+                if not self.server.start_setup_job(action):return self.out(409,{'error':'A setup action is already running'})
+                return self.out(202,{'ok':True})
             if path=='/api/settings':
                 settings=validate_settings(data,self.server.state_dir)
                 with self.server.lock:self.server.settings=settings;self.server.revision+=1

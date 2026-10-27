@@ -3,12 +3,21 @@ import tempfile
 import threading
 import http.client
 import json
+import io
+import hashlib
 from local_lab.server import LabServer, initialize_state
 from unittest.mock import patch
 from pathlib import Path
 from local_lab import setup
 
 class SetupTest(unittest.TestCase):
+    def test_docker_executable_checks_user_cli_outside_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); cli=root/'.docker/bin/docker';cli.parent.mkdir(parents=True)
+            cli.write_text('');cli.chmod(0o700)
+            with patch.object(setup.Path, 'home', return_value=root), patch.object(setup.shutil, 'which', return_value=None):
+                self.assertEqual(setup._find_docker(), str(cli))
+
     def test_remote_context_fails_closed(self):
         with patch.object(setup.shutil, 'which', return_value='/usr/local/bin/docker'), patch.object(setup.platform, 'system', return_value='Darwin'), patch.object(setup, '_run', return_value=(0, 'tcp://192.0.2.1:2375')) as run:
             docker, message = setup._local_docker()
@@ -36,6 +45,58 @@ class SetupTest(unittest.TestCase):
         self.assertNotIn('DOCKER_HOST', env)
         self.assertNotIn('DOCKER_CONTEXT', env)
         self.assertNotIn('DOCKER_API_VERSION', env)
+
+    def test_unapproved_redirect_is_rejected(self):
+        handler=setup._DockerRedirect()
+        with self.assertRaises(ValueError):
+            handler.redirect_request(None, None, 302, '', {}, 'https://evil.example/Docker.dmg')
+
+    def test_download_checks_hash_and_signature_and_cleans_partial(self):
+        payload=b'test installer'; digest=hashlib.sha256(payload).hexdigest()
+        class Response(io.BytesIO):
+            headers={'Content-Length': str(len(payload))}
+        class Opener:
+            def open(self, url, timeout): return Response(payload)
+        with tempfile.TemporaryDirectory() as temp, patch.object(setup, '_installed', return_value=False), \
+             patch.object(setup, '_installer_spec', return_value=('https://desktop.docker.com/test', digest)), \
+             patch.object(setup.urllib.request, 'build_opener', return_value=Opener()), \
+             patch.object(setup, '_verify_signature', return_value=(False,'bad signature')):
+            root=Path(temp); root.chmod(0o700)
+            result=setup.download_installer(root)
+            self.assertFalse(result['ok'])
+            self.assertEqual(list((root/'installers').iterdir()), [])
+            with patch.object(setup, '_verify_signature', return_value=(True,'verified')):
+                events=[]
+                self.assertTrue(setup.download_installer(root,events.append)['ok'])
+                self.assertEqual((root/'installers'/'Docker.dmg').read_bytes(),payload)
+                self.assertEqual(events[-1]['phase'],'verifying')
+
+    def test_modified_installer_is_never_opened(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(setup, '_installed', return_value=False), \
+             patch.object(setup, '_installer_spec', return_value=('https://desktop.docker.com/test', '0'*64)), \
+             patch.object(setup, '_run') as run:
+            root=Path(temp); root.chmod(0o700)
+            stage=setup._staging(root);(stage/'Docker.dmg').write_bytes(b'modified')
+            self.assertFalse(setup.open_installer(root)['ok'])
+            run.assert_not_called()
+
+    def test_open_rechecks_signature_before_opening(self):
+        payload=b'verified installer'; digest=hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as temp, patch.object(setup, '_installed', return_value=False), \
+             patch.object(setup, '_installer_spec', return_value=('https://desktop.docker.com/test', digest)), \
+             patch.object(setup, '_verify_signature', return_value=(True,'verified')) as verify, \
+             patch.object(setup, '_run', return_value=(0,'')) as run:
+            root=Path(temp); root.chmod(0o700)
+            stage=setup._staging(root); dmg=stage/'Docker.dmg';dmg.write_bytes(payload)
+            self.assertTrue(setup.open_installer(root)['ok'])
+            verify.assert_called_once_with(dmg, stage)
+            run.assert_called_once_with(['/usr/bin/open', str(dmg)], timeout=30)
+
+    def test_existing_app_never_downloaded_or_opened(self):
+        with patch.object(setup, '_installed', return_value=True), patch.object(setup.urllib.request, 'build_opener') as opener, patch.object(setup, '_run') as run:
+            self.assertFalse(setup.download_installer('/unused')['ok'])
+            self.assertFalse(setup.open_installer('/unused')['ok'])
+            opener.assert_not_called();run.assert_not_called()
 
 class SetupHttpTests(unittest.TestCase):
     def setUp(self):
