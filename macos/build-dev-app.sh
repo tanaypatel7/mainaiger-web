@@ -6,6 +6,11 @@ if [[ "$(uname -s)" != Darwin ]]; then
   exit 1
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
+arch=$(uname -m)
+case "$arch" in
+  arm64|x86_64) ;;
+  *) echo "Unsupported Mac architecture: $arch" >&2; exit 1 ;;
+esac
 build="$root/build/macos-dev"
 app="$build/MainAIger Lab.app"
 mkdir -p "$build"
@@ -19,7 +24,8 @@ python3 -m venv "$build/venv"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 rm -rf "$app/Contents/Resources/mainaiger-lab-service"
 cp -R "$build/dist/mainaiger-lab-service" "$app/Contents/Resources/"
-xcrun swiftc -O "$root/macos/Launcher.swift" -o "$app/Contents/MacOS/MainAIgerLab"
+# Set the launcher's minimum explicitly; compiler defaults can exceed the host OS.
+xcrun swiftc -target "${arch}-apple-macosx12.0" -O "$root/macos/Launcher.swift" -o "$app/Contents/MacOS/MainAIgerLab"
 cp "$root/macos/Info.plist" "$app/Contents/Info.plist"
 echo "Developer build created: $app"
 echo 'This build is unsigned and has not been notarized or tested as a release.'
