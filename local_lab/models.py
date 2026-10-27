@@ -201,7 +201,7 @@ def _verify_ollama(dmg, stage):
                     identity = ' | '.join(l.strip() for l in details.splitlines() if l.strip().startswith(('Authority=', 'TeamIdentifier=', 'Identifier=')))
                     message = ('Ollama.app signature or signing identity verification failed (expected Team ID %s, bundle %s). ' % (OLLAMA_TEAM_ID, OLLAMA_BUNDLE_ID)) + (identity or output[:300])[:400]
                 else:
-                    code, assess = lab_setup._run(['/usr/bin/spctl', '--assess', '--type', 'execute', str(app)], timeout=120)
+                    code, assess = lab_setup._run(['/usr/sbin/spctl', '--assess', '--type', 'execute', str(app)], timeout=120)
                     if code != 0:
                         message = 'Gatekeeper did not accept Ollama.app (notarization check failed). ' + assess[:300]
                     else:

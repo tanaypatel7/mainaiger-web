@@ -131,7 +131,7 @@ class InstallerTests(unittest.TestCase):
             seen.append(args)
             if args[0] == '/usr/bin/hdiutil': return outputs['hdiutil'] if args[1] == 'attach' else (0, '')
             if args[0] == '/usr/bin/codesign': return outputs['codesign-dv'] if args[1] == '-dv' else outputs['codesign-verify']
-            if args[0] == '/usr/bin/spctl': return outputs['spctl']
+            if args[0] == '/usr/sbin/spctl': return outputs['spctl']
             return (1, 'unexpected')
         with tempfile.TemporaryDirectory() as temp, patch.object(models.lab_setup, '_run', side_effect=run):
             stage = Path(temp)
