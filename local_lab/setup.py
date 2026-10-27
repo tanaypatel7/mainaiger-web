@@ -31,7 +31,25 @@ def _installer_spec():
     return f'https://desktop.docker.com/mac/main/{arch}/{INSTALLER_BUILD}/Docker.dmg', digest
 
 def _installed():
-    return any(p.exists() for p in (Path('/Applications/Docker.app'), Path.home()/'Applications/Docker.app'))
+    return _docker_app() is not None
+
+def _docker_app():
+    for p in (Path('/Applications/Docker.app'), Path.home()/'Applications/Docker.app'):
+        if p.exists():
+            return p
+    return None
+
+def open_docker():
+    """Launch the installed Docker Desktop app (the owner still answers Docker's own prompts)."""
+    app = _docker_app()
+    if app is None:
+        return {'ok': False, 'output': 'Docker Desktop is not installed yet. Download and open the installer first.'}
+    if platform.system() != 'Darwin':
+        return {'ok': False, 'output': 'Opening Docker Desktop automatically is supported on macOS only.'}
+    code, output = _run(['/usr/bin/open', '-a', str(app)], timeout=30)
+    if code != 0:
+        return {'ok': False, 'output': 'Docker Desktop could not be opened. ' + output[:300]}
+    return {'ok': True, 'output': 'Docker Desktop is starting. Accept its terms if asked; the Lab keeps checking until the engine is ready.'}
 
 def _find_docker():
     # Docker Desktop defaults to a user-level CLI link outside many GUI app PATHs.

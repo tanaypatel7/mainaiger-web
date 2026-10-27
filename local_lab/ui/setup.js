@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  let busy = false, latest = null, selected = null, pollTimer = null;
+  let busy = false, latest = null, selected = null, pollTimer = null, watchTimer = null, watchStarted = 0, checkedOnce = false, pullOffered = false;
   async function json(path, options = {}) {
     const response = await fetch(path, {credentials: 'same-origin', cache: 'no-store', redirect: 'error', ...options});
     let data = {};
@@ -18,6 +18,27 @@
     $('setup-download').disabled = busy || !latest || latest.system !== 'Darwin' || !latest.installer_url || !!latest.installer_installed;
     $('setup-open').disabled = busy || !latest || !latest.installer_ready || !!latest.installer_installed;
     $('setup-pull').disabled = busy || !latest || !latest.docker_ready;
+    $('setup-open-docker').disabled = busy || !latest || !latest.installer_installed || !!latest.docker_ready;
+  }
+  // Keep checking Docker's engine after the installer or the app was opened, then move on by itself.
+  function watch(reason) {
+    clearTimeout(watchTimer); watchStarted = Date.now();
+    const tick = async () => {
+      if (busy) { watchTimer = setTimeout(tick, 3000); return; }
+      try { await check(); } catch { }
+      const waited = Math.round((Date.now() - watchStarted) / 1000);
+      if (latest && latest.docker_ready) { $('setup-watch-note').textContent = 'Docker engine ready.'; advance(); return; }
+      if (waited > 900) { $('setup-watch-note').textContent = 'Stopped waiting after 15 minutes. Start Docker Desktop and select Check Docker again.'; return; }
+      $('setup-watch-note').textContent = `${reason} Checking again in 5 s (${waited} s so far)…`;
+      watchTimer = setTimeout(tick, 5000);
+    };
+    tick();
+  }
+  function advance() {
+    if (!latest || !latest.docker_ready) return;
+    if (!latest.image_ready) { if (!pullOffered) { pullOffered = true; $('setup-pull').scrollIntoView({behavior: 'smooth', block: 'center'}); review('pull'); } return; }
+    const start = document.getElementById('session-start');
+    if (start) { start.scrollIntoView({behavior: 'smooth', block: 'center'}); start.focus(); }
   }
   async function check() {
     state('setup-check-state', 'Checking');
@@ -62,9 +83,10 @@
     const descriptions = {
       download: `Download Docker Desktop ${latest && latest.installer_version || ''} from ${source}. This uses your network and disk space. The installer will be verified before it can be opened.`,
       open: 'Verify the downloaded Docker installer again and open it on this Mac. Follow Docker and macOS prompts, review any requested permissions and accept Docker terms yourself.',
-      pull: 'Download python:3.13.18-slim using your local Docker Desktop. This uses network and disk space. The image tag is not digest-verified.'
+      pull: 'Download python:3.13.18-slim using your local Docker Desktop. This uses network and disk space. The image tag is not digest-verified.',
+      'open-docker': 'Open the installed Docker Desktop app on this Mac (the command is: open -a Docker). Docker may ask you to accept its terms or for your password; MainAIger does not answer for you. The Lab then keeps checking until the engine is ready.'
     };
-    $('setup-review-title').textContent = type === 'download' ? 'Review Docker download' : type === 'open' ? 'Open Docker installer' : 'Review Python image download';
+    $('setup-review-title').textContent = type === 'download' ? 'Review Docker download' : type === 'open' ? 'Open Docker installer' : type === 'open-docker' ? 'Open Docker Desktop' : 'Review Python image download';
     $('setup-review-description').textContent = descriptions[type];
     $('setup-review-dialog').showModal(); $('setup-review-cancel').focus();
   }
@@ -98,7 +120,7 @@
         await check();
         $('setup-install-output').textContent = result.output || (result.ok ? 'Installer is ready.' : 'Installer download failed.');
         if (!result.ok) state('setup-install-state', 'Failed', 'failed');
-        else if (job.action === 'open') state('setup-install-state', 'User action needed');
+        else if (job.action === 'open') { state('setup-install-state', 'User action needed'); watch('Finish Docker\'s installer, then open Docker Desktop (button above) or let it start.'); }
       }
       controls();
     } catch (error) {
@@ -112,6 +134,10 @@
   $('setup-download').addEventListener('click', () => { if (!busy && latest) review('download'); });
   $('setup-open').addEventListener('click', () => { if (!busy && latest) review('open'); });
   $('setup-pull').addEventListener('click', () => { if (!busy && latest) review('pull'); });
+  $('setup-open-docker').addEventListener('click', () => { if (!busy && latest) review('open-docker'); });
+  // Run the device check as soon as the Lab is unlocked, so the Mainbook fills in without a click.
+  window.addEventListener('mainaiger:state', () => { if (!checkedOnce) { checkedOnce = true; doCheck().then(() => { if (latest && latest.docker_ready) advance(); }); } });
+  window.addEventListener('mainaiger:locked', () => { checkedOnce = false; pullOffered = false; clearTimeout(watchTimer); });
   $('setup-review-cancel').addEventListener('click', () => $('setup-review-dialog').close());
   $('setup-review-dialog').addEventListener('close', () => { selected = null; });
   $('setup-review-confirm').addEventListener('click', async () => {
@@ -133,13 +159,18 @@
         await post('/api/setup/installer/open');
         await poll();
         return;
+      } else if (action === 'open-docker') {
+        state('setup-ready-state', 'Starting');
+        const result = await post('/api/setup/docker/open');
+        $('setup-ready-output').textContent = result.output || '';
+        if (!result.ok) state('setup-ready-state', 'Failed', 'failed'); else watch('Docker Desktop is starting.');
       } else {
         state('setup-pull-state', 'Downloading');
         $('setup-pull-output').textContent = 'Downloading the image… Docker does not provide progress in this preview.';
         const result = await post('/api/setup/pull');
         await check();
         $('setup-pull-output').textContent = result.output || (result.ok ? 'Download completed.' : 'Download failed.');
-        if (!result.ok) state('setup-pull-state', 'Failed', 'failed');
+        if (!result.ok) state('setup-pull-state', 'Failed', 'failed'); else { busy = false; controls(); advance(); return; }
       }
     } catch (error) {
       if (action === 'pull') { state('setup-pull-state', 'Failed', 'failed'); $('setup-pull-output').textContent = error.message; }
@@ -147,5 +178,5 @@
     }
     busy = false; controls();
   });
-  window.addEventListener('pagehide', () => { if (pollTimer) clearTimeout(pollTimer); });
+  window.addEventListener('pagehide', () => { if (pollTimer) clearTimeout(pollTimer); if (watchTimer) clearTimeout(watchTimer); });
 })();

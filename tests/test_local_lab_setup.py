@@ -195,3 +195,28 @@ class DownloadTrustTests(unittest.TestCase):
         https=[h for h in captured['handlers'] if isinstance(h, setup.urllib.request.HTTPSHandler)]
         self.assertEqual(len(https),1)
         self.assertEqual(https[0]._context.verify_mode, setup.ssl.CERT_REQUIRED)
+
+
+class OpenDockerTests(unittest.TestCase):
+    def test_open_docker_is_a_fixed_open_command(self):
+        with patch.object(setup, '_docker_app', return_value=Path('/Applications/Docker.app')), patch.object(setup.platform, 'system', return_value='Darwin'), \
+             patch.object(setup, '_run', return_value=(0, '')) as run:
+            self.assertTrue(setup.open_docker()['ok'])
+            run.assert_called_once_with(['/usr/bin/open', '-a', '/Applications/Docker.app'], timeout=30)
+    def test_open_docker_refuses_when_not_installed(self):
+        with patch.object(setup, '_docker_app', return_value=None), patch.object(setup, '_run') as run:
+            self.assertFalse(setup.open_docker()['ok']); run.assert_not_called()
+
+
+class OpenDockerHttpTests(SetupHttpTests):
+    def test_owner_csrf_and_explicit_approval(self):
+        pass  # inherited fixture only
+    def test_open_docker_route_requires_approval(self):
+        with patch('local_lab.server.lab_setup.open_docker', return_value={'ok': True, 'output': 'starting'}) as opened:
+            self.assertEqual(self.req('/api/setup/docker/open', {'confirm': True}, {'Origin': self.origin})[0], 403)
+            auth = self.login()
+            self.assertEqual(self.req('/api/setup/docker/open', {}, auth)[0], 400)
+            self.assertEqual(self.req('/api/setup/docker/open', {'confirm': True, 'app': '/evil'}, auth)[0], 400)
+            opened.assert_not_called()
+            status, data, _ = self.req('/api/setup/docker/open', {'confirm': True}, auth)
+            self.assertEqual((status, data['ok']), (200, True)); opened.assert_called_once_with()

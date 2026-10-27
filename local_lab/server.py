@@ -254,6 +254,9 @@ class LabHandler(BaseHTTPRequestHandler):
             if path=='/api/logout':
                 with self.server.lock:self.server.sessions={k:v for k,v in self.server.sessions.items() if v is not session}
                 return self.out(200,{'ok':True},cookie='mainaiger_lab_owner=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+            if path=='/api/setup/docker/open':
+                if data != {'confirm': True} or type(data.get('confirm')) is not bool:raise ValueError('Explicit confirmation is required')
+                return self.out(200,lab_setup.open_docker())
             if path=='/api/setup/pull':
                 if data != {'confirm': True} or type(data.get('confirm')) is not bool:raise ValueError('Explicit confirmation is required')
                 with self.server.lock:
