@@ -44,10 +44,14 @@ class ConditionError(Exception):
 
 
 class GraphRun:
-    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None, on_edge=None):
+    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None, on_edge=None, bindings=None, reason=None):
         self.id = 'run-' + secrets.token_hex(4)
         self.document, self.plan, self.kernel, self.mode = document, list(plan_ids), kernel, mode
         self.on_result = on_result
+        # bindings: variables an event binds in the active session before the first cell (local_lab/events.py);
+        # reason: why this run started ("fired by timer"), shown in the snapshot and the journal.
+        self.bindings = dict(bindings) if bindings else None
+        self.reason = reason
         # kernel_for(label) returns the session a cell named (metadata.mainaiger.session), or the
         # active one for None; it raises KernelError when that session is missing or dead.
         self.kernel_for = kernel_for
@@ -325,8 +329,26 @@ class GraphRun:
             return next((ident for ident in self.plan if self.nodes[ident].get('status') == 'pending'), None)
 
     # ---- the engine -----------------------------------------------------
+    def _bind_event(self):
+        """An event's payload becomes variables in the active session, like a form in front of the graph."""
+        kernel = self.kernel_for(None) if self.kernel_for else self.kernel
+        if kernel is None:
+            raise KernelError('No session to bind the event in')
+        code = ''.join('%s = __import__("json").loads(%r)\n' % (name, json.dumps(value, ensure_ascii=False)) for name, value in self.bindings.items() if graph_module.NAME.match(name))
+        result = kernel.execute(code)
+        if result.get('status') != 'ok':
+            raise KernelError('The event could not be bound in the session: %s' % ((result.get('error') or {}).get('evalue') or result.get('status')))
+
     def _run(self):
         try:
+            if self.bindings:
+                try:
+                    self._bind_event()
+                except KernelError as error:
+                    self._skip_pending('skipped')
+                    self.state = 'failed'
+                    self.error = str(error)
+                    return
             if self.mode == 'all':
                 self._fire_from(self.start_id)
             while True:
@@ -404,4 +426,5 @@ class GraphRun:
             edges = {ident: dict(value) for ident, value in self.edges.items()}
         return {'id': self.id, 'mode': self.mode, 'state': self.state, 'plan': list(self.plan), 'current': self.current,
                 'nodes': nodes, 'fired': fired, 'edges': edges, 'steps': self.steps, 'started_at': self.started_at, 'finished_at': self.finished_at,
-                'error': self.error, 'cancel_requested': self.cancel_requested}
+                'error': self.error, 'cancel_requested': self.cancel_requested, 'reason': self.reason,
+                'event': (self.bindings or {}).get('event')}

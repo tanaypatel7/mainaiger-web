@@ -47,7 +47,14 @@ operation a fixed, visible, approved step) without an explicit decision.
 only trigger is "the previous cell finished" inside one approved run. Phase A
 makes triggers a first-class, general thing without changing how cells execute.
 
-### A1. Event triggers: Start from the outside
+### A1. Event triggers: Start from the outside — **built (28 Oct 2026)**
+
+*As built:* sources live on the Start node (`events`: timer, file, chat,
+manual) instead of extra node kinds; the owner arms the Mainbook in a review
+dialog; a firing is one "Run all" with the event bound in the active session;
+arming does not survive a restart (the recommendation below, taken); the
+first event built was chat, with timer, file and manual in the same step. See
+`docs/LOCAL_LAB_SETUP.md` "Start events". The original design follows.
 
 *What:* a Mainbook can have Start nodes of kind `event` with a source: **manual**
 (today), **chat prompt sent** (the Models page), **timer** (every N minutes while

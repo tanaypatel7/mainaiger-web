@@ -24,11 +24,12 @@ from . import files as lab_files
 from . import decide as lab_decide
 from . import network as lab_network
 from . import codemap as lab_codemap
+from . import events as lab_events
 from .journal import Journal
 from .sessions import SessionRegistry
 from .devices import DeviceManager, DeviceError
 from . import remote as lab_remote
-from .graph_run import GraphRun
+from .graph_run import GraphRun, MAX_STEPS
 
 ASSETS=Path(__file__).parent/'ui'
 EXAMPLES=Path(__file__).resolve().parent.parent/'examples'
@@ -91,6 +92,9 @@ class LabServer(ThreadingHTTPServer):
         self.env_build=None;self.image_ready=lab_environment.image_ready
         super().__init__(address,LabHandler)
         self.devices=DeviceManager(state,local_port=self.server_port,journal=self.journal)
+        # Event triggers: a timer, a changed file, a chat prompt or "Fire now" may start a run once the owner arms the Mainbook.
+        self.events=lab_events.EventRegistry(start_run=lambda bindings,reason:self.start_graph_run('all',[],False,bindings=bindings,reason=reason),journal=self.journal,
+                                             running=self.graph_running,workspace=lambda:self.settings.get('workspace'))
     @property
     def kernel(self):
         """The active session's kernel (or None). Routes that predate multiple sessions use this."""
@@ -119,7 +123,9 @@ class LabServer(ThreadingHTTPServer):
         with self.graph_lock:
             if self.graph_running():raise graph_module.GraphError('A graph run is in progress; cancel it before editing')
             self.graph_doc=doc;self.graph_revision+=1
-            return self.graph_view()
+            view=self.graph_view()
+        self.events.graph_changed(graph_module.fingerprint(doc))  # an edit to cells, arrows or sources disarms
+        return view
     def graph_plan(self,mode,nodes,include_prerequisites=False):
         with self.graph_lock:
             doc=self.graph_doc
@@ -147,7 +153,7 @@ class LabServer(ThreadingHTTPServer):
             check['conditions']=[{'id':e['id'],'source':e['source'],'target':e['target'],'source_title':title(e['source']),'target_title':title(e['target']),'when':e['when']} for e in graph_module.forward_edges(doc) if e.get('when') and (e['source'] in chosen or (mode=='all' and e['source']==start))]
             check['session_alive']=bool(kernel is not None and kernel.alive) if needs_active else not check['missing_sessions']
             return plan,check
-    def start_graph_run(self,mode,nodes,include_prerequisites):
+    def start_graph_run(self,mode,nodes,include_prerequisites,bindings=None,reason=None):
         kernel=self.kernel
         with self.graph_lock:
             if self.graph_running():raise KernelError('A graph run is already in progress')
@@ -173,8 +179,8 @@ class LabServer(ThreadingHTTPServer):
                 elif edge.get('loop'):text='Loop %s %s (%d/%d)%s'%(who,{'fired':'fired: running the body again','not_fired':'not taken','exhausted':'budget spent','blocked':'leads outside this run'}.get(state,state),info.get('fires',0),info.get('max_fires',0),(' · when %s → %s'%(edge['when'],info.get('value'))) if edge.get('when') else '')
                 else:text='Arrow %s %s · when %s → %s'%(who,'fired' if state=='fired' else 'not fired',edge.get('when'),info.get('value'))
                 self.journal.write('arrow.'+(state or 'decided'),text,{'edge':edge['id'],'source':edge['source'],'target':edge['target'],'state':state,'fires':info.get('fires'),'max_fires':info.get('max_fires'),'when':edge.get('when'),'value':info.get('value')})
-            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model,on_edge=arrow).start()
-            self.journal.write('run.start','Run %s approved: %d cell%s'%(mode,len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan})
+            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model,on_edge=arrow,bindings=bindings,reason=reason).start()
+            self.journal.write('run.start','Run %s %s: %d cell%s'%(mode,reason or 'approved',len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan,'reason':reason})
             return self.graph_run.snapshot()
     def ask_model(self,cfg,prompt):
         """How a model cell asks the local model: schema -> one checked decision (decide.ask); no schema -> plain chat."""
@@ -219,6 +225,7 @@ class LabServer(ThreadingHTTPServer):
             return status if status is not None else self.kernel_status()
     def server_close(self):
         try:
+            self.events.close()
             self.kernels.stop_all()
             self.devices.close()
         finally: super().server_close()
@@ -330,6 +337,14 @@ class LabHandler(BaseHTTPRequestHandler):
             return self.out(200,{'sessions':self.server.kernels.list(),'active':self.server.kernels.active_id,'max':__import__('local_lab.sessions',fromlist=['MAX_SESSIONS']).MAX_SESSIONS,
                                  'defaults':{'cpus':settings['cpus'],'memory':settings['memory'],'workspace':settings['workspace']},'revision':revision,
                                  'environment':{'image':env['image'],'derived':env['derived'],'ready':env['ready']},'options':{'cpus':sorted(CPUS,key=float),'memory':sorted(MEMORY,key=lambda m:int(m[:-1])*(1024 if m.endswith('g') else 1))}})
+        if path=='/api/events':
+            # What may fire this Mainbook, whether it is armed, and the recent firings.
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            with self.server.graph_lock:doc=self.server.graph_doc;sources=graph_module.start_events(doc);title=doc['notebook'].get('metadata',{}).get('mainaiger',{}).get('title') or doc['notebook'].get('metadata',{}).get('mainaiger',{}).get('name') or ''
+            status=self.server.events.status();ws=self.server.settings.get('workspace')
+            status['document']={'sources':[dict(s,description=lab_events.describe(s,ws)) for s in sources],'title':title,'fingerprint':graph_module.fingerprint(doc),'workspace':ws,'revision':self.server.graph_revision}
+            status['limits']={'queue':lab_events.QUEUE_MAX,'timer_min':lab_events.TIMER_MIN,'timer_max':lab_events.TIMER_MAX,'poll':lab_events.FILE_POLL,'max_steps':MAX_STEPS}
+            return self.out(200,status)
         if path=='/api/journal':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             q=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query)
@@ -471,6 +486,9 @@ class LabHandler(BaseHTTPRequestHandler):
             if path=='/api/models/chat':
                 if set(data)!={'model','messages'}:raise ValueError('Send {model, messages}')
                 result=lab_models.chat(data['model'],data['messages'])
+                # An armed Mainbook with a chat source is fired by the prompt too (the chat still answers as usual).
+                if self.server.events.has_source('chat') and isinstance(data['messages'],list) and data['messages'] and isinstance(data['messages'][-1],dict) and isinstance(data['messages'][-1].get('content'),str):
+                    result['event']=self.server.events.fire('chat',{'prompt':data['messages'][-1]['content'],'model':data['model']},origin='chat')
                 return self.out(200 if result.get('ok') else 409,result)
             if path=='/api/models/decide':
                 # Thin slice: one question, a JSON answer constrained and checked against a small schema (local_lab/decide.py).
@@ -705,6 +723,24 @@ class LabHandler(BaseHTTPRequestHandler):
                 run=self.server.graph_run
                 if run is None or not self.server.graph_running():return self.out(409,{'error':'No graph run is in progress'})
                 run.cancel();return self.out(200,{'run':run.snapshot()})
+            if path=='/api/events/arm':
+                # The reviewed step: the owner saw exactly what may fire this Mainbook (the dialog lists /api/events descriptions).
+                if set(data)!={'confirm','revision'} or data['confirm'] is not True or type(data['revision']) is not int:raise ValueError('Review what may fire the Mainbook, then confirm')
+                with self.server.graph_lock:
+                    if data['revision']!=self.server.graph_revision:return self.out(409,{'error':'The Mainbook changed after review; look again and arm it then'})
+                    doc=self.server.graph_doc;sources=graph_module.start_events(doc);fp=graph_module.fingerprint(doc)
+                    title=doc['notebook'].get('metadata',{}).get('mainaiger',{}).get('title') or doc['notebook'].get('metadata',{}).get('mainaiger',{}).get('name') or 'the Mainbook'
+                try:return self.out(200,self.server.events.arm(sources,fp,title))
+                except lab_events.EventError as e:return self.out(409,{'error':str(e)})
+            if path=='/api/events/disarm':
+                return self.out(200,self.server.events.disarm())
+            if path=='/api/events/fire':
+                # "Fire now": the owner's own click (or a script of theirs) fires an armed Mainbook with a small payload.
+                if set(data)-{'kind','payload','confirm'} or data.get('confirm') is not True:raise ValueError('Confirm the firing')
+                kind=data.get('kind','manual');payload=data.get('payload',{})
+                if kind not in lab_events.EVENT_KINDS or not isinstance(payload,dict) or len(json.dumps(payload))>20000:raise ValueError('Send {kind, payload (a small object), confirm}')
+                outcome=self.server.events.fire(kind,payload,origin='owner')
+                return self.out(200 if outcome in ('queued','coalesced') else 409,{'outcome':outcome,'events':self.server.events.status()})
             if path=='/api/run':
                 if set(data)!={'code','confirm','revision'} or data['confirm'] is not True or type(data['revision']) is not int:raise ValueError('Explicit confirmation is required')
                 with self.server.lock:

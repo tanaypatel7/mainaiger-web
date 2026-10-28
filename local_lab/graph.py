@@ -253,6 +253,17 @@ def validate(document):
             used_cells.add(index)
         else:
             _require('cell_index' not in node, 'Start and finish nodes have no cell')
+            if kind == 'start' and 'events' in node:
+                # What may fire this Mainbook from the outside once the owner arms it (local_lab/events.py).
+                from . import events as events_module
+                try:
+                    sources = events_module.check_sources(node['events'])
+                except events_module.EventError as error:
+                    raise GraphError('Start events: %s' % error) from None
+                if sources:
+                    node['events'] = sources
+                else:
+                    del node['events']
     _require(sum(1 for k in kinds.values() if k == 'start') == 1, 'Exactly one start node is required')
     _require(sum(1 for k in kinds.values() if k == 'finish') == 1, 'Exactly one finish node is required')
     edge_ids, seen = set(), set()
@@ -516,6 +527,21 @@ def reachable(doc, roots, downstream=True):
 
 def code_nodes(doc):
     return [n['id'] for n in doc['graph']['nodes'] if n['kind'] == 'code']
+
+
+def start_events(doc):
+    """The event sources on the Start node (what may fire this Mainbook once armed)."""
+    start = next(n for n in doc['graph']['nodes'] if n['kind'] == 'start')
+    return list(start.get('events') or [])
+
+
+def fingerprint(doc):
+    """A hash of what a run depends on: cell sources and settings, nodes and edges. Layout, outputs and
+    counts are left out, so moving a card or running does not count as a change."""
+    import json
+    cells = [{'t': c.get('cell_type'), 's': source_text(c), 'm': {k: v for k, v in (c.get('metadata', {}).get('mainaiger', {}) or {}).items() if k != 'last_run'}} for c in doc['notebook']['cells']]
+    graph = {'nodes': doc['graph']['nodes'], 'edges': doc['graph']['edges']}
+    return source_hash(json.dumps([cells, graph], sort_keys=True, default=str))
 
 
 def plan(doc, mode, selected=()):

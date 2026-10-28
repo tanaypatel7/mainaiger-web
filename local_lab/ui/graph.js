@@ -98,18 +98,21 @@
         if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); const sess = document.createElement('span'); sess.className = 'node-session'; sess.title = 'Session this cell runs on'; foot.append(sess); const mdl = document.createElement('span'); mdl.className = 'node-model'; mdl.title = 'This cell asks a model; its text is the prompt'; foot.append(mdl); el.append(foot); }
       }
       if (node.kind === 'finish') { const foot = document.createElement('div'); foot.className = 'finish-note'; el.append(foot); }
+      if (node.kind === 'start') { const note = document.createElement('div'); note.className = 'start-note'; note.title = 'What may start this Mainbook while armed'; el.append(note); }
       if (node.kind !== 'finish' && node.kind !== 'markdown') { const pout = document.createElement('span'); pout.className = 'port out'; pout.title = 'Drag to another cell to add a trigger'; el.append(pout); }
       root.append(el); nodeEls.set(node.id, el); sizeObserver.observe(el, {box: 'border-box'});
       updateNode(node.id);
       placeNode(node.id);
     }
     drawEdges();
+    renderEventSources();
   }
   function updateNode(id) {
     const node = nodeById(id), el = elOf(id); if (!node || !el) return;
     el.querySelector('.node-head b').textContent = titleOf(node);
     el.classList.toggle('selected', state.selected && state.selected.type === 'node' && state.selected.id === id);
     el.classList.toggle('disconnected', state.disconnected.includes(id));
+    if (node.kind === 'start') { const a = state.events && state.events.armed; el.querySelector('.start-note').textContent = a ? '\u26a1 armed: ' + state.events.sources.map(eventShort).join(', ') : ''; return; }
     if (node.kind === 'finish') { const r = state.run; const idle = r ? Object.values(r.nodes).filter(n => n.status === 'idle').length : 0; el.querySelector('.finish-note').textContent = r && r.finished_at ? `${r.state} · ${Object.values(r.nodes).filter(n => n.status === 'ok').length}/${r.plan.length} ok${idle ? ` · ${idle} idle` : ''}${r.steps > r.plan.length ? ` · ${r.steps} steps` : ''}` : ''; return; }
     if (node.kind !== 'code') return;
     const cell = cellOf(node), own = meta(cell), runNode = state.run && state.run.nodes[id];
@@ -1050,13 +1053,73 @@
     } catch (error) { toast(error.message); }
   }
 
+  // ---------------------------------------------------------------- start events (local_lab/events.py)
+  const startNode = () => nodes().find(n => n.kind === 'start');
+  const eventShort = s => s.kind === 'timer' ? `every ${s.every} s` : s.kind === 'file' ? `file ${s.path || '(workspace)'}` : s.kind === 'chat' ? 'chat prompt' : 'Fire now';
+  const eventLong = s => s.kind === 'timer' ? `Timer: every ${s.every} s` : s.kind === 'file' ? `File changed: ${s.path || '(whole workspace)'}` : s.kind === 'chat' ? 'Chat prompt sent on the Models page' : 'The Fire now button';
+  function renderEventSources() {
+    const list = $('events-list'); list.textContent = '';
+    for (const [i, s] of (startNode().events || []).entries()) {
+      const li = document.createElement('li'); const text = document.createElement('span'); text.textContent = eventLong(s); li.append(text);
+      const rm = document.createElement('button'); rm.type = 'button'; rm.className = 'quiet small'; rm.textContent = 'Remove'; rm.title = 'Remove this source';
+      rm.addEventListener('click', () => { startNode().events.splice(i, 1); if (!startNode().events.length) delete startNode().events; renderEventSources(); markDirty(); save().then(refreshEvents); }); li.append(rm); list.append(li);
+    }
+    $('event-arg').hidden = !['timer', 'file'].includes($('event-kind').value); $('event-arg').placeholder = $('event-kind').value === 'timer' ? 'seconds (10–86400)' : 'data/inbox (relative to the workspace)';
+  }
+  $('event-kind').addEventListener('change', renderEventSources);
+  $('event-add').addEventListener('click', () => {
+    const kind = $('event-kind').value, arg = $('event-arg').value.trim(); const src = {kind};
+    if (kind === 'timer') { const n = parseInt(arg, 10); if (!(n >= 10 && n <= 86400)) { toast('A timer needs a whole number of seconds from 10 to 86400.'); return; } src.every = n; }
+    if (kind === 'file') { if (!arg || arg.startsWith('/') || arg.split('/').includes('..')) { toast('Give a path inside the workspace, like data/inbox.'); return; } src.path = arg.replace(/^\.\//, '').replace(/\/+$/, ''); }
+    const start = startNode(); start.events = start.events || [];
+    if (start.events.some(e => JSON.stringify(e) === JSON.stringify(src))) { toast('That source is already listed.'); return; }
+    if (start.events.length >= 8) { toast('At most 8 sources.'); return; }
+    start.events.push(src); $('event-arg').value = ''; renderEventSources(); markDirty(); save().then(refreshEvents);
+  });
+  async function refreshEvents() {
+    let data; try { data = await api('/api/events'); } catch { return; }
+    state.events = data; const st = $('events-state');
+    const sources = (startNode().events || []);
+    if (data.armed) { st.textContent = `Armed: ${data.sources.map(eventShort).join(', ')} · fired ${data.fired} time${data.fired === 1 ? '' : 's'}${data.queue ? ` · ${data.queue} waiting` : ''}${data.dropped ? ` · ${data.dropped} dropped` : ''}`; st.dataset.state = 'armed'; }
+    else { st.textContent = sources.length ? 'Not armed. Review and arm to let these sources start runs.' : 'Not armed: nothing starts this Mainbook from the outside. Add a source below.'; st.dataset.state = ''; }
+    $('events-arm').hidden = data.armed; $('events-arm').disabled = !sources.length; $('events-disarm').hidden = !data.armed; $('events-fire').hidden = !data.armed;
+    const recent = (data.recent || []).slice(0, 4).map(r => `${new Date(r.at * 1000).toLocaleTimeString()} ${r.kind}: ${r.outcome}`);
+    $('events-recent').textContent = recent.length ? 'Recent: ' + recent.join(' · ') : '';
+    const start = startNode(); if (start) updateNode(start.id);
+  }
+  $('events-arm').addEventListener('click', async () => {
+    if (state.dirty) { clearTimeout(state.saveTimer); await save(); if (state.dirty) return; }
+    let data; try { data = await api('/api/events'); } catch (error) { toast(error.message); return; }
+    const list = $('events-dialog-list'); list.textContent = '';
+    for (const s of data.document.sources) { const li = document.createElement('li'); li.textContent = s.description; list.append(li); }
+    $('events-dialog-budget').textContent = `Each firing is one run: at most ${data.limits.max_steps} cell executions, one run at a time, at most ${data.limits.queue} waiting. ${data.document.workspace ? 'Workspace: ' + data.document.workspace + '.' : 'No workspace is set: file sources cannot be armed.'}`;
+    state.pendingArm = data.document.revision; $('events-dialog').showModal(); $('events-dialog-cancel').focus();
+  });
+  $('events-dialog-cancel').addEventListener('click', () => $('events-dialog').close());
+  $('events-dialog-confirm').addEventListener('click', async () => {
+    $('events-dialog').close();
+    try { await api('/api/events/arm', {confirm: true, revision: state.pendingArm}); toast('Armed. Fired runs appear on the canvas and in the Log.'); } catch (error) { toast(error.message); }
+    refreshEvents(); refreshJournal();
+  });
+  $('events-disarm').addEventListener('click', async () => { try { await api('/api/events/disarm', {}); } catch (error) { toast(error.message); } refreshEvents(); refreshJournal(); });
+  $('events-fire').addEventListener('click', async () => {
+    try { const r = await api('/api/events/fire', {kind: 'manual', payload: {}, confirm: true}); toast(r.outcome === 'queued' ? 'Fired: the run starts in a moment.' : 'Not started: ' + r.outcome); }
+    catch (error) { toast(error.message); }
+    setTimeout(watchForRuns, 800); refreshEvents();
+  });
+  async function watchForRuns() {
+    // A run started by an event (not by a click here) must show up on the canvas like any other.
+    if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) return;
+    try { const data = await api('/api/graph/run'); if (data.run && (!state.run || data.run.id !== state.run.id)) { applyRunSnapshot(data.run); nodes().forEach(n => updateNode(n.id)); renderInspector(); if (data.run.state === 'running' || data.run.state === 'pending') poll(); else refreshJournal(); } } catch {}
+  }
+
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); refreshModels(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); refreshModels(); renderEventSources(); refreshEvents(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });
   // Keep the session pill truthful when the session is started or stopped from another tab or page.
-  setInterval(async () => { if (document.hidden || (state.run && (state.run.state === 'running' || state.run.state === 'pending'))) return; try { const s = await api('/api/kernel'); const was = state.session.alive; state.session = s; if (was !== s.alive) { renderInspector(); if (s.alive) refreshVariables(); } else renderInspector(); } catch {} refreshSessions(); refreshJournal(); }, 5000);
+  setInterval(async () => { if (document.hidden || (state.run && (state.run.state === 'running' || state.run.state === 'pending'))) return; try { const s = await api('/api/kernel'); const was = state.session.alive; state.session = s; if (was !== s.alive) { renderInspector(); if (s.alive) refreshVariables(); } else renderInspector(); } catch {} refreshSessions(); refreshJournal(); refreshEvents(); watchForRuns(); }, 5000);
   boot();
 })();

@@ -413,6 +413,53 @@ class LoopArrowPanelTests(RealServerCase):
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class StartEventsPanelTests(RealServerCase):
+    """Sources on Start, the arm review, Fire now, and a fired run showing up on the canvas; a cell edit disarms."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sys
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+
+    def test_add_sources_arm_fire_and_disarm_on_edit(self):
+        p = self.page
+        self.assertTrue(p.locator('#events-arm').is_disabled(), 'nothing to arm yet')
+        p.locator('.node[data-id="cell-1"] textarea').fill('print("fired by", event["kind"], "at", round(event["at"]) > 0)')
+        p.select_option('#event-kind', 'timer'); p.fill('#event-arg', '5'); p.click('#event-add'); p.wait_for_function("() => document.getElementById('toast').textContent.includes('10 to 86400')")
+        p.fill('#event-arg', '600'); p.click('#event-add'); p.wait_for_function("() => document.querySelectorAll('#events-list li').length === 1")
+        p.select_option('#event-kind', 'manual'); self.assertTrue(p.locator('#event-arg').is_hidden()); p.click('#event-add'); p.wait_for_function("() => document.querySelectorAll('#events-list li').length === 2")
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('#events-list li span')].map(e => e.textContent)"), ['Timer: every 600 s', 'The Fire now button'])
+        p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        self.assertEqual(self.server.graph_doc['graph']['nodes'][0]['events'], [{'kind': 'timer', 'every': 600}, {'kind': 'manual'}])
+        p.wait_for_function("() => !document.getElementById('events-arm').disabled")
+        # Arm: the dialog says exactly what may fire the Mainbook and the budget.
+        p.click('#events-arm'); p.wait_for_selector('#events-dialog[open]')
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('#events-dialog-list li')].map(e => e.textContent)"), ['Every 10 min while armed (bound as now)', 'When you press Fire now (payload bound as event)'])
+        self.assertIn('at most 500 cell executions', p.inner_text('#events-dialog-budget')); p.click('#events-dialog-confirm')
+        p.wait_for_function("() => document.getElementById('events-state').textContent.startsWith('Armed: every 600 s, Fire now')")
+        self.assertEqual(p.inner_text('.node.start .start-note'), '\u26a1 armed: every 600 s, Fire now'); self.assertFalse(p.locator('#events-fire').is_hidden())
+        # Fire now without a session: dropped and said so; with a session: the run appears on the canvas.
+        p.click('#events-fire'); p.wait_for_function("() => document.getElementById('events-recent').textContent.includes('dropped: Start a session')")
+        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm'); p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.click('#events-fire'); p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-1\"] .node-output').textContent.includes('fired by manual at True')", timeout=15000)
+        p.wait_for_function("() => document.getElementById('run-summary').textContent.includes('finished')")
+        p.wait_for_function("() => document.getElementById('events-state').textContent.includes('fired 1 time')")
+        kinds = p.evaluate("() => [...document.querySelectorAll('#log-list li')].map(li => li.dataset.kind)"); self.assertIn('event.fired', kinds); self.assertIn('events.arm', kinds)
+        # Editing a cell disarms by itself; the panel and the Start card say so.
+        p.locator('.node[data-id="cell-1"] textarea').fill('print("edited")'); p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        p.wait_for_function("() => document.getElementById('events-state').textContent.startsWith('Not armed')", timeout=10000)
+        self.assertEqual(p.inner_text('.node.start .start-note'), ''); self.assertFalse(self.server.events.status()['armed'])
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
 class FormCellPanelTests(RealServerCase):
     """A form on a card: define fields in the inspector, fill them on the card, run with those values."""
     @classmethod

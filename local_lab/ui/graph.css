@@ -80,6 +80,9 @@ button.small{padding:6px 12px;font-size:13px}
 .node-foot .status{font-size:10.5px}.node-foot .timing{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.node-foot .stale{margin-left:auto;border:1px solid var(--warn);color:var(--warn);border-radius:99px;padding:1px 7px;font-size:10px}
 .node-output{border-radius:0}
 .finish-note{font-size:11px;color:var(--muted);padding:0 10px 8px}
+.start-note{font-size:11px;color:var(--ok);padding:0 10px 8px;text-align:center}.start-note:empty{display:none}
+.events-list{list-style:none;margin:6px 0;padding:0;font-size:12px}.events-list li{display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)}.events-list li span{flex:1}.events-list li button{flex:none}
+.events-list:empty+.lib-toolbar{margin-top:0}
 body[data-view="notebook"] .viewport{background-image:none;cursor:default}body[data-view="notebook"] .node.code{width:720px;--node-w:720px}body[data-view="notebook"] .node.markdown{width:720px}body[data-view="notebook"] .port{display:none}body[data-view="notebook"] .legend{display:none}body[data-view="notebook"] .node-head{cursor:default}
 
 .quiet-select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:13px;width:auto}.import-warnings{font-size:13px;padding-left:18px;max-height:40vh;overflow:auto}.import-warnings li{margin:3px 0}.import-warnings .kind{font-size:10px;letter-spacing:.08em;font-weight:700;color:var(--warn);margin-right:6px}

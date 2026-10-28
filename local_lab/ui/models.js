@@ -122,7 +122,7 @@
   $('chat-send').addEventListener('click', async () => {
     const model = $('chat-model').value, content = $('chat-prompt').value.trim(); if (!model || !content) return;
     busy = true; controls(); $('chat-output').textContent = 'Waiting for the local model…'; $('chat-note').textContent = '';
-    try { const r = await api('/api/models/chat', {model, messages: [{role: 'user', content}]}); $('chat-output').textContent = r.reply; $('chat-note').textContent = `${r.model} · ${r.elapsed_ms} ms` + (r.tokens && r.tokens.reply ? ` · ${r.tokens.reply} tokens` : ''); state('chat-state', 'Answered', 'success'); }
+    try { const r = await api('/api/models/chat', {model, messages: [{role: 'user', content}]}); $('chat-output').textContent = r.reply; $('chat-note').textContent = `${r.model} · ${r.elapsed_ms} ms` + (r.tokens && r.tokens.reply ? ` · ${r.tokens.reply} tokens` : '') + (r.event === 'queued' ? ' · this prompt also started the armed Mainbook (see the Graph page)' : r.event ? ` · the armed Mainbook was not started: ${r.event}` : ''); state('chat-state', 'Answered', 'success'); }
     catch (e) { $('chat-output').textContent = e.message; state('chat-state', 'Failed', 'failed'); }
     finally { busy = false; controls(); }
   });

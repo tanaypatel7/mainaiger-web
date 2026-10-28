@@ -387,6 +387,48 @@ budget, running it and an untaken branch are tested in headless Chromium
 (`LoopArrowPanelTests`). Not yet: a loop arrow from a cell to itself, nested
 graphs, event triggers (timer, file change, chat prompt: A1 in the roadmap).
 
+### Start events: a Mainbook fired from the outside (`local_lab/events.py`, `/api/events*`)
+
+Until now a Mainbook ran when you clicked Run. The **START EVENTS** panel lets
+the outside world start it instead, once you have armed it:
+
+- **Sources** live on the Start node (`graph.nodes[start].events`, saved with
+  the Mainbook): a **timer** (every N seconds, 10–86400), a **file** (a path
+  inside the read-only workspace; anything added, changed or removed under it,
+  checked every 2 s), a **chat** prompt (sent on the Models page; the chat
+  still answers as usual) and **manual** (the Fire now button). The Start card
+  shows what is armed.
+- **Arming is a reviewed step**: *Arm…* opens a dialog that lists, in plain
+  sentences, exactly what may fire the Mainbook and the budget (one run per
+  firing, at most 500 cell executions, one run at a time, at most 10 waiting).
+  Arming is not saved: it lasts until you disarm, until the cells, arrows or
+  sources change (moving cards does not count), or until the Lab stops. A
+  restarted Lab has nothing armed. Events never arm anything.
+- **A firing is one ordinary run** of the whole graph, the same path as "Run
+  all", with the event bound in the active session before the first cell:
+  `event` (a dict with `kind`, `at` and the payload) plus `now` (timer),
+  `path` (file; `event["changes"]` lists up to 20 changed paths) or `prompt`
+  (chat). A firing with no running session is dropped and logged; firings that
+  arrive during a run wait in a short queue (timer ticks collapse into one).
+- **Everything is in the Log**: `events.arm`, `events.disarm` (with the
+  reason), `event.fired` (with the run id), `event.dropped` (why). The run's
+  own `run.start` line says "fired by timer/file/chat/manual", so "why did this
+  run?" always has an answer. The canvas picks up fired runs on its own.
+
+Where: `events.py` (`check_sources`, `describe`, `bindings_for`,
+`EventRegistry` with `arm/disarm/fire/tick`), `graph.py` (`start_events`,
+`fingerprint`: cells + nodes + edges, without layout or outputs),
+`graph_run.py` (`bindings`, `reason`), `server.py` (`GET /api/events`, `POST
+/api/events/arm|disarm|fire`, the chat hook), the panel in `graph.js`.
+
+**Status:** sources, arming, timers (with a fake clock), file changes (added,
+changed, removed), chat and manual firings, binding, the queue cap, drops and
+disarm-on-edit are tested (`tests/test_events.py`, HTTP tests on a real
+kernel); the panel, the review dialog, Fire now and the fired run appearing
+on the canvas are tested in headless Chromium (`StartEventsPanelTests`). Not
+yet: events from another device (C3), arming that survives a restart (by
+design), a file watcher that does not poll.
+
 ### Canvas performance (`local_lab/ui/graph.js`)
 
 How the canvas stays smooth, and where to look if it does not:
