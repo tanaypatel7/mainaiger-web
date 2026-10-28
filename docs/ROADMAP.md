@@ -1,0 +1,196 @@
+# MainAIger roadmap · from the Lab of today to MainAIger built with MainAIger
+
+Written 27 October 2026. Supersedes the milestone list in `DESIGN_PLAN.md` §10
+where they differ; `LOCAL_LAB_SETUP.md` stays the feature → file map.
+
+## The goal, in one paragraph
+
+MainAIger is a local-first environment where **code cells are nodes and triggers
+are arrows**, so at every point you can see what runs, when, and why. The Mac app
+is the first runtime. It should be able to make a copy of itself for any
+compatible device, connect to those devices over your network, and run per-device
+code and automations from graphs. Any trigger should be connectable: "when a chat
+prompt is sent" → a graph's Start. The same picture should work for *existing*
+code: open a repository (MainAIger's own first) and see its modules, functions,
+routes and handlers as nodes with edges showing what calls what, navigate to the
+source, and modify it from there, with optional local AI labelling the
+human-level tasks. The last step is MainAIger developing MainAIger through that
+view. Every step along the way must answer: what does it do, how, why, and which
+code.
+
+## The rule for every step
+
+Each phase below lands as one or more reviewed changes that each have:
+a plain-language explanation of what/how/why in the commit and in
+`LOCAL_LAB_SETUP.md`; the files named; tests that run in CI; honest labels
+(tested / simulated / unverified / future); and no change to the safety
+boundaries (owner key, loopback only, container limits, every system-touching
+operation a fixed, visible, approved step) without an explicit decision.
+
+## Where we are (done)
+
+| Capability | State | Code |
+|---|---|---|
+| Mac app, owner key, Docker install verified | tested on your Mac | `launcher`, `local_lab/setup.py` |
+| One persistent kernel in a limited container | tested on your Mac | `runner.py`, `kernel_session.py`, `kernel/kernel.py` |
+| Mainbook document, graph view, serial run, preflight | tested; Docker run unverified on Mac | `graph.py`, `graph_run.py`, `ui/graph.js` |
+| Mainbooks folder, examples, import/export | tested | `mainbooks.py` |
+| Smooth canvas (no forced layouts) | tested headless; Mac feel yours | `ui/graph.js` |
+| Cell library with versioned links, starter ML flow | tested | `library.py`, `examples/library/` |
+| Environment per Mainbook (derived image) | tested with fake build; real build unverified | `environment.py` |
+| Ollama install, model download, one-shot chat API | CI-verified; Mac unverified | `models.py` |
+| Website, accounts, directory, releases | separate; not part of the runtime | `site/`, Supabase, Actions |
+
+## Phase A — Mainbooks become general trigger graphs (next)
+
+**Why first:** everything you described is "a trigger fires a graph". Today the
+only trigger is "the previous cell finished" inside one approved run. Phase A
+makes triggers a first-class, general thing without changing how cells execute.
+
+### A1. Event triggers: Start from the outside
+
+*What:* a Mainbook can have Start nodes of kind `event` with a source: **manual**
+(today), **chat prompt sent** (the Models page), **timer** (every N minutes while
+the Lab runs), **file changed** (in the read-only workspace folder). When the event
+fires, the graph runs exactly as an approved run does, with the event's payload
+bound to a variable (`prompt`, `path`, `now`).
+
+*How:* `graph.py` gains node kind `event` with `source` and `binding`; a new
+`local_lab/events.py` keeps the registry of armed Mainbooks and a queue; the chat
+route and a file watcher enqueue events; `graph_run.py` is reused unchanged. The
+owner **arms** a Mainbook once per session in a review dialog listing exactly what
+may fire it and the run budget (A2); events never arm anything on their own. A run
+log (`runs/` next to Mainbooks, one JSON line per run) records every fired run so
+"why did this run?" has an answer.
+
+*Decisions needed from you:* which event first (recommended: chat prompt, because
+it connects two things that already exist); whether armed Mainbooks survive a Lab
+restart (recommended: no, re-arm, keep the rule "nothing runs that you did not
+approve this session").
+
+### A2. Conditional and loop triggers with explicit budgets
+
+*What:* an edge can carry a condition and the graph may contain cycles, bounded.
+
+*How:* condition = a Python expression stored on the edge, evaluated **in the
+kernel** right after the source cell succeeds (`result = bool(eval(expr))` in the
+cell's namespace, exposed by `kernel.py` as a new `check` message). Budgets:
+`max_fires` per edge (default 10) and `max_cells` per run (default 200), both
+visible in the review dialog and enforced by the scheduler in `graph_run.py`,
+which reports "stopped: budget" truthfully. The static analysis treats a back
+edge as a loop and the canvas draws it distinctly. Nested graphs come after,
+as "a cell whose code is another Mainbook", once A1–A2 are stable.
+
+*Why expression-on-edge rather than a flag variable:* the edge then shows its own
+reason on the canvas ("retrain while `metrics['accuracy'] < 0.9`"), which is the
+"see what triggers what and why" requirement.
+
+### A3. Cells in other languages
+
+*What:* each cell declares a language; the Lab runs it in the matching runtime.
+
+*How:* start with **shell** (same container, `sh -c`, output captured) and
+**JavaScript** (Node installed into the derived image through the environment
+mechanism, so a Mainbook declares `runtime: node` the way it declares packages).
+Variables do not cross languages implicitly; a cell passes values on through
+files in `/tmp` or JSON on stdout, shown as explicit data edges. Python stays the
+only language with a persistent namespace. This keeps the model honest: one
+language, one process model.
+
+### A4. Model-backed cells and a streaming chat
+
+*What:* a cell kind `model` with a prompt template; it calls `/api/models/chat`
+with variables filled in and binds the reply. The Models page gets a streaming
+chat whose "prompt sent" event is the A1 source.
+
+## Phase B — Code map: a repository as a graph
+
+**Why second:** this is the capability you described most: seeing the whole of
+MainAIger as navigable graph code, then any repository. It is a *different kind of
+Mainbook*: nodes are places in source files, not cells to execute. Building it on
+the same canvas and document is the point, so it should come right after the
+trigger model is general.
+
+### B1. Static code map of a Python folder (MainAIger's own `local_lab/` first)
+
+*What:* open a folder → a map Mainbook: one node per module, one per function and
+class, edges for **imports**, **calls** (static, advisory, like data edges), and
+for the Lab specifically **HTTP route → handler** (the `/api/...` checks in
+`server.py`) and **UI action → route** (the `api('/api/...')` calls in
+`ui/*.js`). Clicking a node shows its source; the inspector shows "called by /
+calls / reached from route". Layout by package, collapsible.
+
+*How:* `local_lab/codemap.py` uses `ast` for Python and a small pattern pass for
+`ui/*.js` (labelled *approximate*); it emits a `.ipymb` whose cells are
+`markdown`-like **source nodes** with `metadata.mainaiger.source = {path, line,
+end_line, hash}`. The Lab already mounts your workspace read-only, so reading is
+already allowed; editing (B2) needs a write-approved Projects folder like
+Mainbooks. Deliverable of B1: the map of `local_lab` itself, reviewed by you for
+"is this true?"
+
+### B2. Navigate and modify
+
+*What:* edit a function in its node; the Lab writes it back to the file (approved
+folder, atomic, diff shown before writing), and for this repository runs the test
+suite in the session container (`python3 -m unittest`) as the graph's Finish.
+That is the first "MainAIger working on MainAIger" loop: map → edit → test.
+
+### B3. Optional AI labels for human-level tasks
+
+*What:* a reviewed step sends each function's source to the local model
+(`/api/models/chat`) and stores a one-line task label and a "why it exists"
+guess as metadata marked **AI-generated, unverified**. Labels power search and a
+"tasks" view (nodes grouped by what they do for the user). Nothing leaves the
+machine; labels are never shown as facts.
+
+### B4. Any repository
+
+*What:* the same for a generic Python repo, then JavaScript with a real parser
+(Node in the derived image running a small analyzer script). Framework edges
+(Flask routes, FastAPI, Express handlers) are plug-ins to `codemap.py`, each
+documented as what it detects and what it misses.
+
+## Phase C — Devices and network
+
+**Why third:** a copy that runs on another device is only useful once it has
+general triggers (A) and the owner can see what runs there (B gives the view).
+The existing Nexus host (Ubuntu) is the natural first target.
+
+### C1. A device runtime and a copy
+*What:* the Mac app can produce a **device runtime**: the `local_lab` service
+without the installer UI, packaged for Linux (and later other Macs), with its own
+owner key, running Mainbooks in Docker there. *How:* `release-linux.yml` builds
+it; pairing = you copy the key once; the runtime listens on loopback only and is
+reached through an SSH tunnel or Tailscale (already in your network), never an
+open port.
+
+### C2. Connect and operate
+*What:* the Mac app's Devices page lists paired devices, their Mainbooks, their
+sessions and run logs; you open a remote Mainbook in the same canvas and run it
+*there*. *How:* `local_lab/devices.py` + a small connector that proxies the same
+`/api/*` routes over the tunnel with the device's key; every remote action is the
+same reviewed step shown with the device name.
+
+### C3. Cross-device triggers
+*What:* an event on device A arms a graph on device B (A1 sources gain a device
+field). The run log shows the chain across devices.
+
+## Phase D — MainAIger built with MainAIger
+
+With A–C in place: MainAIger's own repository is a map Mainbook (B1) with
+executable cells for build and test (B2), its runtime pieces are graphs with
+event triggers (A1) running on your devices (C), and the AI labels (B3) explain
+each part in human terms. Developing MainAIger then means editing the graph that
+is MainAIger, with every change reviewed and tested from inside it. Signing with a
+Developer ID when you have an Apple account fits anywhere; it changes
+distribution, not design.
+
+## What I recommend doing next, concretely
+
+1. **A1 with the chat-prompt event** (small, connects two existing parts, gives
+   the first "trigger from outside"), then **A2** with the edge-condition model.
+2. **B1 on `local_lab/`** right after, because seeing your own harness as a graph
+   is the quickest way to regain the overview you asked for, and it will show
+   where A1/A2 landed.
+
+Say which of these to start, or what to change, and I will begin there.
