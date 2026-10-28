@@ -41,10 +41,18 @@
   const widthOf = node => (node.kind === 'start' || node.kind === 'finish') ? TERMINAL_W : NODE_W;
   function freshId(prefix) { let n = 1; const taken = new Set([...nodes().map(x => x.id), ...edges().map(x => x.id), ...cells().map(c => c.id)]); while (taken.has(prefix + n)) n++; return prefix + n; }
   function position(id) { const layout = state.doc.layout.nodes; if (!layout[id]) layout[id] = {x: 60 + Math.random() * 200, y: 60 + Math.random() * 200}; return layout[id]; }
-  function controlReaches(from, to) { // is `to` downstream of `from`? (local cycle guard)
+  function controlReaches(from, to) { // is `to` downstream of `from` along forward arrows? (loop arrows do not count)
     const stack = [from], seen = new Set();
-    while (stack.length) { const cur = stack.pop(); if (cur === to) return true; if (seen.has(cur)) continue; seen.add(cur); edges().filter(e => e.kind === 'control' && e.source === cur).forEach(e => stack.push(e.target)); }
+    while (stack.length) { const cur = stack.pop(); if (cur === to) return true; if (seen.has(cur)) continue; seen.add(cur); edges().filter(e => e.kind === 'control' && !e.loop && e.source === cur).forEach(e => stack.push(e.target)); }
     return false;
+  }
+  const edgeRun = id => (state.run && state.run.edges && state.run.edges[id]) || null;
+  function edgeLabelText(edge) {
+    // What an arrow says about itself: a loop shows its count and budget, a condition shows its expression (shortened).
+    const parts = [];
+    if (edge.loop) { const r = edgeRun(edge.id); parts.push(`\u21bb ${r ? r.fires : 0}/${edge.max_fires || 3}`); }
+    if (edge.when) parts.push('when ' + (edge.when.length > 28 ? edge.when.slice(0, 27) + '\u2026' : edge.when));
+    return parts.join(' \u00b7 ');
   }
 
   // ---------------------------------------------------------------- rendering
@@ -102,7 +110,7 @@
     el.querySelector('.node-head b').textContent = titleOf(node);
     el.classList.toggle('selected', state.selected && state.selected.type === 'node' && state.selected.id === id);
     el.classList.toggle('disconnected', state.disconnected.includes(id));
-    if (node.kind === 'finish') { const r = state.run; el.querySelector('.finish-note').textContent = r && r.finished_at ? `${r.state} · ${Object.values(r.nodes).filter(n => n.status === 'ok').length}/${r.plan.length} ok` : ''; return; }
+    if (node.kind === 'finish') { const r = state.run; const idle = r ? Object.values(r.nodes).filter(n => n.status === 'idle').length : 0; el.querySelector('.finish-note').textContent = r && r.finished_at ? `${r.state} · ${Object.values(r.nodes).filter(n => n.status === 'ok').length}/${r.plan.length} ok${idle ? ` · ${idle} idle` : ''}${r.steps > r.plan.length ? ` · ${r.steps} steps` : ''}` : ''; return; }
     if (node.kind !== 'code') return;
     const cell = cellOf(node), own = meta(cell), runNode = state.run && state.run.nodes[id];
     const last = own.last_run || null;
@@ -196,20 +204,28 @@
   const svgNS = 'http://www.w3.org/2000/svg';
   function edgeGeometry(entry) {
     // Where an edge starts and ends, in world px. Control edges leave the bottom centre of the
-    // source; data edges leave near the right so the two kinds do not overlap.
+    // source; data edges leave near the right so the two kinds do not overlap. A loop arrow goes
+    // back up: it leaves the right side of its source and comes in on the right side of its target.
     const a = box(entry.edge.source), b = box(entry.edge.target);
+    if (entry.kind === 'control' && entry.edge.loop) return {start: {x: a.x + a.w, y: a.y + a.h / 2}, end: {x: b.x + b.w, y: b.y + b.h / 2}, loop: true};
     if (entry.kind === 'control') return {start: {x: a.x + a.w / 2, y: a.y + a.h}, end: {x: b.x + b.w / 2, y: b.y}};
     return {start: {x: a.x + a.w - 28, y: a.y + a.h}, end: {x: b.x + b.w - 28, y: b.y}};
   }
+  function loopCurve(a, b) { const k = Math.max(70, Math.min(220, Math.abs(a.y - b.y) / 2)); return `M${a.x} ${a.y} C${a.x + k} ${a.y} ${b.x + k} ${b.y} ${b.x} ${b.y}`; }
   function positionEdge(entry) {
-    const g = edgeGeometry(entry); entry.path.setAttribute('d', curve(g.start, g.end));
-    if (entry.label) { entry.label.setAttribute('x', (g.start.x + g.end.x) / 2 + 6); entry.label.setAttribute('y', (g.start.y + g.end.y) / 2); }
+    const g = edgeGeometry(entry); const d = g.loop ? loopCurve(g.start, g.end) : curve(g.start, g.end); entry.path.setAttribute('d', d); if (entry.hit) entry.hit.setAttribute('d', d);
+    if (entry.label) {
+      if (g.loop) { const k = Math.max(70, Math.min(220, Math.abs(g.start.y - g.end.y) / 2)); entry.label.setAttribute('x', Math.max(g.start.x, g.end.x) + k * 0.75 + 4); entry.label.setAttribute('y', (g.start.y + g.end.y) / 2 + 4); }
+      else { entry.label.setAttribute('x', (g.start.x + g.end.x) / 2 + 6); entry.label.setAttribute('y', (g.start.y + g.end.y) / 2); }
+    }
   }
   function edgeClass(entry) {
     if (entry.kind !== 'control') return 'edge data';
-    const fired = state.run && state.run.fired && state.run.fired.includes(entry.edge.id);
+    const r = edgeRun(entry.edge.id);
+    // The run tells each arrow's state; older snapshots only list fired ids.
+    const runState = r ? (r.state || '') : (state.run && state.run.fired && state.run.fired.includes(entry.edge.id) ? 'fired' : '');
     const selected = state.selected && state.selected.type === 'edge' && state.selected.id === entry.edge.id;
-    return 'edge control' + (fired ? ' fired' : '') + (selected ? ' selected' : '');
+    return 'edge control' + (entry.edge.loop ? ' loop' : '') + (entry.edge.when ? ' conditional' : '') + (runState ? ' ' + runState.replace('_', '-') : '') + (selected ? ' selected' : '');
   }
   function drawEdges() {
     // Full rebuild: used when the set of edges changes (save, add/delete, data-edge toggle, view switch).
@@ -219,8 +235,12 @@
     for (const edge of edges()) {
       if (edge.kind !== 'control') continue;
       const path = document.createElementNS(svgNS, 'path'); path.dataset.id = edge.id;
-      const entry = {kind: 'control', edge, path, label: null}; edgePaths.set('c:' + edge.id, entry);
-      path.setAttribute('class', edgeClass(entry)); positionEdge(entry); layer.append(path);
+      // An invisible wide twin makes the arrow easy to click; the visible path stays thin.
+      const hit = document.createElementNS(svgNS, 'path'); hit.setAttribute('class', 'edge-hit'); hit.dataset.id = edge.id;
+      let label = null;
+      if (edge.loop || edge.when) { label = document.createElementNS(svgNS, 'text'); label.setAttribute('class', 'edge-label arrow-label' + (edge.loop ? ' loop' : '')); label.dataset.id = edge.id; label.textContent = edgeLabelText(edge); }
+      const entry = {kind: 'control', edge, path, hit, label}; edgePaths.set('c:' + edge.id, entry);
+      path.setAttribute('class', edgeClass(entry)); positionEdge(entry); layer.append(hit, path); if (label) layer.append(label);
     }
     if ($('show-data').checked) state.dataEdges.forEach((edge, i) => {
       const path = document.createElementNS(svgNS, 'path'); path.setAttribute('class', 'edge data');
@@ -235,7 +255,7 @@
     const set = ids instanceof Set ? ids : new Set(ids);
     for (const entry of edgePaths.values()) if (set.has(entry.edge.source) || set.has(entry.edge.target)) positionEdge(entry);
   }
-  function restyleEdges() { for (const entry of edgePaths.values()) if (entry.kind === 'control') entry.path.setAttribute('class', edgeClass(entry)); }
+  function restyleEdges() { for (const entry of edgePaths.values()) if (entry.kind === 'control') { entry.path.setAttribute('class', edgeClass(entry)); if (entry.label) { const t = edgeLabelText(entry.edge); if (entry.label.textContent !== t) entry.label.textContent = t; } } }
   // One animation frame per burst of input. pointermove can arrive at 120+ Hz on a Mac; the
   // screen only shows 60-120 frames a second, so we note what changed and apply it once per frame.
   const frame = {pending: false, nodes: new Set(), viewport: false, layoutNotebook: false, link: null};
@@ -282,7 +302,22 @@
     if (type === 'node') updateNode(id);
     restyleEdges(); renderInspector(); $('delete').disabled = !state.selected || (type === 'node' && (nodeById(id).kind === 'start' || nodeById(id).kind === 'finish')); const code = type === 'node' && nodeById(id).kind === 'code'; $('run-from').disabled = !code; $('run-one').disabled = !code; }
   function chips(container, names, missing) { container.textContent = ''; if (!names.length) { container.textContent = '—'; return; } for (const n of names) { const c = document.createElement('span'); c.className = 'chip' + (missing && missing.has(n) ? ' missing' : ''); c.textContent = n; container.append(c); } }
+  function renderEdgePanel() {
+    const panel = $('edge-panel'); const edge = state.selected && state.selected.type === 'edge' ? edges().find(e => e.id === state.selected.id) : null;
+    if (!edge) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const s = nodeById(edge.source), t = nodeById(edge.target);
+    $('edge-title').textContent = `${s ? titleOf(s) : edge.source} \u2192 ${t ? titleOf(t) : edge.target}` + (edge.loop ? ' (loop arrow)' : '');
+    if (document.activeElement !== $('edge-when')) $('edge-when').value = edge.when || '';
+    $('edge-loop-fields').hidden = !edge.loop; if (edge.loop && document.activeElement !== $('edge-max')) $('edge-max').value = edge.max_fires || 3;
+    $('edge-help').textContent = edge.loop
+      ? `When ${s ? titleOf(s) : edge.source} finishes and the condition holds (or there is none), ${t ? titleOf(t) : edge.target} and everything after it run again. The budget is the most times that can happen in one run.`
+      : `After ${s ? titleOf(s) : edge.source} finishes, this arrow fires only if the condition is true in its session; leave it empty to always fire. A cell none of whose arrows fired stays idle.`;
+    const r = edgeRun(edge.id);
+    $('edge-result').textContent = !r ? 'Not decided in a run yet.' : r.state === 'error' ? `Failed: ${r.error}` : `${({fired: 'fired', not_fired: 'not fired', idle: 'idle (its cell did not run)', exhausted: 'budget spent', blocked: 'leads outside this run'})[r.state] || r.state || 'not decided yet'}${edge.loop ? ` \u00b7 ${r.fires}/${r.max_fires}` : ''}${r.value != null ? ` \u00b7 condition gave ${r.value}` : ''}`;
+  }
   function renderInspector() {
+    renderEdgePanel();
     const panel = $('node-panel'); const sel = state.selected && state.selected.type === 'node' ? nodeById(state.selected.id) : null;
     if (!sel || sel.kind !== 'code') { panel.hidden = true; }
     else {
@@ -360,11 +395,16 @@
     const s = nodeById(source), t = nodeById(target); if (!s || !t) return;
     if (t.kind === 'start' || s.kind === 'finish' || s.kind === 'markdown' || t.kind === 'markdown') { toast('Triggers run from Start or a code cell into a code cell or Finish.'); return; }
     if (edges().some(e => e.kind === 'control' && e.source === source && e.target === target)) { toast('That trigger already exists.'); return; }
-    if (controlReaches(target, source)) { toast('That would create a loop; loops are not supported yet.'); return; }
+    if (controlReaches(target, source)) {
+      // Drawn backwards: a loop arrow. It carries a budget so a run always ends; select it to set a condition.
+      if (s.kind !== 'code' || t.kind !== 'code') { toast('A loop arrow joins two code cells.'); return; }
+      const id = freshId('e'); edges().push({id, kind: 'control', source, target, loop: true, max_fires: 3}); drawEdges(); markDirty(); select('edge', id);
+      toast(`Loop arrow: ${titleOf(t)} and everything after it run again, at most 3 times. Select the arrow to add a condition or change the budget.`); return;
+    }
     edges().push({id: freshId('e'), kind: 'control', source, target}); drawEdges(); markDirty();
   }
   function arrange() {
-    const layer = {}; for (const id of state.order) { const preds = edges().filter(e => e.kind === 'control' && e.target === id).map(e => layer[e.source] ?? 0); layer[id] = preds.length ? Math.max(...preds) + 1 : 0; }
+    const layer = {}; for (const id of state.order) { const preds = edges().filter(e => e.kind === 'control' && !e.loop && e.target === id).map(e => layer[e.source] ?? 0); layer[id] = preds.length ? Math.max(...preds) + 1 : 0; }
     const finish = nodes().find(n => n.kind === 'finish'); const deepest = Math.max(0, ...Object.values(layer)); if (finish) layer[finish.id] = deepest;
     const rows = {}; for (const n of nodes()) { const l = state.disconnected.includes(n.id) || (n.kind === 'markdown') ? -1 : layer[n.id]; (rows[l] = rows[l] || []).push(n); }
     // Notes and disconnected cells form a column on the left (the plan before the code); the trigger graph is centered to its right.
@@ -386,7 +426,7 @@
   // ---------------------------------------------------------------- pointer interactions
   const viewport = $('viewport');
   viewport.addEventListener('pointerdown', event => {
-    const portOut = event.target.closest('.port.out'), head = event.target.closest('.node-head'), nodeEl = event.target.closest('.node'), edgeEl = event.target.closest('path.edge.control');
+    const portOut = event.target.closest('.port.out'), head = event.target.closest('.node-head'), nodeEl = event.target.closest('.node'), edgeEl = event.target.closest('path.edge.control, path.edge-hit, text.arrow-label');
     if (event.button !== 0) return;
     if (event.target.closest('button')) return;  // header buttons keep their click; no drag, no capture
     if (state.view === 'notebook') { if (nodeEl) select('node', nodeEl.dataset.id); else if (!edgeEl) select(null); return; }  // notebook view: no dragging or linking
@@ -458,7 +498,14 @@
     // Export Python: cells reachable from Start, in trigger order. Branches are flattened serially — the same order the Lab runs them.
     const lines = ['# Exported from MainAIger Lab — cells in trigger order (serial).', '# Notes become comments; outputs are not included.', ''];
     const reach = new Set(); const stack = [nodes().find(n => n.kind === 'start').id]; while (stack.length) { const c = stack.pop(); if (reach.has(c)) continue; reach.add(c); edges().filter(e => e.kind === 'control' && e.source === c).forEach(e => stack.push(e.target)); }
-    for (const id of state.order) { const n = nodeById(id); if (!n || !reach.has(id)) continue; if (n.kind === 'code') lines.push(`# ---- ${titleOf(n)} (${id}) ----`, sourceOf(cellOf(n)).replace(/\s+$/, ''), ''); else if (n.kind === 'markdown') lines.push(...sourceOf(cellOf(n)).split('\n').map(l => '# ' + l), ''); }
+    for (const id of state.order) {
+      const n = nodeById(id); if (!n || !reach.has(id)) continue;
+      if (n.kind === 'code') {
+        lines.push(`# ---- ${titleOf(n)} (${id}) ----`);
+        for (const e of edges().filter(e => e.kind === 'control' && e.source === id && (e.when || e.loop))) lines.push(e.loop ? `# loop back to ${titleOf(nodeById(e.target))} at most ${e.max_fires || 3} times${e.when ? ` when ${e.when}` : ''} (not expressed in this flat export)` : `# -> ${titleOf(nodeById(e.target))} only when ${e.when} (not expressed in this flat export)`);
+        lines.push(sourceOf(cellOf(n)).replace(/\s+$/, ''), '');
+      } else if (n.kind === 'markdown') lines.push(...sourceOf(cellOf(n)).split('\n').map(l => '# ' + l), '');
+    }
     const skipped = nodes().filter(n => n.kind === 'code' && !reach.has(n.id)); if (skipped.length) lines.push('# Not reachable from Start (not exported): ' + skipped.map(titleOf).join(', '));
     const blob = new Blob([lines.join('\n') + '\n'], {type: 'text/x-python'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fileStem() + '.py'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
@@ -466,6 +513,13 @@
   $('delete').addEventListener('click', deleteSelected); $('arrange').addEventListener('click', arrange); $('fit').addEventListener('click', fit);
   $('show-data').addEventListener('change', drawEdges);
   $('node-title').addEventListener('input', () => { const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return; meta(cellOf(sel)).title = $('node-title').value; updateNode(sel.id); markDirty(); });
+  $('edge-apply').addEventListener('click', () => {
+    const edge = state.selected && state.selected.type === 'edge' ? edges().find(e => e.id === state.selected.id) : null; if (!edge) return;
+    const when = $('edge-when').value.trim(); if (when) edge.when = when; else delete edge.when;
+    if (edge.loop) { const n = parseInt($('edge-max').value, 10); if (!(n >= 1 && n <= 100)) { toast('The budget is a whole number from 1 to 100.'); return; } edge.max_fires = n; }
+    drawEdges(); restyleEdges(); markDirty(); save().then(() => { if (!state.dirty) toast('Arrow saved.'); });
+  });
+  $('edge-when').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); $('edge-apply').click(); } });
   $('apply-override').addEventListener('click', () => { const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return; const own = meta(cellOf(sel)); const parse = v => v.split(',').map(s => s.trim()).filter(Boolean); const i = parse($('override-inputs').value), o = parse($('override-outputs').value); if (i.length) own.inputs = i; else delete own.inputs; if (o.length) own.outputs = o; else delete own.outputs; markDirty(); save(); });
   function downloadBlob(text, type, filename) { const blob = new Blob([text], {type}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
   const fileStem = () => (docName() || 'graph').replace(/[^A-Za-z0-9 _-]/g, '').trim() || 'graph';
@@ -939,7 +993,7 @@
     if (state.dirty) { clearTimeout(state.saveTimer); await save(); if (state.dirty) return; }
     let check; try { check = await api('/api/graph/preflight', {mode, nodes: ids, include_prerequisites: false}); } catch (error) { toast(error.message); return; }
     state.pendingRun = {mode, nodes: ids, check};
-    $('run-dialog-intro').textContent = mode === 'all' ? 'Every cell reachable from Start runs in order, one at a time, in your session.' : mode === 'from' ? 'The selected cell and everything it triggers run in order.' : 'Only the selected cell runs.';
+    $('run-dialog-intro').textContent = mode === 'all' ? 'Every cell reachable from Start may run, in order, one at a time: a cell runs when an arrow into it fires.' : mode === 'from' ? 'The selected cell and everything it triggers may run, in order.' : 'Only the selected cell runs.';
     const plan = $('run-dialog-plan'); plan.textContent = '';
     for (const id of check.plan) { const li = document.createElement('li'); const n = nodeById(id); li.textContent = n ? titleOf(n) : id; plan.append(li); }
     const missing = $('run-dialog-missing'), list = $('run-dialog-missing-list'); list.textContent = '';
@@ -949,6 +1003,11 @@
     for (const [id, label] of Object.entries(check.sessions || {})) sessLines.push(`${titleOf(nodeById(id) || {id, kind: 'code'})} runs on "${label}"${(check.missing_sessions || []).includes(label) ? ' — not running' : ''}`);
     for (const x of check.cross_session || []) sessLines.push(`"${x.name}" is produced by ${titleOf(nodeById(x.producer))} in ${x.producer_session ? '"' + x.producer_session + '"' : 'the active session'} but ${titleOf(nodeById(x.consumer))} runs in ${x.consumer_session ? '"' + x.consumer_session + '"' : 'the active session'}: it will not be available there.`);
     sessBox.hidden = !sessLines.length; for (const line of sessLines) { const li = document.createElement('li'); li.textContent = line; sessList.append(li); }
+    const arrowsBox = $('run-dialog-arrows'), arrowsList = $('run-dialog-arrows-list'); arrowsList.textContent = '';
+    const arrowLines = [];
+    for (const l of check.loops || []) arrowLines.push(`Loop ${l.source_title} \u2192 ${l.target_title}: runs the body again at most ${l.max_fires} time${l.max_fires === 1 ? '' : 's'}${l.when ? ` when ${l.when}` : ''}${l.inside ? '' : ' \u2014 leads outside this run, so it will not fire'}`);
+    for (const c of check.conditions || []) arrowLines.push(`${c.source_title} \u2192 ${c.target_title} fires only when ${c.when}`);
+    arrowsBox.hidden = !arrowLines.length; for (const line of arrowLines) { const li = document.createElement('li'); li.textContent = line; arrowsList.append(li); }
     const notes = []; if ((check.missing_sessions || []).length) notes.push('Start the named sessions in Resources first.'); if (check.from_session.length) notes.push('Already in the session: ' + [...new Set(check.from_session.map(x => x.name))].join(', ') + '.'); if (check.unresolvable.length) notes.push('Inputs nobody produces will fail at run time unless they already exist in the session.'); if (!check.session_alive) notes.push('No session is running — start one first.');
     $('run-dialog-note').textContent = notes.join(' '); $('run-dialog-confirm').disabled = !check.session_alive || !check.plan.length || (check.missing_sessions || []).length > 0;
     $('run-dialog').showModal(); $('run-dialog-cancel').focus();

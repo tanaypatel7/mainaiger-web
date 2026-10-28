@@ -70,6 +70,9 @@ class RemoteClientTests(TwoLabs):
         lab.cookie = 'mainaiger_lab_owner=stale'; self.assertEqual(lab.sessions()['sessions'][0]['label'], 'main', 'a stale cookie triggers one re-login')
         kernel = remote_module.RemoteKernel(lab, 'nexus', row)
         self.assertEqual(kernel.label, 'nexus/main'); self.assertEqual(kernel.execute('print(x)')['output'], '41\n'); self.assertEqual([v['name'] for v in kernel.variables()], ['x'])
+        # A trigger condition is answered by the session on the device, without a cell count.
+        self.assertEqual((kernel.evaluate('x > 40')['truth'], kernel.evaluate('x > 50')['truth']), (True, False))
+        self.assertEqual(kernel.evaluate('nope')['error']['ename'], 'NameError'); self.assertEqual(kernel.execute('x')['count'], 3)
         self.assertTrue(kernel.status()['alive']); kernel.stop(); self.assertFalse(kernel.alive)
 
 
@@ -137,6 +140,9 @@ class DevicesHttpTests(TwoLabs):
         rid = rows[0]['id']
         self.assertEqual(self.req('/api/sessions/command', {'id': rid, 'command': 'printf remote', 'confirm': True}, auth)[1]['result']['output'], 'remote\n[exit 0]\n')
         self.assertEqual(sorted(v['name'] for v in self.req('/api/sessions/variables', {'id': rid}, auth)[1]['variables']), ['os', 'remote_mark', 'socket'])
+        self.assertEqual(self.req('/api/sessions/evaluate', {'id': rid, 'expression': 'remote_mark > 0', 'confirm': True}, auth)[1]['result']['truth'], True)
+        self.assertEqual(self.req('/api/sessions/evaluate', {'id': rid, 'expression': 'remote_mark > 0'}, auth)[0], 400, 'confirm is required')
+        self.assertEqual(self.req('/api/sessions/evaluate', {'id': 'ghost', 'expression': '1', 'confirm': True}, auth)[0], 409)
         # Files and journal of the device.
         self.assertEqual(self.req('/api/devices/files?name=nexus', headers=cookie)[1]['roots'], {})
         self.assertEqual(self.req('/api/devices/files?name=ghost', headers=cookie)[0], 409)

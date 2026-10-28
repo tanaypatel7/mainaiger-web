@@ -30,7 +30,8 @@ class ScanTests(unittest.TestCase):
         self.assertIn(('def:server.py:LabServer.graph_view', 'def:graph.py:analysis', 'calls'), self.edges, 'alias.function through "from . import graph as graph_module"')
         self.assertIn(('def:server.py:LabServer.graph_view', 'def:server.py:LabServer.library_links', 'calls'), self.edges, 'self.method')
         self.assertIn(('def:sessions.py:SessionRegistry.command', 'def:sessions.py:SessionRegistry.shell_program', 'calls'), self.edges)
-        self.assertIn(('def:graph_run.py:GraphRun._run', 'def:graph.py:session_of', 'calls'), self.edges)
+        self.assertIn(('def:graph_run.py:GraphRun._execute', 'def:graph.py:session_of', 'calls'), self.edges)
+        self.assertIn(('def:graph_run.py:GraphRun._run', 'def:graph_run.py:GraphRun._fire_from', 'calls'), self.edges)
         self.assertGreater(self.map['stats']['unresolved_calls'], 100, 'library and builtin calls are counted, not drawn')
     def test_routes_and_ui_edges(self):
         self.assertIn('route:GET /api/graph', self.ids); self.assertIn('route:POST /api/graph/run', self.ids); self.assertIn('route:GET /api/mainbooks/', self.ids, 'startswith routes end with a slash')

@@ -24,8 +24,9 @@ import time
 import traceback
 import types
 
-PROTOCOL = 1
+PROTOCOL = 2                # 2: adds the "evaluate" op (a condition on a trigger arrow)
 MAX_OUTPUT = 65536          # bytes of captured output returned per cell
+MAX_EXPRESSION = 2000       # bytes of a condition expression
 MAX_CODE = 200000           # bytes of source accepted per cell
 MAX_VARIABLES = 200
 SUMMARY_LENGTH = 80
@@ -102,6 +103,8 @@ class Kernel:
             try:
                 if op == 'execute':
                     reply = self.execute(request.get('code'))
+                elif op == 'evaluate':
+                    reply = self.evaluate(request.get('expression'))
                 elif op == 'variables':
                     reply = {'variables': self.variables()}
                 elif op == 'ping':
@@ -174,6 +177,40 @@ class Kernel:
         output, truncated = self._collect_output()
         return {'status': status, 'count': self.count, 'output': output, 'truncated': truncated,
                 'error': error, 'elapsed_ms': int((time.monotonic() - started) * 1000)}
+
+    def evaluate(self, expression):
+        """Answer one expression (a condition on a trigger arrow) in the session's namespace.
+
+        Unlike a cell it does not advance the execution count or set ``_``; anything it prints
+        is discarded. Returns {status, truth, value, error, elapsed_ms}.
+        """
+        if not isinstance(expression, str):
+            raise ValueError('expression must be a string')
+        if len(expression.encode('utf-8')) > MAX_EXPRESSION:
+            raise ValueError('expression exceeds %d bytes' % MAX_EXPRESSION)
+        filename = '<condition>'
+        self.out.written = self.err.written = 0
+        self.out.overflow = self.err.overflow = False
+        status, error, truth, shown = 'ok', None, None, None
+        started = time.monotonic()
+        self.executing = True
+        try:
+            tree = ast.parse(expression.strip(), filename, 'eval')
+            value = eval(compile(tree, filename, 'eval'), self.namespace)
+            truth = bool(value)
+            shown = self.summarize(value)
+        except KeyboardInterrupt:
+            status = 'interrupted'
+            error = self._format_error(*sys.exc_info(), filename=filename)
+        except BaseException:  # noqa: B902 - the expression is user code
+            status = 'error'
+            error = self._format_error(*sys.exc_info(), filename=filename)
+        finally:
+            self.executing = False
+            sys.stdout, sys.stderr = self.out, self.err
+        self._collect_output()  # discard anything the expression printed
+        return {'status': status, 'truth': truth, 'value': shown, 'error': error,
+                'elapsed_ms': int((time.monotonic() - started) * 1000)}
 
     @staticmethod
     def _format_error(kind, value, tb, filename):

@@ -68,18 +68,20 @@ it connects two things that already exist); whether armed Mainbooks survive a La
 restart (recommended: no, re-arm, keep the rule "nothing runs that you did not
 approve this session").
 
-### A2. Conditional and loop triggers with explicit budgets
+### A2. Conditional and loop triggers with explicit budgets — **built (28 Oct 2026)**
 
 *What:* an edge can carry a condition and the graph may contain cycles, bounded.
 
-*How:* condition = a Python expression stored on the edge, evaluated **in the
-kernel** right after the source cell succeeds (`result = bool(eval(expr))` in the
-cell's namespace, exposed by `kernel.py` as a new `check` message). Budgets:
-`max_fires` per edge (default 10) and `max_cells` per run (default 200), both
-visible in the review dialog and enforced by the scheduler in `graph_run.py`,
-which reports "stopped: budget" truthfully. The static analysis treats a back
-edge as a loop and the canvas draws it distinctly. Nested graphs come after,
-as "a cell whose code is another Mainbook", once A1–A2 are stable.
+*How (as built):* condition = a Python expression stored on the edge (`when`),
+evaluated **in the cell's session** right after the source cell succeeds, by
+the kernel's `evaluate` op (protocol 2; `POST /api/sessions/evaluate` on a
+device). A back edge is marked `loop: true` with `max_fires` (default 3, at
+most 100); the canvas draws it around the right side with a `↻ n/max` label.
+`MAX_STEPS` (500) per run is the hard cap. The review dialog lists loops and
+conditions; the journal records every decision; cells behind an untaken
+branch are `idle`. See `docs/LOCAL_LAB_SETUP.md` "Loop arrows and
+conditions". Still future: a self-loop on one cell, nested graphs ("a cell
+whose code is another Mainbook").
 
 *Why expression-on-edge rather than a flag variable:* the edge then shows its own
 reason on the canvas ("retrain while `metrics['accuracy'] < 0.9`"), which is the

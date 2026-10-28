@@ -18,15 +18,16 @@ from local_lab.runner import KERNEL_DIR
 from local_lab.server import LabServer, initialize_state, EXAMPLES
 
 EXPECTED = {
-    'signal-demo': {'last': 'check-signal', 'contains': 'Check passed', 'fired': 3},
-    'csv-pipeline': {'last': 'report', 'contains': 'Hottest: Phoenix', 'fired': 5, 'also': {'clean': '1 row(s) dropped'}},
-    'branching-stats': {'last': 'report', 'contains': 'Report complete.', 'fired': 7, 'also': {'load': '200 samples'}},
-    'self-improve': {'last': 'report', 'contains': 'Self-improvement loop: one pass', 'fired': 9, 'also': {'apply': 'candidate accuracy'}, 'model': True},
+    'signal-demo': {'last': 'check-signal', 'contains': 'Check passed', 'fired': 4},
+    'csv-pipeline': {'last': 'report', 'contains': 'Hottest: Phoenix', 'fired': 6, 'also': {'clean': '1 row(s) dropped'}},
+    'branching-stats': {'last': 'report', 'contains': 'Report complete.', 'fired': 8, 'also': {'load': '200 samples'}},
+    'self-improve': {'last': 'report', 'contains': 'Self-improvement loop: 2 attempts', 'fired': 14, 'steps': 12, 'also': {'apply': 'candidate accuracy', 'report': 'last verdict: keep'}, 'model': True,
+                     'loop': ('e-judge-propose', 1, 'not_fired')},
 }
 
 BETTER_TRAIN = '''import math
-weights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.3
-for epoch in range(600):
+weights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.1
+for epoch in range(300):
     grad_w = [0.0] * len(weights); grad_b = 0.0
     for xi, yi in zip(X_train, y_train):
         z = sum(w * v for w, v in zip(weights, xi)) + bias
@@ -45,14 +46,30 @@ print("candidate trained")
 '''
 
 
-def fake_model(cfg, prompt):
-    """Stands in for Ollama in CI: a plausible proposal, then a verdict that reads the numbers in the prompt."""
-    if cfg['output'] == 'proposal':
-        return {'ok': True, 'value': {'source': BETTER_TRAIN, 'why': 'A higher learning rate and more epochs for a tiny dataset.'}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
-    import re
-    delta = re.search(r'delta: ([+-][0-9.]+)', prompt)
-    action = 'keep' if delta and float(delta.group(1)) >= 0.02 else ('revert' if delta and float(delta.group(1)) < 0 else 'ask')
-    return {'ok': True, 'value': {'action': action, 'confidence': 0.8, 'reasons': ['delta ' + (delta.group(1) if delta else 'unknown')]}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+WORSE_TRAIN = '''weights = [0.0] * len(X_train[0]); bias = 0.0
+def predict(x):
+    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0
+model = {"weights": weights, "bias": bias, "predict": predict}
+print("candidate trained")
+'''
+
+
+def make_fake_model():
+    """Stands in for Ollama in CI: a bad proposal first (the loop sends the run back), then a good one;
+    the judge reads the numbers in its prompt. Records every prompt so the test can check what the model saw."""
+    seen = {'proposals': 0, 'prompts': []}
+    def fake_model(cfg, prompt):
+        seen['prompts'].append(prompt)
+        if cfg['output'] == 'proposal':
+            seen['proposals'] += 1
+            source, why = (WORSE_TRAIN, 'Skip training: zero weights (a bad idea, to show a revert).') if seen['proposals'] == 1 else (BETTER_TRAIN, 'Train properly: ten times the learning rate and 300 epochs.')
+            return {'ok': True, 'value': {'source': source, 'why': why}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+        import re
+        delta = re.search(r'delta: ([+-][0-9.]+)', prompt)
+        action = 'keep' if delta and float(delta.group(1)) >= 0.02 else ('revert' if delta and float(delta.group(1)) < 0 else 'ask')
+        return {'ok': True, 'value': {'action': action, 'confidence': 0.8, 'reasons': ['delta ' + (delta.group(1) if delta else 'unknown')]}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+    fake_model.seen = seen
+    return fake_model
 
 
 def load_example(name):
@@ -83,12 +100,20 @@ class ExampleRunTests(unittest.TestCase):
                 kernel = KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')]); kernel.start(timeout=20)
                 try:
                     doc = g.validate(load_example(name))
-                    run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake_model if expect.get('model') else None).start()
+                    fake = make_fake_model() if expect.get('model') else None
+                    run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake).start()
                     self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error'))
                     snap = run.snapshot()
                     self.assertTrue(all(n['status'] == 'ok' for n in snap['nodes'].values()), {k: v['status'] for k, v in snap['nodes'].items()})
                     self.assertIn(expect['contains'], snap['nodes'][expect['last']]['output'])
-                    if expect.get('model'): self.assertIn('delta -0.020', snap['nodes']['report']['output'], 'the judge saw the Apply cell\'s printed output through {{output:Apply to copy}}')
+                    if expect.get('model'):
+                        judge_prompts = [p for p in fake.seen['prompts'] if 'Decide:' in p]
+                        self.assertEqual(len(judge_prompts), 2); self.assertIn('delta: -0.3', judge_prompts[0]); self.assertIn('delta: +0.0', judge_prompts[1], 'the judge saw each pass\'s Apply output through {{output:Apply to copy}}')
+                        self.assertIn('Skip training', fake.seen['prompts'][2], 'the second proposal prompt carries the previous attempt')
+                        self.assertNotIn('Skip training', fake.seen['prompts'][0], 'the first proposal prompt has no previous attempt')
+                        self.assertIn('1. accuracy 0.540 (-0.320)', snap['nodes']['report']['output']); self.assertIn('2. accuracy 0.900 (+0.040)', snap['nodes']['report']['output'])
+                    if expect.get('loop'):
+                        edge, fires, final = expect['loop']; self.assertEqual((snap['edges'][edge]['fires'], snap['edges'][edge]['state']), (fires, final)); self.assertEqual(snap['steps'], expect['steps'])
                     self.assertEqual(len(snap['fired']), expect['fired'])
                     for ident, text in expect.get('also', {}).items():
                         self.assertIn(text, snap['nodes'][ident]['output'])

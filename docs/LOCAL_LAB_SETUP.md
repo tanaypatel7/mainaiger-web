@@ -101,11 +101,13 @@ What the pieces do, and which file implements them:
 - **Nodes** — one green *Start*, one *Finish*, any number of code cells and
   notes. A cell card shows its execution count, status badge, editable code
   and output. `local_lab/graph.py` validates the document (one start, one
-  finish, cells referenced exactly once, no control cycles).
+  finish, cells referenced exactly once, no cycles among forward arrows).
 - **Triggers (control edges, solid)** — drag from a cell's bottom port to
-  another cell's top port. "A → B" means *when A finishes successfully, B may
-  run*. A cell with several incoming triggers runs after all of them.
-  Loops are refused in this version.
+  another cell's top port. "A → B" means *when A finishes successfully, the
+  arrow fires and B runs*. A cell with several incoming arrows runs once all
+  of them are decided, if at least one fired. An arrow can carry a
+  **condition**, and an arrow drawn backwards is a **loop arrow** with a
+  budget: see "Loop arrows and conditions" below.
 - **Data edges (dashed, labelled)** — not drawn by hand. `graph.analyze()`
   reads each cell with Python's `ast`: names a cell reads without defining are
   its *inputs*, names it defines are *outputs*; the nearest upstream producer
@@ -156,9 +158,8 @@ What the pieces do, and which file implements them:
 
 The canvas is a view, not a sandbox: all execution happens inside the session
 container with the same limits as before. A branching picture is still one
-Python process running serially; parallel branches, nested graphs, loops,
-conditional triggers and other languages are future work and are refused
-rather than simulated.
+Python process running serially; parallel branches, nested graphs and other
+languages are future work and are refused rather than simulated.
 
 **Status:** the document model, analysis, planning, preflight and serial run
 (fire, fail-and-skip, cancel) are tested with the real kernel as a local
@@ -334,6 +335,58 @@ tested with a fake `docker build` (`tests/test_environment.py`, 12 tests); the
 panel is exercised end to end in headless Chromium (`tests/test_canvas_ui.py`).
 A real `docker build` with real packages on a Mac is unverified.
 
+### Loop arrows and conditions (`graph.py` edges, `graph_run.py`, kernel `evaluate`)
+
+The arrows are the program. Two things make them more than "then":
+
+- **A condition on an arrow.** Select an arrow (click it or its label) and type
+  one Python expression in the SELECTED ARROW panel, for example
+  `verdict['action'] == 'revert'` or `metrics['accuracy'] < 0.9`. After the
+  source cell finishes, its *session* answers the expression (the kernel's
+  `evaluate` op: no cell runs, the execution count does not move, anything it
+  prints is discarded) and the arrow fires only if the answer is true. The
+  label shows `when …`; after a run the arrow is green (fired) or red-dotted
+  (not fired) and the panel shows the value the condition gave. A condition
+  that raises stops the run and names the arrow.
+- **A loop arrow.** Drag a port *backwards* onto an earlier cell: the Lab
+  draws a dashed purple arrow around the right side with a `↻ 0/3` label. When
+  it fires (its condition holds, or it has none), its *body* — the target cell
+  and everything forward of it — runs again. The budget (`max_fires`, 1–100,
+  default 3) is the most times that can happen in one run; when it is spent
+  the arrow turns amber (`exhausted`) and the run carries on past the loop, so
+  a run always ends. Whatever the budgets say, a run also stops after
+  `MAX_STEPS` (500) cell executions.
+
+How a run decides what to execute (`graph_run.py`, worth reading, it is short):
+cells are visited in trigger order; a cell runs when an arrow into it fired
+(or it is a seed: the first cell of the plan, or the cell a loop rewound to);
+a cell none of whose arrows fired is marked **idle** (dimmed, dashed) and its
+own arrows do not fire, so the cells behind an untaken branch stay idle too.
+When a loop fires, its body goes back to *pending*, the arrows leaving the
+body are forgotten, and the pass count on each card goes up. The review
+dialog lists every loop and condition the run will decide; the Log records
+each decision (`arrow.fired`, `arrow.not_fired`, `arrow.exhausted`, with the
+value) and the run summary counts idle cells and steps. In the document, an
+arrow is `{kind: "control", source, target, when?, loop?: true, max_fires?}`;
+a loop arrow must lead back to a cell upstream of its source, and a plain
+cycle is still refused with a message that says to mark the arrow as a loop.
+Export Python writes conditions and loops as comments (the flat file cannot
+express them).
+
+Model cells inside a loop see the fresh output of each pass through
+`{{output:…}}`, which is what makes a propose → try → judge → *loop* graph
+possible (the self-improvement example below).
+
+**Status:** validation, the engine (branches, idle cells, loop counts and
+budgets, exhaustion, condition errors, cancel inside a loop, the step cap,
+runs started from inside a loop, a model cell in a loop), the `evaluate` op on
+the real kernel and on a device, the review check and the journal lines are
+tested (`tests/test_triggers.py`, `tests/test_kernel.py`,
+`tests/test_devices.py`); drawing a loop arrow, setting its condition and
+budget, running it and an untaken branch are tested in headless Chromium
+(`LoopArrowPanelTests`). Not yet: a loop arrow from a cell to itself, nested
+graphs, event triggers (timer, file change, chat prompt: A1 in the roadmap).
+
 ### Canvas performance (`local_lab/ui/graph.js`)
 
 How the canvas stays smooth, and where to look if it does not:
@@ -461,14 +514,16 @@ reason, attempt cap and the route are tested against a fake Ollama
 
 ### The self-improvement loop example (`examples/self-improve.ipymb`)
 
-One pass of the loop described in `docs/AI_HARNESS.md` §3, as a Mainbook you
-can open from **Open example…**, read on the canvas, and run with a local
-model. Ten cells in one chain:
+The loop described in `docs/AI_HARNESS.md` §3, as a Mainbook you can open
+from **Open example…**, read on the canvas, and run with a local model. Ten
+cells in one chain plus one loop arrow:
 
 ```
 Start → How this loop works (note) → Load data → Extract features → Split train/test
       → Train classifier (baseline) → Evaluate → Propose change (model)
       → Apply to copy → Judge (model) → Report → Finish
+                ↑                        │
+                └── loop, at most 2× ────┘   when verdict["action"] != "keep"
 ```
 
 - **Load → Evaluate** are plain Python (a small synthetic dataset, a
@@ -485,9 +540,17 @@ Start → How this loop works (note) → Load data → Extract features → Spli
   `{{output:Apply to copy}}` plus the question; its answer is schema-checked
   as `{action: keep|revert|ask, confidence, reasons[≤3]}` and stored in
   `verdict`.
-- **Report** prints what happened: the delta, the verdict, its reasons, and
-  what *you* would do next (keeping a change is a commit you make after
-  reading it; the loop never writes to the checkout).
+- **The loop arrow** Judge → Propose fires while the verdict is not "keep",
+  at most twice. Each new Propose prompt carries the previous attempt's
+  numbers (again through `{{output:Apply to copy}}`) so the model does not
+  repeat itself, and the Apply cell keeps a `history` list in the session.
+- **Report** prints every attempt with its accuracy and delta, the last
+  verdict, and what *you* would do next (keeping a change is a commit you
+  make after reading it; the loop never writes to the checkout).
+
+The baseline is deliberately undertrained (10 epochs, learning rate 0.01,
+accuracy about 0.86 on the synthetic blobs) so a sensible proposal can win;
+the data's ceiling is about 0.90, so most other ideas are honestly rejected.
 
 Why this shape: the thing being improved is a function, not the Lab's own
 repository, so the first run proves the plumbing (model reads a result,
@@ -496,10 +559,11 @@ and in the Log) without any step that can touch your files. The stricter loop
 (repository copy, held-out tests, budgets) is the table in `AI_HARNESS.md` §3.
 
 **Status:** tested in CI with a *fake* model (`tests/test_examples.py`): the
-fake proposes a better `train`, the apply cell measures it, the judge sees the
-numbers through the placeholder (the test asserts the delta reached the
-report) and the report prints the verdict; run on a real kernel like every
-other example. With a real Ollama model (`qwen2.5-coder:7b` is named in the
+fake first proposes a bad `train` (reverted, so the loop arrow fires), then a
+good one (kept, so it does not); the test checks that each Judge prompt
+carried that pass's numbers, that the second Propose prompt carried the
+first attempt, the loop count, the step count and the report's two lines; run
+on a real kernel like every other example. With a real Ollama model (`qwen2.5-coder:7b` is named in the
 two model cells; change it on the card to any installed coder model) the run
 is unverified here: expect most proposals to be rejected or to fail the
 schema, which the run shows plainly. Fixed while building it: output

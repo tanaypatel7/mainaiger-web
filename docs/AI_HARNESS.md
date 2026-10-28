@@ -339,9 +339,10 @@ How each piece maps to what exists:
   you read the diff and commit it yourself (or, later, a reviewed "apply to
   checkout" step with its own approval dialog, the same way Mainbooks and
   Library folders are approved today).
-- **Budgets:** the loop runs once per approval. Repeating it needs A1 (event
-  triggers: a timer) and A2 (loop edges with `max_fires`), both future; until
-  then "run again" is a click, which is the right default for a first loop.
+- **Budgets:** one approval is one run; inside it the loop arrow Judge →
+  Propose repeats the propose/try/judge body at most `max_fires` times (A2,
+  built). Running the whole thing again later on a timer is A1 (event
+  triggers), still future; until then "run again" is a click.
 
 **What the first run will prove and not prove.** It proves the plumbing: a
 model can read the test output, produce a shaped verdict, and the Lab records
@@ -365,17 +366,18 @@ have, mapped onto the Lab):
 | Held-in and held-out tests; accept only if neither regresses (Self-Harness) | two test folders; the Run tests cell reports both; the judge sees only the held-in log |
 | One edit = one commit with a written prediction, file-level rollback (AHE) | the proposal schema carries `predicted_effect`; Report writes it into the journal; keeping = one commit you make |
 | Gains must beat the noise band; extra tokens must pay for themselves (RRSI) | run `evaluate` twice before the loop; the judge schema includes `noise_band` as context; `attempts` capped at 3 by `decide.py` |
-| Budgets: iterations, wall clock, per-evaluation timeout, diff size; stop after consecutive rejects (autoresearch, Rehearse) | one approval = one iteration today; `max_fires` per edge and a per-run cell cap arrive with A2; the cell timeout already exists (60 s, interruptible) |
+| Budgets: iterations, wall clock, per-evaluation timeout, diff size; stop after consecutive rejects (autoresearch, Rehearse) | loop arrows carry `max_fires` and every run stops at `MAX_STEPS` cell executions (built 28 Oct); the cell timeout already exists (60 s, interruptible); wall-clock and diff-size budgets are still to add |
 | Cheap pre-run judge with memory of similar past attempts (Rehearse) | a second model cell using `nimble`-style decision models (Ollama `/v1/systemone`) once that provider path exists; the journal is the memory |
 | Everything sandboxed, no network, auditable lineage (DGM) | sessions run with `--network=none`, limits and a read-only workspace; the journal is the lineage |
 
 **Status:** the first version exists: `examples/self-improve.ipymb` (open it
 from **Open example…**; described in `docs/LOCAL_LAB_SETUP.md` "The
-self-improvement loop example"). It improves a classifier function rather than
-the Lab's own repository, so no step can touch your files; it runs in CI on a
-real kernel with a fake model, and is unverified with a real Ollama model. The
-repository-copy version with the two test folders and a reviewed "apply to
-checkout" step is still future.
+self-improvement loop example"), now with a real loop arrow (Judge → Propose
+while the verdict is not "keep", at most twice) and a history of attempts. It
+improves a classifier function rather than the Lab's own repository, so no
+step can touch your files; it runs in CI on a real kernel with a fake model,
+and is unverified with a real Ollama model. The repository-copy version with
+the two test folders and a reviewed "apply to checkout" step is still future.
 
 ## 4. The thin-slice pattern (how model output becomes decisions)
 

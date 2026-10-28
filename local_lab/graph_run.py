@@ -1,12 +1,27 @@
-"""Execute a planned list of graph nodes in one kernel session, serially.
+"""Execute a planned set of graph nodes in their sessions, serially, driven by the arrows.
 
-Trigger semantics in this version: a node runs when every node before it in
-the plan has finished successfully. When a node finishes with status ``ok``,
-its outgoing control edges *fire* (recorded in ``fired``) — that is what the
-canvas animates. If a node fails, is interrupted or the session dies, the
-remaining nodes are marked ``skipped`` and the run ends. Nothing runs in
-parallel; a branching picture is still one Python process executing one
-cell at a time.
+The rules, in plain words (docs/LOCAL_LAB_SETUP.md "Loop arrows and conditions"):
+
+* Cells are visited in trigger order (the topological order of the forward arrows), one at a time.
+* When a cell finishes ``ok``, each arrow leaving it is decided: an arrow without a condition
+  *fires*; an arrow with a condition (one Python expression) fires only if the cell's session
+  answers true. Deciding never runs a cell: the kernel's ``evaluate`` op answers the expression
+  without advancing the execution count.
+* A cell runs when at least one arrow into it fired (or it is a seed: the first cell of the plan,
+  or the cell a loop arrow rewound to). A cell none of whose arrows fired is marked ``idle`` and
+  its own arrows do not fire, so the cells behind an untaken branch stay idle too. A cell with
+  arrows from two branches runs when either fired, once both have been decided.
+* A *loop arrow* leads back to an earlier cell and carries a budget (``max_fires``). When it fires,
+  its body — the loop's target and everything forward of it in the plan — is rewound to pending and
+  runs again; the arrows leaving the body fire again when the body finishes for the last time.
+  Once the budget is spent the arrow is ``exhausted`` and the run carries on past the loop. Every
+  run also has a hard cap, ``MAX_STEPS`` cell executions, whatever the budgets say.
+* A cell that fails (error, timeout, killed, interrupted) stops the run; the rest is ``skipped``. A
+  condition that raises stops the run too, naming the arrow.
+
+Nothing runs in parallel; a branching picture is still one cell at a time, each in the session its
+cell names (or the active one). What the canvas animates — fired arrows, loop counts, idle cells —
+is the ``snapshot``.
 """
 import json
 import secrets
@@ -16,9 +31,20 @@ import time
 from .kernel_session import KernelError
 from . import graph as graph_module
 
+MAX_STEPS = 500  # cell executions per run, counting every loop pass: the stop under any budget mistake
+SETTLED = ('fired', 'not_fired', 'idle', 'blocked', 'exhausted', 'error')
+
+
+class ConditionError(Exception):
+    """A trigger condition could not be answered; carries the edge and the kernel's error."""
+
+    def __init__(self, edge, message, detail=None):
+        super().__init__(message)
+        self.edge, self.detail = edge, detail
+
 
 class GraphRun:
-    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None):
+    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None, on_edge=None):
         self.id = 'run-' + secrets.token_hex(4)
         self.document, self.plan, self.kernel, self.mode = document, list(plan_ids), kernel, mode
         self.on_result = on_result
@@ -29,17 +55,38 @@ class GraphRun:
         # ask_model(config, prompt) -> {'ok', 'value', 'raw', 'error', 'elapsed_ms', 'attempts', 'model'}; the server
         # supplies it (local_lab/decide.py or models.chat). Model cells run on the host, never inside the container.
         self.ask_model = ask_model
+        # on_edge(edge, info) is told each time an arrow is decided (fired, not fired, exhausted, blocked, error).
+        self.on_edge = on_edge
         self.current_kernel = None
         self.state = 'pending'
         self.current = None
         self.nodes = {ident: {'status': 'pending'} for ident in self.plan}
-        self.fired = []
+        self.fired = []          # edge ids in the order they fired; a loop arrow appears once per firing
+        self.steps = 0           # cell executions so far (every loop pass counts)
         self.started_at = None
         self.finished_at = None
         self.error = None
         self.cancel_requested = False
         self.thread = None
         self.lock = threading.Lock()
+        # ---- the arrows this run decides ------------------------------------------------------
+        doc = self.document
+        self.plan_set = set(self.plan)
+        self.start_id = next(n['id'] for n in doc['graph']['nodes'] if n['kind'] == 'start')
+        sources = self.plan_set | ({self.start_id} if mode == 'all' else set())
+        self.control = [e for e in graph_module.control_edges(doc) if e['source'] in sources]
+        self.incoming = {ident: [e for e in self.control if e['target'] == ident and not e.get('loop')] for ident in self.plan}
+        self.edges = {}
+        for edge in self.control:
+            info = {'state': None, 'fires': 0, 'source': edge['source'], 'target': edge['target'], 'loop': bool(edge.get('loop'))}
+            if edge.get('when'):
+                info['when'] = edge['when']
+            if edge.get('loop'):
+                info['max_fires'] = edge.get('max_fires', graph_module.LOOP_DEFAULT_FIRES)
+            self.edges[edge['id']] = info
+        # Seeds run without waiting for an arrow: the plan's first cells (nothing in the plan points at
+        # them) and, later, the cell a loop arrow rewinds to. In "all" mode Start fires instead.
+        self.seeds = {ident for ident in self.plan if not self.incoming[ident]}
 
     # ---- control ------------------------------------------------------
     def start(self):
@@ -70,6 +117,18 @@ class GraphRun:
     def _cell(self, ident):
         node = graph_module.node_by_id(self.document, ident)
         return self.document['notebook']['cells'][node['cell_index']]
+
+    def _title(self, ident):
+        if ident == self.start_id:
+            return 'Start'
+        node = next((n for n in self.document['graph']['nodes'] if n['id'] == ident), None)
+        if node is None or node['kind'] not in ('code', 'markdown'):
+            return ident
+        return self._cell(ident).get('metadata', {}).get('mainaiger', {}).get('title') or ident
+
+    def _session_kernel(self, ident):
+        label = graph_module.session_of(self.document, ident) if ident != self.start_id else None
+        return self.kernel_for(label) if self.kernel_for else self.kernel
 
     def _recorded_output(self, ref):
         """The stdout a cell printed: from this run when it ran here, else from the document."""
@@ -149,46 +208,152 @@ class GraphRun:
                 'elapsed_ms': int((time.time() - started) * 1000), 'model': answer.get('model', cfg['model']), 'attempts': answer.get('attempts'),
                 'note': 'Bound to %s in the session (model %s%s).' % (cfg['output'], answer.get('model', cfg['model']), ', schema-checked' if cfg.get('schema') else '')}
 
-    def _outgoing(self, ident):
-        return [e['id'] for e in graph_module.control_edges(self.document) if e['source'] == ident]
+    def _execute(self, ident):
+        """Run one cell (code, form or model) in its session; returns the result dict."""
+        source = self._source(ident)
+        label = graph_module.session_of(self.document, ident)
+        cfg = graph_module.model_config(self._cell(ident))
+        form = graph_module.form_config(self._cell(ident))
+        if form:
+            # Bind the form's values first; the cell's own code (if any) runs after them in the same request.
+            source = graph_module.form_prelude(form) + source
+        if cfg:
+            result = self._model_cell(ident, cfg, source, label)
+        elif not source.strip():
+            result = {'status': 'ok', 'count': None, 'output': '', 'truncated': False, 'error': None, 'elapsed_ms': 0,
+                      'note': 'Empty cell; nothing to run.'}
+        else:
+            try:
+                kernel = self.kernel_for(label) if self.kernel_for else self.kernel
+                self.current_kernel = kernel
+                result = self.kernel.execute(source) if kernel is None else kernel.execute(source)
+            except KernelError as error:
+                result = {'status': 'killed', 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': 0,
+                          'error': {'ename': 'KernelError', 'evalue': str(error), 'traceback': []}}
+            finally:
+                self.current_kernel = None
+        if label:
+            result['session'] = label
+        if form and result.get('status') == 'ok':
+            bound = graph_module.form_bindings(form)
+            result['note'] = ((result.get('note') + ' ') if result.get('note') else '') + 'Form values bound: ' + ', '.join('%s=%s' % (k, json.dumps(v)) for k, v in bound.items())
+        return result
 
+    # ---- arrows ---------------------------------------------------------
+    def _triggered(self, ident):
+        with self.lock:
+            return ident in self.seeds or any(self.edges[e['id']]['state'] == 'fired' for e in self.incoming[ident])
+
+    def _tell(self, edge, info):
+        if self.on_edge:
+            try:
+                self.on_edge(edge, dict(info, source_title=self._title(edge['source']), target_title=self._title(edge['target'])))
+            except Exception:  # reporting must never break the run
+                pass
+
+    def _decide(self, edge, kernel):
+        """True when the arrow fires: no condition, or its expression answers true in the session."""
+        when = edge.get('when')
+        if not when:
+            return True, None
+        if kernel is None:
+            raise ConditionError(edge, 'no session can answer the condition')
+        try:
+            answer = kernel.evaluate(when)
+        except (KernelError, ValueError) as error:
+            raise ConditionError(edge, str(error))
+        if answer.get('status') != 'ok':
+            err = answer.get('error') or {}
+            what = ('%s: %s' % (err.get('ename', ''), err.get('evalue', ''))).strip(': ') or answer.get('status', 'error')
+            raise ConditionError(edge, what, err)
+        return bool(answer.get('truth')), answer.get('value')
+
+    def _fire_from(self, ident):
+        """Decide every arrow leaving ident (after it finished ok, or Start at the beginning)."""
+        leaving = [e for e in self.control if e['source'] == ident]
+        if not leaving:
+            return
+        kernel = None
+        if any(e.get('when') for e in leaving):
+            try:
+                kernel = self._session_kernel(ident)
+            except KernelError as error:
+                raise ConditionError(next(e for e in leaving if e.get('when')), str(error))
+        rewinds = []
+        for edge in leaving:
+            info = self.edges[edge['id']]
+            truth, value = self._decide(edge, kernel)
+            with self.lock:
+                if value is not None:
+                    info['value'] = value
+                if not truth:
+                    info['state'] = 'not_fired'
+                elif not edge.get('loop'):
+                    info['state'] = 'fired'; info['fires'] += 1; self.fired.append(edge['id'])
+                elif edge['target'] not in self.plan_set:
+                    info['state'] = 'blocked'  # the loop leads to a cell outside this run (run "from" a cell inside the loop)
+                elif info['fires'] >= info['max_fires']:
+                    info['state'] = 'exhausted'
+                else:
+                    info['state'] = 'fired'; info['fires'] += 1; self.fired.append(edge['id']); rewinds.append(edge)
+            if edge.get('when') or edge.get('loop'):
+                self._tell(edge, info)
+        for edge in rewinds:
+            self._rewind(edge)
+
+    def _rewind(self, edge):
+        """A loop arrow fired: its body (the target and everything forward of it in the plan) runs again."""
+        body = graph_module.reachable(self.document, [edge['target']]) & self.plan_set
+        with self.lock:
+            for ident in body:
+                previous = self.nodes.get(ident) or {}
+                self.nodes[ident] = {'status': 'pending', 'passes': previous.get('passes', 0) + (1 if previous.get('status') not in (None, 'pending', 'idle') else 0)}
+            for e in self.control:
+                if e['source'] in body:
+                    self.edges[e['id']]['state'] = None
+            self.seeds.add(edge['target'])
+
+    def _settle_idle(self, ident):
+        with self.lock:
+            self.nodes[ident] = {'status': 'idle', 'note': 'No arrow into this cell fired.'}
+            for e in self.control:
+                if e['source'] == ident:
+                    self.edges[e['id']]['state'] = 'idle'
+
+    def _next_pending(self):
+        with self.lock:
+            return next((ident for ident in self.plan if self.nodes[ident].get('status') == 'pending'), None)
+
+    # ---- the engine -----------------------------------------------------
     def _run(self):
         try:
-            for index, ident in enumerate(self.plan):
+            if self.mode == 'all':
+                self._fire_from(self.start_id)
+            while True:
                 if self.cancel_requested:
-                    self._skip_from(index, 'cancelled')
+                    self._skip_pending('cancelled')
                     self.state = 'cancelled'
                     return
+                ident = self._next_pending()
+                if ident is None:
+                    break
+                if not self._triggered(ident):
+                    self._settle_idle(ident)
+                    continue
+                self.seeds.discard(ident)
+                if self.steps >= MAX_STEPS:
+                    self._skip_pending('skipped')
+                    self.state = 'failed'
+                    self.error = 'The run stopped after %d cell executions (the limit); check the loop budgets.' % MAX_STEPS
+                    return
+                self.steps += 1
                 self.current = ident
                 with self.lock:
-                    self.nodes[ident] = {'status': 'running', 'started_at': time.time()}
-                source = self._source(ident)
-                label = graph_module.session_of(self.document, ident)
-                cfg = graph_module.model_config(self._cell(ident))
-                form = graph_module.form_config(self._cell(ident))
-                if form:
-                    # Bind the form's values first; the cell's own code (if any) runs after them in the same request.
-                    source = graph_module.form_prelude(form) + source
-                if cfg:
-                    result = self._model_cell(ident, cfg, source, label)
-                elif not source.strip():
-                    result = {'status': 'ok', 'count': None, 'output': '', 'truncated': False, 'error': None, 'elapsed_ms': 0,
-                              'note': 'Empty cell; nothing to run.'}
-                else:
-                    try:
-                        kernel = self.kernel_for(label) if self.kernel_for else self.kernel
-                        self.current_kernel = kernel
-                        result = self.kernel.execute(source) if kernel is None else kernel.execute(source)
-                    except KernelError as error:
-                        result = {'status': 'killed', 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': 0,
-                                  'error': {'ename': 'KernelError', 'evalue': str(error), 'traceback': []}}
-                    finally:
-                        self.current_kernel = None
-                if label:
-                    result['session'] = label
-                if form and result.get('status') == 'ok':
-                    bound = graph_module.form_bindings(form)
-                    result['note'] = ((result.get('note') + ' ') if result.get('note') else '') + 'Form values bound: ' + ', '.join('%s=%s' % (k, json.dumps(v)) for k, v in bound.items())
+                    passes = self.nodes[ident].get('passes', 0)
+                    self.nodes[ident] = {'status': 'running', 'started_at': time.time(), 'passes': passes}
+                result = self._execute(ident)
+                if passes:
+                    result['passes'] = passes
                 with self.lock:
                     self.nodes[ident] = dict(result, status=result['status'])
                 if self.on_result:
@@ -197,18 +362,23 @@ class GraphRun:
                     except Exception:  # recording must never break the run
                         pass
                 if result['status'] != 'ok':
-                    self._skip_from(index + 1, 'skipped')
+                    self._skip_pending('skipped')
                     self.state = 'cancelled' if result['status'] == 'interrupted' and self.cancel_requested else 'failed'
-                    self.error = '%s stopped the run (%s).' % (ident, result['status'])
+                    self.error = '%s stopped the run (%s).' % (self._title(ident), result['status'])
                     return
-                with self.lock:
-                    self.fired.extend(self._outgoing(ident))
+                self._fire_from(ident)
             self.state = 'finished'
-        except Exception as error:  # a bug must never leave a run "running" forever
+        except ConditionError as error:
             with self.lock:
-                for ident in self.plan:
-                    if self.nodes[ident].get('status') in ('pending', 'running'):
-                        self.nodes[ident] = {'status': 'skipped'}
+                info = self.edges.get(error.edge['id'])
+                if info is not None:
+                    info['state'] = 'error'; info['error'] = str(error)
+            self._tell(error.edge, info or {})
+            self._skip_pending('skipped')
+            self.state = 'failed'
+            self.error = 'The condition on the arrow %s → %s could not be answered: %s' % (self._title(error.edge['source']), self._title(error.edge['target']), error)
+        except Exception as error:  # a bug must never leave a run "running" forever
+            self._skip_pending('skipped')
             self.state = 'failed'
             self.error = 'The run stopped on an internal error: %s: %s' % (type(error).__name__, error)
         finally:
@@ -220,9 +390,9 @@ class GraphRun:
                 except Exception:  # reporting must never break the run
                     pass
 
-    def _skip_from(self, index, status):
+    def _skip_pending(self, status):
         with self.lock:
-            for ident in self.plan[index:]:
+            for ident in self.plan:
                 if self.nodes[ident].get('status') in ('pending', 'running'):
                     self.nodes[ident] = {'status': status}
 
@@ -231,6 +401,7 @@ class GraphRun:
         with self.lock:
             nodes = {ident: dict(value) for ident, value in self.nodes.items()}
             fired = list(self.fired)
+            edges = {ident: dict(value) for ident, value in self.edges.items()}
         return {'id': self.id, 'mode': self.mode, 'state': self.state, 'plan': list(self.plan), 'current': self.current,
-                'nodes': nodes, 'fired': fired, 'started_at': self.started_at, 'finished_at': self.finished_at,
+                'nodes': nodes, 'fired': fired, 'edges': edges, 'steps': self.steps, 'started_at': self.started_at, 'finished_at': self.finished_at,
                 'error': self.error, 'cancel_requested': self.cancel_requested}

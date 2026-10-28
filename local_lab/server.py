@@ -140,6 +140,11 @@ class LabServer(ThreadingHTTPServer):
             check['missing_sessions']=sorted({l for l in check['sessions'].values() if not (self.kernels.by_label(l) and self.kernels.by_label(l)['kernel'].alive)})
             needs_active=any(graph_module.node_by_id(doc,i)['kind']=='code' and i not in check['sessions'] for i in plan)
             check['needs_active_session']=needs_active
+            # Arrows the run will decide: loops (with budgets) and conditions, so the review names them.
+            chosen=set(plan);start=next(n['id'] for n in doc['graph']['nodes'] if n['kind']=='start')
+            title=lambda i:'Start' if i==start else (doc['notebook']['cells'][graph_module.node_by_id(doc,i)['cell_index']].get('metadata',{}).get('mainaiger',{}).get('title') or i) if graph_module.node_by_id(doc,i)['kind']=='code' else i
+            check['loops']=[{'id':e['id'],'source':e['source'],'target':e['target'],'source_title':title(e['source']),'target_title':title(e['target']),'max_fires':e['max_fires'],'when':e.get('when'),'inside':e['target'] in chosen} for e in graph_module.loop_edges(doc) if e['source'] in chosen]
+            check['conditions']=[{'id':e['id'],'source':e['source'],'target':e['target'],'source_title':title(e['source']),'target_title':title(e['target']),'when':e['when']} for e in graph_module.forward_edges(doc) if e.get('when') and (e['source'] in chosen or (mode=='all' and e['source']==start))]
             check['session_alive']=bool(kernel is not None and kernel.alive) if needs_active else not check['missing_sessions']
             return plan,check
     def start_graph_run(self,mode,nodes,include_prerequisites):
@@ -159,9 +164,16 @@ class LabServer(ThreadingHTTPServer):
                 self.journal.write('cell.'+result['status'],'%s: %s%s%s'%(title,result['status'],(' in %d ms'%result['elapsed_ms']) if result.get('elapsed_ms') is not None else '',(' · model %s'%result['model']) if result.get('model') else ''),
                                    {'node':ident,'status':result['status'],'elapsed_ms':result.get('elapsed_ms'),'session':result.get('session'),'model':result.get('model'),'error':(result.get('error') or {}).get('evalue')})
             def finished(run):
-                ok=sum(1 for n in run.nodes.values() if n.get('status')=='ok')
-                self.journal.write('run.'+run.state,'Run %s %s: %d/%d ok%s'%(run.mode,run.state,ok,len(run.plan),(' · '+run.error) if run.error else ''),{'run':run.id,'mode':run.mode,'state':run.state,'ok':ok,'total':len(run.plan)})
-            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model).start()
+                ok=sum(1 for n in run.nodes.values() if n.get('status')=='ok');idle=sum(1 for n in run.nodes.values() if n.get('status')=='idle')
+                self.journal.write('run.'+run.state,'Run %s %s: %d/%d ok%s%s%s'%(run.mode,run.state,ok,len(run.plan),(' · %d idle'%idle) if idle else '',(' · %d steps'%run.steps) if run.steps>len(run.plan) else '',(' · '+run.error) if run.error else ''),{'run':run.id,'mode':run.mode,'state':run.state,'ok':ok,'idle':idle,'steps':run.steps,'total':len(run.plan)})
+            def arrow(edge,info):
+                # Only arrows with something to decide are journaled: conditions (with the answer) and loops (with the count).
+                state=info.get('state');who='%s → %s'%(info.get('source_title',edge['source']),info.get('target_title',edge['target']))
+                if state=='error':text='Condition on %s failed: %s'%(who,info.get('error'))
+                elif edge.get('loop'):text='Loop %s %s (%d/%d)%s'%(who,{'fired':'fired: running the body again','not_fired':'not taken','exhausted':'budget spent','blocked':'leads outside this run'}.get(state,state),info.get('fires',0),info.get('max_fires',0),(' · when %s → %s'%(edge['when'],info.get('value'))) if edge.get('when') else '')
+                else:text='Arrow %s %s · when %s → %s'%(who,'fired' if state=='fired' else 'not fired',edge.get('when'),info.get('value'))
+                self.journal.write('arrow.'+(state or 'decided'),text,{'edge':edge['id'],'source':edge['source'],'target':edge['target'],'state':state,'fires':info.get('fires'),'max_fires':info.get('max_fires'),'when':edge.get('when'),'value':info.get('value')})
+            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model,on_edge=arrow).start()
             self.journal.write('run.start','Run %s approved: %d cell%s'%(mode,len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan})
             return self.graph_run.snapshot()
     def ask_model(self,cfg,prompt):
@@ -523,6 +535,15 @@ class LabHandler(BaseHTTPRequestHandler):
                 except KernelBusy as e:return self.out(409,{'error':str(e)})
                 except (KernelError,ValueError) as e:return self.out(409,{'error':str(e)})
                 self.server.journal.write('session.execute','Code run in "%s" through the API: %s'%(row['label'],result.get('status')),{'id':row['id'],'label':row['label'],'status':result.get('status'),'bytes':len(data['code'])})
+                return self.out(200,{'session':self.server.kernels.row_status(row),'result':result})
+            if path=='/api/sessions/evaluate':
+                # One expression answered by a session (a condition on a trigger arrow); no cell runs, no count advances.
+                if set(data)-{'id','expression','confirm'} or data.get('confirm') is not True or not isinstance(data.get('id'),str) or not isinstance(data.get('expression'),str):raise ValueError('Send {id, expression, confirm}')
+                row=self.server.kernels.get(data['id'])
+                if row is None or not row['kernel'].alive:return self.out(409,{'error':'No running session with that id'})
+                try:result=row['kernel'].evaluate(data['expression'])
+                except KernelBusy as e:return self.out(409,{'error':str(e)})
+                except (KernelError,ValueError) as e:return self.out(409,{'error':str(e)})
                 return self.out(200,{'session':self.server.kernels.row_status(row),'result':result})
             if path=='/api/sessions/variables':
                 if set(data)!={'id'} or not isinstance(data['id'],str):raise ValueError('Send {id}')

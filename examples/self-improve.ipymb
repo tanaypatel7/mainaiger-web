@@ -13,7 +13,7 @@
    "mainaiger": {
     "example": true,
     "name": "self-improve",
-    "title": "Self-improvement loop (one pass)"
+    "title": "Self-improvement loop (propose, try on a copy, judge, loop)"
    }
   },
   "cells": [
@@ -25,7 +25,7 @@
       "title": "How this loop works"
      }
     },
-    "source": "# The first self-improvement loop\n\nOne pass: **Propose** (a model rewrites the training cell) \u2192 **Apply to copy** (the proposal runs on a copy of the session, never touching the baseline) \u2192 **Judge** (a model reads both results and says keep / revert / ask) \u2192 **Report**. You approve the run; keeping a change is your decision: paste the proposed code into the training cell, or push it to the Library as a new version. Every step is on this canvas and in the Log.\n\nNeeds: a running session, an installed Ollama model named in the two model cells (Models page). Without a model the two model cells stop the run with a plain error.",
+    "source": "# The first self-improvement loop\n\n**Propose** (a model rewrites the training cell) → **Apply to copy** (the proposal runs on a copy of the session, never touching the baseline) → **Judge** (a model reads the numbers and says keep / revert / ask) → **Report**. The dashed arrow from Judge back to Propose is a *loop arrow*: while the verdict is not \"keep\" it sends the run back for another proposal, at most twice (its budget), and the previous attempt is pasted into the next prompt so the model does not repeat itself. Then Report prints every attempt.\n\nYou approve the run; keeping a change is your decision: paste the proposed code into the training cell, or push it to the Library as a new version. Every step is on this canvas and in the Log.\n\nThe baseline is deliberately undertrained (10 epochs, a tiny learning rate), so there is something to improve. Needs: a running session and an installed Ollama model named in the two model cells (Models page). Without a model the two model cells stop the run with a plain error.\n",
     "outputs": []
    },
    {
@@ -101,7 +101,7 @@
       ]
      }
     },
-    "source": "import math\n# Logistic regression, gradient descent, standard library only.\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.1\nfor epoch in range(300):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n",
+    "source": "import math\n# Logistic regression, gradient descent, standard library only.\n# Deliberately undertrained (few epochs, small learning rate): the loop's job is to improve it.\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.01\nfor epoch in range(10):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n",
     "execution_count": null,
     "outputs": []
    },
@@ -159,7 +159,7 @@
       }
      }
     },
-    "source": "You improve a small machine-learning training cell written in plain Python (standard library only, no numpy).\nHere are the baseline metrics the current cell achieved:\n{{output:Evaluate}}\n\nHere is the current training cell. It must keep defining `model` as a dict with \"weights\", \"bias\" and a \"predict\" function taking one feature list and returning 0 or 1. It may use the variables X_train and y_train only.\n----\nimport math\n# Logistic regression, gradient descent, standard library only.\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.1\nfor epoch in range(300):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n----\nPropose ONE small change that might improve accuracy (for example the learning rate, the number of epochs, or feature scaling inside the loop). Return the complete new cell source and one sentence why.",
+    "source": "You improve a small machine-learning training cell written in plain Python (standard library only, no numpy).\nHere are the baseline metrics the current cell achieved:\n{{output:Evaluate}}\n\nWhat the previous attempt did, if there was one (do not propose the same change again):\n{{output:Apply to copy}}\n\nHere is the current training cell. It must keep defining `model` as a dict with \"weights\", \"bias\" and a \"predict\" function taking one feature list and returning 0 or 1. It may use the variables X_train and y_train only.\n----\nimport math\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.01\nfor epoch in range(10):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n----\nPropose ONE small change that might improve accuracy (for example the learning rate, the number of epochs, or feature scaling inside the loop). Return the complete new cell source and one sentence why.",
     "execution_count": null,
     "outputs": []
    },
@@ -180,7 +180,7 @@
       ]
      }
     },
-    "source": "# Run the proposal on a COPY of this session's variables; the baseline `model` is untouched.\nimport json as _json\ncandidate_ns = {k: v for k, v in globals().items() if not k.startswith(\"_\")}\ntry:\n    exec(proposal[\"source\"], candidate_ns)\n    candidate = candidate_ns[\"model\"]\n    pred = [candidate[\"predict\"](x) for x in X_test]\n    tp = sum(1 for p, t in zip(pred, y_test) if p == 1 and t == 1); tn = sum(1 for p, t in zip(pred, y_test) if p == 0 and t == 0)\n    candidate_metrics = {\"accuracy\": (tp + tn) / len(y_test)}\n    print(\"why:\", proposal[\"why\"])\n    print(\"baseline accuracy: %.3f\" % metrics[\"accuracy\"])\n    print(\"candidate accuracy: %.3f\" % candidate_metrics[\"accuracy\"])\n    print(\"delta: %+.3f\" % (candidate_metrics[\"accuracy\"] - metrics[\"accuracy\"]))\nexcept Exception as error:\n    candidate_metrics = {\"accuracy\": None, \"error\": \"%s: %s\" % (type(error).__name__, error)}\n    print(\"the proposal failed:\", candidate_metrics[\"error\"])\n",
+    "source": "# Run the proposal on a COPY of this session's variables; the baseline `model` is untouched.\n# `history` remembers every attempt of this run, so Report can list them.\ntry:\n    history\nexcept NameError:\n    history = []\ncandidate_ns = {k: v for k, v in globals().items() if not k.startswith(\"_\")}\ntry:\n    exec(proposal[\"source\"], candidate_ns)\n    candidate = candidate_ns[\"model\"]\n    pred = [candidate[\"predict\"](x) for x in X_test]\n    tp = sum(1 for p, t in zip(pred, y_test) if p == 1 and t == 1); tn = sum(1 for p, t in zip(pred, y_test) if p == 0 and t == 0)\n    candidate_metrics = {\"accuracy\": (tp + tn) / len(y_test)}\n    print(\"attempt %d\" % (len(history) + 1))\n    print(\"why:\", proposal[\"why\"])\n    print(\"baseline accuracy: %.3f\" % metrics[\"accuracy\"])\n    print(\"candidate accuracy: %.3f\" % candidate_metrics[\"accuracy\"])\n    print(\"delta: %+.3f\" % (candidate_metrics[\"accuracy\"] - metrics[\"accuracy\"]))\nexcept Exception as error:\n    candidate_metrics = {\"accuracy\": None, \"error\": \"%s: %s\" % (type(error).__name__, error)}\n    print(\"attempt %d\" % (len(history) + 1))\n    print(\"the proposal failed:\", candidate_metrics[\"error\"])\nhistory.append({\"why\": proposal[\"why\"], \"accuracy\": candidate_metrics.get(\"accuracy\"), \"error\": candidate_metrics.get(\"error\"), \"source\": proposal[\"source\"]})\n",
     "execution_count": null,
     "outputs": []
    },
@@ -246,7 +246,7 @@
       "outputs": []
      }
     },
-    "source": "print(\"=\" * 48)\nprint(\"Self-improvement loop: one pass\")\nprint(\"=\" * 48)\nprint(\"verdict:\", verdict[\"action\"], \"(confidence %.2f)\" % verdict[\"confidence\"])\nfor r in verdict.get(\"reasons\", []):\n    print(\" -\", r)\nprint(\"baseline accuracy: %.3f\" % metrics[\"accuracy\"])\nprint(\"candidate accuracy:\", candidate_metrics.get(\"accuracy\"))\nif verdict[\"action\"] == \"keep\":\n    print()\n    print(\"To keep this change: paste the source below into 'Train classifier (baseline)',\")\n    print(\"or push it to the Library as a new version of train-classifier.\")\n    print(\"-\" * 48)\n    print(proposal[\"source\"])\nelif verdict[\"action\"] == \"ask\":\n    print(\"Too close to call: run the loop again, or change the proposal prompt.\")\nelse:\n    print(\"Reverted: the baseline stays. Run the loop again for another proposal.\")\n",
+    "source": "print(\"=\" * 48)\nprint(\"Self-improvement loop: %d attempt%s\" % (len(history), \"\" if len(history) == 1 else \"s\"))\nprint(\"=\" * 48)\nprint(\"baseline accuracy: %.3f\" % metrics[\"accuracy\"])\nfor i, h in enumerate(history, 1):\n    shown = (\"accuracy %.3f (%+.3f)\" % (h[\"accuracy\"], h[\"accuracy\"] - metrics[\"accuracy\"])) if h[\"accuracy\"] is not None else \"failed: \" + str(h[\"error\"])\n    print(\"  %d. %s - %s\" % (i, shown, h[\"why\"]))\nprint(\"last verdict:\", verdict[\"action\"], \"(confidence %.2f)\" % verdict[\"confidence\"])\nfor r in verdict.get(\"reasons\", []):\n    print(\" -\", r)\nif verdict[\"action\"] == \"keep\":\n    print()\n    print(\"To keep this change: paste the source below into 'Train classifier (baseline)',\")\n    print(\"or push it to the Library as a new version of train-classifier.\")\n    print(\"-\" * 48)\n    print(history[-1][\"source\"])\nelif verdict[\"action\"] == \"ask\":\n    print(\"Too close to call after the loop's budget: run again, or change the proposal prompt.\")\nelse:\n    print(\"Reverted every attempt: the baseline stays. Run again for new proposals.\")\n",
     "execution_count": null,
     "outputs": []
    }
@@ -373,6 +373,15 @@
     "kind": "control",
     "source": "report",
     "target": "finish"
+   },
+   {
+    "id": "e-judge-propose",
+    "kind": "control",
+    "source": "judge",
+    "target": "propose",
+    "loop": true,
+    "max_fires": 2,
+    "when": "verdict[\"action\"] != \"keep\""
    }
   ]
  },

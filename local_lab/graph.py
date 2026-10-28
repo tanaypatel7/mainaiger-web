@@ -7,15 +7,19 @@ says how execution flows between them.
 * **Nodes**: one ``start``, one ``finish``, and ``code``/``markdown`` nodes that
   each point at a notebook cell by ``cell_index``.
 * **Control edges** are the triggers: ``A -> B`` means "when A finishes
-  successfully, B may run". A node with several incoming control edges runs
-  after all of them (join-all). Cycles are rejected in this version.
+  successfully, the arrow fires and B runs". An edge may carry ``when`` (one
+  Python expression the source cell's session answers; the arrow fires only if
+  it is true) and a *loop* edge (``loop: true`` with a ``max_fires`` budget)
+  leads back to an earlier cell so its body runs again. Cycles among forward
+  (non-loop) edges are rejected. A node with several incoming edges runs once
+  all of them are decided, if at least one fired (graph_run.py).
 * **Data edges** are derived, not drawn by hand: a cell's *inputs* are the
   names it reads without defining; its *outputs* are the names it defines.
   The nearest upstream producer of each input is shown as a dashed data edge.
 
-Execution is serial in one kernel session: the scheduler orders the nodes
-topologically and runs them one at a time, so a branching picture never means
-parallel execution. The analysis is advisory (static Python cannot see dynamic
+Execution is serial: the scheduler orders the nodes topologically along the
+forward edges and runs them one at a time in their sessions, so a branching
+picture never means parallel execution. The analysis is advisory (static Python cannot see dynamic
 names), and the user can override declared inputs/outputs per cell.
 """
 import ast
@@ -26,6 +30,9 @@ import re
 SCHEMA_VERSION = 2
 NODE_KINDS = {'start', 'finish', 'code', 'markdown'}
 EDGE_KINDS = {'control', 'data'}
+MAX_CONDITION = 300         # characters of a trigger condition (one Python expression)
+LOOP_DEFAULT_FIRES = 3      # a loop arrow drawn without a budget runs back this many times at most
+LOOP_MAX_FIRES = 100
 MAX_NODES, MAX_EDGES, MAX_SOURCE = 200, 1000, 100000
 FORM_TYPES = ('text', 'number', 'integer', 'flag', 'choice')
 
@@ -264,6 +271,28 @@ def validate(document):
             _require(kinds[target] != 'start', 'Edge %s: nothing leads into start' % ident)
             _require(kinds[source] != 'markdown' and kinds[target] != 'markdown', 'Edge %s: markdown nodes do not execute' % ident)
             key = ('control', source, target)
+            # A condition: one Python expression the source cell's session answers after the cell finishes;
+            # the arrow fires only when it is true. A loop arrow leads back to an earlier cell and carries a
+            # budget (max_fires). See docs/LOCAL_LAB_SETUP.md "Loop arrows and conditions".
+            when = edge.get('when')
+            if when in (None, ''):
+                edge.pop('when', None)
+            else:
+                _require(isinstance(when, str) and len(when) <= MAX_CONDITION and '\n' not in when, 'Edge %s: a condition is one line of at most %d characters' % (ident, MAX_CONDITION))
+                try:
+                    ast.parse(when.strip(), '<condition>', 'eval')
+                except SyntaxError as error:
+                    raise GraphError('Edge %s: the condition is not a Python expression (%s)' % (ident, error.msg)) from None
+                edge['when'] = when.strip()
+            if edge.get('loop'):
+                _require(edge['loop'] is True, 'Edge %s: loop must be true or absent' % ident)
+                _require(kinds[source] == 'code' and kinds[target] == 'code', 'Edge %s: a loop arrow joins two code cells' % ident)
+                fires = edge.get('max_fires', LOOP_DEFAULT_FIRES)
+                _require(isinstance(fires, int) and not isinstance(fires, bool) and 1 <= fires <= LOOP_MAX_FIRES, 'Edge %s: max_fires must be between 1 and %d' % (ident, LOOP_MAX_FIRES))
+                edge['max_fires'] = fires
+            else:
+                edge.pop('loop', None)
+                _require('max_fires' not in edge, 'Edge %s: only loop arrows have max_fires' % ident)
         else:
             name = edge.get('name')
             _require(isinstance(name, str) and NAME.match(name), 'Edge %s needs a Python name' % ident)
@@ -281,7 +310,12 @@ def validate(document):
         else:
             positions[ident] = {'x': float(pos['x']), 'y': float(pos['y'])}
     layout.setdefault('viewport', {'x': 0, 'y': 0, 'zoom': 1})
-    order(doc)  # raises on control cycles
+    order(doc)  # raises on cycles among forward (non-loop) control edges
+    for edge in loop_edges(doc):
+        # A loop arrow must lead back: its target is upstream of its source along the forward arrows,
+        # so firing it re-runs a body that ends at the source.
+        _require(edge['source'] in reachable(doc, [edge['target']]),
+                 'Edge %s is marked as a loop but %s does not lead forward to %s; a loop arrow goes back to an earlier cell' % (edge['id'], edge['target'], edge['source']))
     return doc
 
 
@@ -431,13 +465,22 @@ def control_edges(doc):
     return [e for e in doc['graph']['edges'] if e['kind'] == 'control']
 
 
+def forward_edges(doc):
+    """Control edges that are not loops: the acyclic picture that gives the order."""
+    return [e for e in doc['graph']['edges'] if e['kind'] == 'control' and not e.get('loop')]
+
+
+def loop_edges(doc):
+    return [e for e in doc['graph']['edges'] if e['kind'] == 'control' and e.get('loop')]
+
+
 def order(doc):
-    """Topological order of all nodes by control edges (stable: document order breaks ties)."""
+    """Topological order of all nodes by forward control edges (stable: document order breaks ties)."""
     nodes = [n['id'] for n in doc['graph']['nodes']]
     position = {ident: i for i, ident in enumerate(nodes)}
     incoming = {ident: 0 for ident in nodes}
     outgoing = {ident: [] for ident in nodes}
-    for edge in control_edges(doc):
+    for edge in forward_edges(doc):
         incoming[edge['target']] += 1
         outgoing[edge['source']].append(edge['target'])
     ready = sorted((ident for ident in nodes if incoming[ident] == 0), key=position.get)
@@ -451,14 +494,14 @@ def order(doc):
                 ready.append(nxt)
                 ready.sort(key=position.get)
     if len(result) != len(nodes):
-        raise GraphError('Control edges form a cycle; loops are not supported yet')
+        raise GraphError('Control edges form a cycle; mark the arrow that goes back as a loop (it then carries a budget)')
     return result
 
 
 def reachable(doc, roots, downstream=True):
-    """Node ids reachable from roots along control edges (including the roots)."""
+    """Node ids reachable from roots along forward control edges (including the roots)."""
     adjacency = {}
-    for edge in control_edges(doc):
+    for edge in forward_edges(doc):
         a, b = (edge['source'], edge['target']) if downstream else (edge['target'], edge['source'])
         adjacency.setdefault(a, []).append(b)
     seen, stack = set(), list(roots)

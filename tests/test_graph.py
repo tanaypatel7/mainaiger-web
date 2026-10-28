@@ -81,8 +81,32 @@ class DocumentTests(unittest.TestCase):
     def test_cycles_are_rejected(self):
         doc = branching_document()
         doc['graph']['edges'].append({'id': 'back', 'kind': 'control', 'source': 'train', 'target': 'load'})
-        with self.assertRaises(g.GraphError):
+        with self.assertRaisesRegex(g.GraphError, 'mark the arrow that goes back as a loop'):
             g.validate(doc)
+    def test_loop_arrows_and_conditions(self):
+        doc = branching_document()
+        edge = lambda **k: dict({'id': 'back', 'kind': 'control', 'source': 'train', 'target': 'load'}, **k)
+        # A loop arrow is allowed where a plain arrow would be a cycle; it gets a default budget and leaves the order alone.
+        doc['graph']['edges'].append(edge(loop=True))
+        clean = g.validate(doc); back = next(e for e in clean['graph']['edges'] if e['id'] == 'back')
+        self.assertEqual((back['loop'], back['max_fires']), (True, g.LOOP_DEFAULT_FIRES))
+        self.assertEqual(g.order(clean), g.order(branching_document())); self.assertEqual([e['id'] for e in g.loop_edges(clean)], ['back']); self.assertNotIn('back', [e['id'] for e in g.forward_edges(clean)])
+        self.assertEqual(g.plan(clean, 'all'), ['load', 'normalize', 'train', 'inspect'], 'loops do not change what a run includes')
+        self.assertNotIn('train', g.reachable(clean, ['inspect']), 'reachability follows forward arrows only')
+        for bad, message in ((edge(loop=True, max_fires=0), 'max_fires'), (edge(loop=True, max_fires=True), 'max_fires'), (edge(loop=True, max_fires=101), 'max_fires'), (edge(loop='yes'), 'loop must be true'),
+                             (dict(edge(loop=True), source='inspect', target='train'), 'does not lead forward'), (dict(edge(loop=True), source='start', target='load'), 'joins two code cells')):
+            with self.subTest(bad=bad), self.assertRaisesRegex(g.GraphError, message):
+                d = branching_document(); d['graph']['edges'].append(bad); g.validate(d)
+        with self.assertRaisesRegex(g.GraphError, 'only loop arrows have max_fires'):
+            d = branching_document(); d['graph']['edges'][2]['max_fires'] = 2; g.validate(d)
+        # Conditions: one Python expression, stripped; anything else is refused at save time.
+        d = branching_document(); d['graph']['edges'][2]['when'] = '  len(features) > 1 '; d['graph']['edges'][3]['when'] = ''
+        clean = g.validate(d); self.assertEqual(clean['graph']['edges'][2]['when'], 'len(features) > 1'); self.assertNotIn('when', clean['graph']['edges'][3])
+        for bad, message in (('x = 1', 'not a Python expression'), ('if x', 'not a Python expression'), ('a\nb', 'one line'), ('x' * 301, 'one line'), (5, 'one line')):
+            with self.subTest(bad=bad), self.assertRaisesRegex(g.GraphError, message):
+                d = branching_document(); d['graph']['edges'][2]['when'] = bad; g.validate(d)
+        with self.assertRaisesRegex(g.GraphError, 'not a Python expression'):
+            d = branching_document(); d['graph']['edges'].append(edge(loop=True, when='while True')); g.validate(d)
     def test_bad_layout_entries_are_dropped_not_fatal(self):
         doc = g.new_document(); doc['layout']['nodes']['ghost'] = {'x': 1, 'y': 2}; doc['layout']['nodes']['start'] = {'x': 'no'}
         layout = g.validate(doc)['layout']['nodes']
@@ -129,7 +153,8 @@ class ExecutionTests(unittest.TestCase):
         snap = run.snapshot()
         self.assertEqual(recorded, ['load', 'normalize', 'train', 'inspect'])
         self.assertEqual({k: v['status'] for k, v in snap['nodes'].items()}, {'load': 'ok', 'normalize': 'ok', 'train': 'ok', 'inspect': 'ok'})
-        self.assertEqual(snap['fired'], ['e2', 'e3', 'e4', 'e5', 'e6'])  # e1 (start->load) is the entry, never "fired" by a cell
+        self.assertEqual(snap['fired'], ['e1', 'e2', 'e3', 'e4', 'e5', 'e6'])  # Start fires e1 when an "all" run begins; cells fire the rest
+        self.assertEqual({k: v['state'] for k, v in snap['edges'].items()}, {e: 'fired' for e in ('e1', 'e2', 'e3', 'e4', 'e5', 'e6')}); self.assertEqual(snap['steps'], 4)
         self.assertEqual(snap['nodes']['train']['output'], "{'peak': 1.0}\n")
         cells = {c['id']: c for c in self.doc['notebook']['cells']}
         self.assertEqual(cells['load']['outputs'][0]['text'], 'loaded\n'); self.assertEqual(cells['load']['execution_count'], 1)
@@ -140,7 +165,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(run.wait(30), 'failed')
         statuses = {k: v['status'] for k, v in run.snapshot()['nodes'].items()}
         self.assertEqual(statuses, {'load': 'ok', 'normalize': 'error', 'train': 'skipped', 'inspect': 'skipped'})
-        self.assertEqual(run.snapshot()['fired'], ['e2'])
+        self.assertEqual(run.snapshot()['fired'], ['e1', 'e2'])
         self.assertIn('normalize stopped the run', run.snapshot()['error'])
     def test_cancel_interrupts_current_cell_and_skips_rest(self):
         self.doc['notebook']['cells'][1]['source'] = 'import time\nwhile True: time.sleep(0.01)'

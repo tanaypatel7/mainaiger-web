@@ -350,6 +350,69 @@ class ModelCellPanelTests(RealServerCase):
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class LoopArrowPanelTests(RealServerCase):
+    """A loop arrow drawn backwards on the canvas, given a condition and a budget in the inspector, run on a real kernel."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sys
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+
+    def point_on_edge(self, edge_id):
+        return self.page.evaluate("""id => { const path = document.querySelector(`#edge-layer path.edge[data-id="${id}"]`); const pt = path.getPointAtLength(path.getTotalLength() * 0.5); const svg = document.getElementById('edges').getBoundingClientRect(); const m = new DOMMatrix(getComputedStyle(document.getElementById('world')).transform); return {x: svg.left + pt.x * m.a, y: svg.top + pt.y * m.d}; }""", edge_id)
+
+    def test_loop_arrow_with_condition_and_budget_then_an_untaken_branch(self):
+        p = self.page
+        # Three chained cells: init -> bump -> after.
+        p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])'); p.fill('#node-title', 'Init')
+        p.locator('.node[data-id="cell-1"] textarea').fill('n = 0')
+        p.click('#add-cell'); p.wait_for_selector('.node[data-id="cell-2"]'); p.fill('#node-title', 'Bump'); p.locator('.node[data-id="cell-2"] textarea').fill('n += 1\nprint("n =", n)')
+        p.click('#add-cell'); p.wait_for_selector('.node[data-id="cell-3"]'); p.fill('#node-title', 'After'); p.locator('.node[data-id="cell-3"] textarea').fill('print("after", n)')
+        p.click('#arrange'); p.click('#fit'); p.wait_for_timeout(150); p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        # Drag After's out port backwards onto Bump: a loop arrow, selected, with its label and panel.
+        out = p.evaluate("""() => { const r = document.querySelector('.node[data-id="cell-3"] .port.out').getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2}; }""")
+        dest = p.evaluate("""() => { const r = document.querySelector('.node[data-id="cell-2"] .node-foot').getBoundingClientRect(); return {x: r.left + 10, y: r.top + 5}; }""")
+        p.mouse.move(out['x'], out['y']); p.mouse.down(); p.mouse.move(dest['x'], dest['y'], steps=8); p.mouse.up(); p.wait_for_timeout(100)
+        p.wait_for_selector('#edge-panel:not([hidden])')
+        self.assertEqual(p.inner_text('#edge-title'), 'After → Bump (loop arrow)'); self.assertFalse(p.locator('#edge-loop-fields').is_hidden()); self.assertEqual(p.input_value('#edge-max'), '3')
+        self.assertTrue(p.evaluate("() => [...document.querySelectorAll('#edge-layer .arrow-label.loop')].some(t => t.textContent === '\u21bb 0/3')"), 'the loop label shows count/budget')
+        loop_id = p.evaluate("() => document.querySelector('#edge-layer path.loop').dataset.id")
+        self.assertTrue(p.evaluate("id => document.querySelector(`#edge-layer path.edge[data-id='${id}']`).classList.contains('selected')", loop_id))
+        p.fill('#edge-when', 'n < 3'); p.fill('#edge-max', '5'); p.click('#edge-apply'); p.wait_for_function("() => document.getElementById('toast').textContent.includes('Arrow saved')")
+        edge = next(e for e in self.server.graph_doc['graph']['edges'] if e['id'] == loop_id); self.assertEqual((edge['loop'], edge['max_fires'], edge['when']), (True, 5, 'n < 3'))
+        # Run: the review names the loop; the body runs three times; the label counts; the panel explains the last decision.
+        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm'); p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]')
+        self.assertEqual(p.inner_text('#run-dialog-arrows-list'), 'Loop After → Bump: runs the body again at most 5 times when n < 3'); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => /finished|failed|cancelled/.test(document.getElementById('run-summary').textContent)", timeout=30000)
+        self.assertIn('finished', p.inner_text('#run-summary')); self.assertEqual(p.inner_text('.node[data-id="cell-2"] .node-output').strip(), 'n = 3')
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('#edge-layer .arrow-label.loop')].map(t => t.textContent)"), ['\u21bb 2/5 \u00b7 when n < 3'], 'the label counts the firings and shows the condition')
+        self.assertIn('7 steps', p.inner_text('.node.finish .finish-note'))
+        self.assertTrue(p.evaluate("id => document.querySelector(`#edge-layer path.edge[data-id='${id}']`).classList.contains('not-fired')", loop_id), 'the last decision on the loop was "not fired"')
+        pt = self.point_on_edge(loop_id); p.mouse.click(pt['x'], pt['y']); p.wait_for_selector('#edge-panel:not([hidden])')
+        self.assertEqual(p.inner_text('#edge-result'), 'not fired · 2/5 · condition gave False')
+        # A condition on a forward arrow that is false leaves the cells behind it idle.
+        first = next(e['id'] for e in self.server.graph_doc['graph']['edges'] if e['source'] == 'cell-1' and e['target'] == 'cell-2')
+        pt = self.point_on_edge(first); p.mouse.click(pt['x'], pt['y']); p.wait_for_function("() => document.getElementById('edge-title').textContent === 'Init → Bump'")
+        p.fill('#edge-when', 'n > 100'); p.click('#edge-apply'); p.wait_for_function("() => document.getElementById('toast').textContent.includes('Arrow saved')")
+        self.assertTrue(p.evaluate("() => [...document.querySelectorAll('#edge-layer .arrow-label')].some(t => t.textContent === 'when n > 100')"))
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]'); self.assertIn('Init → Bump fires only when n > 100', p.inner_text('#run-dialog-arrows-list')); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => document.querySelector('.node.finish .finish-note').textContent.includes('idle')", timeout=30000)
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('.node.code .status')].map(s => s.textContent)"), ['ok', 'idle', 'idle'])
+        self.assertTrue(p.evaluate("id => document.querySelector(`#edge-layer path.edge[data-id='${id}']`).classList.contains('not-fired')", first))
+        self.assertIn('1/3 ok · 2 idle', p.inner_text('.node.finish .finish-note'))
+        kinds = p.evaluate("() => [...document.querySelectorAll('#log-list li')].map(li => li.dataset.kind)"); self.assertIn('arrow.not_fired', kinds); self.assertIn('arrow.fired', kinds)
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
 class FormCellPanelTests(RealServerCase):
     """A form on a card: define fields in the inspector, fill them on the card, run with those values."""
     @classmethod

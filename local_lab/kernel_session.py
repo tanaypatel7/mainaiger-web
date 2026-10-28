@@ -20,6 +20,9 @@ import time
 CELL_TIMEOUT = 60        # seconds a cell may run before an interrupt is sent
 INTERRUPT_GRACE = 5      # seconds to wait for the kernel to acknowledge an interrupt
 START_TIMEOUT = 90       # seconds for the container/kernel to report ready
+PROTOCOLS = (1, 2)       # kernel protocol versions this client speaks (2 adds "evaluate")
+CONDITION_TIMEOUT = 10   # seconds a trigger condition (one expression) may take
+MAX_EXPRESSION = 2000    # bytes of a condition expression
 MAX_LINE = 1 << 20       # bytes; a longer protocol line ends the session
 MAX_CODE = 100000
 
@@ -66,9 +69,10 @@ class KernelSession:
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
         message = self._next_message(timeout)
-        if message is None or message.get('type') != 'ready' or message.get('protocol') != 1:
+        if message is None or message.get('type') != 'ready' or message.get('protocol') not in PROTOCOLS:
             self._terminate('The kernel did not report ready. ' + (self.ended or 'Check Docker Desktop and the image.'))
             raise KernelError(self.ended)
+        self.protocol = message.get('protocol')
         self.info = {'python': str(message.get('python', ''))[:40], 'cwd': str(message.get('cwd', ''))[:200]}
         self.started_at = time.time()
         return self.status()
@@ -166,6 +170,49 @@ class KernelSession:
             except OSError:
                 return False
         return True
+
+    def evaluate(self, expression, timeout=CONDITION_TIMEOUT):
+        """Ask the session one expression (a trigger condition) without running a cell.
+        Returns {status: ok|error|interrupted|timeout, truth, value, error, elapsed_ms}."""
+        if not isinstance(expression, str) or not expression.strip():
+            raise ValueError('Enter a Python expression')
+        if len(expression.encode('utf-8')) > MAX_EXPRESSION:
+            raise ValueError('The condition exceeds %d bytes' % MAX_EXPRESSION)
+        if not self.lock.acquire(blocking=False):
+            raise KernelBusy('A cell is already running; interrupt it or wait')
+        try:
+            if not self.alive:
+                raise KernelError(self.ended or 'No running session')
+            if getattr(self, 'protocol', 2) < 2:
+                raise KernelError('This session\'s kernel is older and cannot answer trigger conditions; start a new session')
+            ident = self._ident()
+            self.executing = True
+            try:
+                self._send({'id': ident, 'op': 'evaluate', 'expression': expression})
+                reply = self._await(ident, timeout)
+                if reply is None and self.alive:
+                    self.interrupt()
+                    reply = self._await(ident, INTERRUPT_GRACE)
+                    if reply is not None and reply.get('status') == 'interrupted':
+                        reply['status'] = 'timeout'
+                if reply is None:
+                    if self.alive:
+                        self._terminate('The condition did not respond to an interrupt; the session was terminated.')
+                    raise KernelError(self.ended or 'The session stopped while evaluating a condition')
+            finally:
+                self.executing = False
+            if not reply.get('ok', True):
+                raise KernelError(str(reply.get('message', 'The kernel rejected the condition'))[:500])
+            error = reply.get('error') if isinstance(reply.get('error'), dict) else None
+            if error:
+                error = {'ename': str(error.get('ename', ''))[:100], 'evalue': str(error.get('evalue', ''))[:2000],
+                         'traceback': [str(l)[:500] for l in error.get('traceback', [])][:60] if isinstance(error.get('traceback'), list) else []}
+            status = reply.get('status') if reply.get('status') in ('ok', 'error', 'interrupted', 'timeout') else 'error'
+            return {'status': status, 'truth': bool(reply.get('truth')) if status == 'ok' else None,
+                    'value': str(reply.get('value', ''))[:200] if status == 'ok' else None, 'error': error,
+                    'elapsed_ms': int(reply.get('elapsed_ms') or 0)}
+        finally:
+            self.lock.release()
 
     def variables(self):
         with self.lock:

@@ -118,6 +118,9 @@ class RemoteLab:
     def variables(self, ident):
         return self.post('/api/sessions/variables', {'id': ident})
 
+    def evaluate(self, ident, expression):
+        return self.post('/api/sessions/evaluate', {'id': ident, 'expression': expression, 'confirm': True}, timeout=HTTP_TIMEOUT + 15)
+
     def files(self, root=None, path=''):
         if not root:
             return self.get('/api/files')
@@ -214,6 +217,25 @@ class RemoteKernel:
             return self.lab.variables(self.remote_id).get('variables', [])
         except RemoteError as error:
             raise KernelError('%s: %s' % (self.label, error))
+
+    def evaluate(self, expression, timeout=None):
+        """A trigger condition, answered by the session on the device (POST /api/sessions/evaluate there)."""
+        if not self.lock.acquire(blocking=False):
+            raise KernelBusy('A cell is already running on %s; interrupt it or wait' % self.label)
+        try:
+            if not self.alive:
+                raise KernelError(self.ended or 'Session %s is not running' % self.label)
+            try:
+                data = self.lab.evaluate(self.remote_id, expression)
+            except RemoteError as error:
+                if getattr(error, 'status', None) == 404:
+                    raise KernelError('%s: the Lab on that device is older and cannot answer trigger conditions; update it' % self.label)
+                raise KernelError('%s: %s' % (self.label, error))
+            result = data.get('result') if isinstance(data.get('result'), dict) else {}
+            return {'status': result.get('status', 'error'), 'truth': result.get('truth'), 'value': result.get('value'),
+                    'error': result.get('error'), 'elapsed_ms': result.get('elapsed_ms', 0)}
+        finally:
+            self.lock.release()
 
     def stop(self):
         try:
