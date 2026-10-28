@@ -376,8 +376,14 @@ self-improvement loop example"), now with a real loop arrow (Judge → Propose
 while the verdict is not "keep", at most twice) and a history of attempts. It
 improves a classifier function rather than the Lab's own repository, so no
 step can touch your files; it runs in CI on a real kernel with a fake model,
-and is unverified with a real Ollama model. The repository-copy version with
-the two test folders and a reviewed "apply to checkout" step is still future.
+and is unverified with a real Ollama model. **The repository version exists
+too**: `examples/self-improve-repo.ipymb` copies the workspace checkout into
+the session's `/tmp`, applies one find/replace proposal to the copy, runs the
+test module you name there, judges from the diff and the test output, loops
+at most twice, and reports the patch for you to `git apply` (described in
+`docs/LOCAL_LAB_SETUP.md` "The repository loop example"; CI runs it against
+this repository with a fake model). Still future: a held-out test folder the
+proposer never sees, and a reviewed "apply to checkout" step.
 
 ## 4. The thin-slice pattern (how model output becomes decisions)
 

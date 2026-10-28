@@ -135,8 +135,9 @@ What the pieces do, and which file implements them:
 - **Export Python** writes the cells reachable from Start, in trigger order,
   as one `.py` with the notes as comments. **Clear outputs** resets counts.
 - **Open example…** lists the Mainbooks in `examples/` (`signal-demo`,
-  `csv-pipeline`, `branching-stats`, `self-improve`); `tests/test_examples.py`
-  runs each one with the real kernel, so they cannot rot. **Open .ipymb / .ipynb** sends a
+  `csv-pipeline`, `branching-stats`, `self-improve`, `self-improve-repo`);
+  `tests/test_examples.py` runs each one with the real kernel, so they cannot
+  rot. **Open .ipymb / .ipynb** sends a
   plain notebook to `POST /api/graph/import` (`graph.from_notebook()`): cells
   are chained in notebook order, notes kept, ids/outputs/counts preserved,
   titles taken from the nearest heading or first comment, and an import
@@ -611,6 +612,47 @@ is unverified here: expect most proposals to be rejected or to fail the
 schema, which the run shows plainly. Fixed while building it: output
 placeholders now accept cell titles with spaces (`{{output:Apply to copy}}`
 was left literal before).
+
+### The repository loop example (`examples/self-improve-repo.ipymb`)
+
+Rung 3 of the ladder in `docs/AI_HARNESS.md` §3: the same loop, but the
+thing being improved is a **repository** — for MainAIger, this one. The
+session's workspace must be a checkout; nothing is ever written to it.
+
+```
+Start → Task (form: what to change, file, test module) → Copy repository → Baseline tests
+      → Read the file → Propose change (model) → Apply to copy → Run tests
+      → Judge (model) → Report → Finish        ↑ loop Judge → Propose, at most 2×, while not "keep"
+```
+
+- **Copy repository** copies `/workspace` into the session's own `/tmp`
+  (the container's 32 MB tmpfs; `.git`, `node_modules`, caches skipped).
+- **Baseline tests** runs `python3 -m unittest <module>` in the copy: the
+  bar every proposal must clear. Keep the module small: a cell has 60 s.
+- **Read the file** prints the named file with line numbers (up to the
+  form's `max_lines`); that output is what the model sees.
+- **Propose change** asks for ONE change as `{find, replace, why}`: `find`
+  must be a verbatim snippet that occurs exactly once. Small, checkable, no
+  whole-file rewrites.
+- **Apply to copy** restores the file from the workspace first (so every
+  attempt starts clean), applies the replacement to the copy only, refuses a
+  `find` that is missing or ambiguous, refuses a result that is not valid
+  Python, and prints the unified diff. **Run tests** runs the same module in
+  the changed copy.
+- **Judge** reads the diff and the test output; the loop arrow sends the run
+  back to Propose while the verdict is not "keep", at most twice, and the
+  next prompt carries the previous attempt.
+- **Report** lists every attempt and, for a keep, the patch: *you* apply it
+  with `git apply` in your checkout, read it, run the full suite, commit.
+
+**Status:** runs in CI on a real kernel with a fake model against this very
+repository (`tests/test_examples.py`): the fake first renames a function
+(the tests fail, the judge reverts, the loop fires), then adds a comment
+(the tests pass, the judge keeps); the test checks that each judge prompt
+carried that pass's diff and test result, that the second proposal prompt
+carried the first attempt, and that the checkout was not written. With a
+real Ollama model: unverified; expect many proposals to be refused or to
+fail the tests, which the Report shows plainly.
 
 ## Devices: run cells on another machine (`local_lab/devices.py`, `remote.py`, `/api/devices/*`)
 

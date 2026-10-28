@@ -23,6 +23,9 @@ EXPECTED = {
     'branching-stats': {'last': 'report', 'contains': 'Report complete.', 'fired': 8, 'also': {'load': '200 samples'}},
     'self-improve': {'last': 'report', 'contains': 'Self-improvement loop: 2 attempts', 'fired': 14, 'steps': 12, 'also': {'apply': 'candidate accuracy', 'report': 'last verdict: keep'}, 'model': True,
                      'loop': ('e-judge-propose', 1, 'not_fired')},
+    'self-improve-repo': {'last': 'report', 'contains': 'Repository self-improvement loop: 2 attempts', 'fired': 15, 'steps': 13, 'model': 'repo',
+                          'also': {'copy': 'copied', 'baseline': 'baseline: OK', 'tests': 'tests after the change: OK', 'report': 'git apply change.patch'},
+                          'loop': ('e-judge-propose', 1, 'not_fired')},
 }
 
 BETTER_TRAIN = '''import math
@@ -54,20 +57,29 @@ print("candidate trained")
 '''
 
 
-def make_fake_model():
+def make_fake_model(kind=True):
     """Stands in for Ollama in CI: a bad proposal first (the loop sends the run back), then a good one;
-    the judge reads the numbers in its prompt. Records every prompt so the test can check what the model saw."""
+    the judge reads the numbers (or the test result) in its prompt. Records every prompt so the test can check what the model saw."""
     seen = {'proposals': 0, 'prompts': []}
     def fake_model(cfg, prompt):
         seen['prompts'].append(prompt)
+        ok = lambda value: {'ok': True, 'value': value, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+        if kind == 'repo':
+            if cfg['output'] == 'proposal':
+                seen['proposals'] += 1
+                if seen['proposals'] == 1:
+                    return ok({'find': 'def extract_json(text):', 'replace': 'def extract_json_renamed(text):', 'why': 'Rename the function (breaks its callers: a bad idea, to show a revert).'})
+                return ok({'find': 'def extract_json(text):', 'replace': '# Pulls the first JSON object out of a model reply, fenced or not.\ndef extract_json(text):', 'why': 'A one-line comment above extract_json, as the task asked.'})
+            good = 'tests after the change: OK' in prompt
+            return ok({'action': 'keep' if good else 'revert', 'confidence': 0.9, 'reasons': ['tests pass' if good else 'tests fail or the change did not apply']})
         if cfg['output'] == 'proposal':
             seen['proposals'] += 1
             source, why = (WORSE_TRAIN, 'Skip training: zero weights (a bad idea, to show a revert).') if seen['proposals'] == 1 else (BETTER_TRAIN, 'Train properly: ten times the learning rate and 300 epochs.')
-            return {'ok': True, 'value': {'source': source, 'why': why}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+            return ok({'source': source, 'why': why})
         import re
         delta = re.search(r'delta: ([+-][0-9.]+)', prompt)
         action = 'keep' if delta and float(delta.group(1)) >= 0.02 else ('revert' if delta and float(delta.group(1)) < 0 else 'ask')
-        return {'ok': True, 'value': {'action': action, 'confidence': 0.8, 'reasons': ['delta ' + (delta.group(1) if delta else 'unknown')]}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+        return ok({'action': action, 'confidence': 0.8, 'reasons': ['delta ' + (delta.group(1) if delta else 'unknown')]})
     fake_model.seen = seen
     return fake_model
 
@@ -100,13 +112,19 @@ class ExampleRunTests(unittest.TestCase):
                 kernel = KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')]); kernel.start(timeout=20)
                 try:
                     doc = g.validate(load_example(name))
-                    fake = make_fake_model() if expect.get('model') else None
+                    fake = make_fake_model(expect['model']) if expect.get('model') else None
                     run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake).start()
                     self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error'))
                     snap = run.snapshot()
                     self.assertTrue(all(n['status'] == 'ok' for n in snap['nodes'].values()), {k: v['status'] for k, v in snap['nodes'].items()})
                     self.assertIn(expect['contains'], snap['nodes'][expect['last']]['output'])
-                    if expect.get('model'):
+                    if expect.get('model') == 'repo':
+                        judge_prompts = [p for p in fake.seen['prompts'] if 'Decide:' in p]
+                        self.assertEqual(len(judge_prompts), 2); self.assertIn('tests after the change: FAILED', judge_prompts[0]); self.assertIn('-def extract_json(text):', judge_prompts[0]); self.assertIn('tests after the change: OK', judge_prompts[1])
+                        self.assertIn('Rename the function', fake.seen['prompts'][2], 'the second proposal prompt carries the first attempt'); self.assertIn(' 114  def extract_json(text):', fake.seen['prompts'][0], 'the model saw the numbered file')
+                        self.assertIn('1. tests FAILED', snap['nodes']['report']['output']); self.assertIn('2. tests OK', snap['nodes']['report']['output']); self.assertIn('+# Pulls the first JSON object', snap['nodes']['report']['output'])
+                        self.assertNotIn('Pulls the first JSON object', (Path(__file__).resolve().parent.parent / 'local_lab' / 'decide.py').read_text(), 'the checkout is never written')
+                    elif expect.get('model'):
                         judge_prompts = [p for p in fake.seen['prompts'] if 'Decide:' in p]
                         self.assertEqual(len(judge_prompts), 2); self.assertIn('delta: -0.3', judge_prompts[0]); self.assertIn('delta: +0.0', judge_prompts[1], 'the judge saw each pass\'s Apply output through {{output:Apply to copy}}')
                         self.assertIn('Skip training', fake.seen['prompts'][2], 'the second proposal prompt carries the previous attempt')
