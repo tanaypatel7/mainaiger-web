@@ -547,6 +547,39 @@ is ever run), login/absent/garbage cases and the route are tested with a fake
 CLI (`tests/test_network.py`); the page was opened in headless Chromium. A real
 tailnet listing on your Mac is unverified.
 
+## Map: code as a graph (`/map`, `local_lab/codemap.py`, `GET /api/codemap`)
+
+The fifth page shows a folder of code as nodes and edges, starting with the
+Lab itself (`root=self`, the `local_lab` package) and any Files root. Reading
+is done with Python's `ast` and never executes anything.
+
+- **Nodes:** one per module (file), class, function and method; one per HTTP
+  route found in request handlers (`do_GET`/`do_POST` comparing `path` to
+  literals, including `startswith` prefixes shown with a trailing `/`); one
+  per UI file (`.js`/`.html`).
+- **Edges:** `contains` (module → class/function, class → method); `imports`
+  (inside the folder only); `calls` (resolved as written: a name defined or
+  imported in the same module, `alias.name` for imported modules,
+  `self.method`, `Class.method`); `routes` (route → handler function); `ui`
+  (UI file → route, from `api('/api/…')`, `fetch('/api/…')`, `json('/api/…')`).
+- **What it does not see:** dynamic calls, callbacks, reflection, generated
+  code, calls into libraries and builtins (counted as "unresolved", not drawn).
+  A map is advisory, like data edges.
+- **Page:** one column per module; routes first, UI last; click a node for its
+  source (`GET /api/codemap/source`, bounded, symlink-safe) and its calls /
+  called-by / imports / routes; search highlights; modules collapse (all are
+  collapsed by default above 600 members); edge kinds toggle; Fit goes by width.
+  Limits: 2,000 files, 1 MB per file, 20,000 nodes; results cached 10 s.
+
+This is roadmap B1. The LLM labelling of clusters (B3) and editing from the
+map (B2) come next; both build on these nodes.
+
+**Status:** modules/classes/functions, import and call resolution, routes and
+UI edges on the Lab itself, relative imports, hidden/symlink/skipped files and
+syntax errors on a synthetic folder, and the routes are tested
+(`tests/test_codemap.py`); the page is tested in headless Chromium
+(`MapPageTests`).
+
 ## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it

@@ -23,6 +23,7 @@ from . import environment as lab_environment
 from . import files as lab_files
 from . import decide as lab_decide
 from . import network as lab_network
+from . import codemap as lab_codemap
 from .journal import Journal
 from .sessions import SessionRegistry
 from .devices import DeviceManager, DeviceError
@@ -275,7 +276,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
-        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8')}
+        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8'),'/map':('map.html','text/html; charset=utf-8'),'/map.js':('map.js','text/javascript; charset=utf-8'),'/map.css':('map.css','text/css; charset=utf-8')}
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
         if path=='/api/state':
@@ -375,6 +376,22 @@ class LabHandler(BaseHTTPRequestHandler):
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             run=self.server.graph_run
             return self.out(200,{'run':run.snapshot() if run else None,'session':self.server.kernel_status(),'revision':self.server.graph_revision})
+        if path in ('/api/codemap','/api/codemap/source'):
+            # Code map: the Lab's own package ("self") or one of the Files roots, read with ast, never executed.
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            q=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query);root=q.get('root',['self'])[0]
+            with self.server.lock: settings=dict(self.server.settings)
+            roots={'self':str(Path(__file__).resolve().parent),**lab_files.roots(settings,self.server.state_dir)}
+            if root not in roots:return self.out(404,{'error':'Unknown folder'})
+            try:
+                if path=='/api/codemap':
+                    cache=getattr(self.server,'_codemap_cache',{});entry=cache.get(root)
+                    if not entry or time.time()-entry[0]>10:entry=(time.time(),lab_codemap.scan(roots[root]));cache[root]=entry;self.server._codemap_cache=cache
+                    data=dict(entry[1]);data['roots']=sorted(roots);data['root_name']=root;data['root']=roots[root] if root!='self' else 'this Lab (local_lab)'
+                    return self.out(200,data)
+                data=lab_codemap.source(roots[root],q.get('path',[''])[0],int(q.get('line',['1'])[0]),int(q.get('end_line',['1'])[0]))
+                return self.out(200,data)
+            except (lab_codemap.MapError,ValueError,OSError) as e:return self.out(400,{'error':str(e)})
         if path=='/api/devices':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             return self.out(200,{'devices':self.server.devices.list(),'local_port':self.server.server_port,

@@ -442,3 +442,21 @@ class DevicesPageTests(RealServerCase):
         # Terminal on the device session.
         p.wait_for_function("() => document.getElementById('term-session').options.length >= 1"); p.fill('#term-input', 'echo via-device'); p.press('#term-input', 'Enter')
         p.wait_for_function("() => document.getElementById('term-output').textContent.includes('via-device')")
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class MapPageTests(RealServerCase):
+    """The code map of the Lab itself renders, selects, shows source, searches, collapses."""
+    def test_map_of_self(self):
+        p = self.page
+        p.goto(self.origin + '/map'); p.wait_for_selector('#map-main:not([hidden])'); p.wait_for_function("() => document.querySelectorAll('.mnode').length > 300")
+        self.assertIn('nodes', p.inner_text('#map-stats')); self.assertGreater(p.evaluate("() => document.querySelectorAll('#edge-layer path').length"), 300)
+        p.locator('.mnode[data-id="def:graph.py:validate"]').click(); p.wait_for_function("() => document.getElementById('sel-source').textContent.includes('def validate(document)')")
+        self.assertIn('function: validate', p.inner_text('#sel-title')); self.assertIn('Called by', p.inner_text('#sel-links')); self.assertGreater(p.evaluate("() => document.querySelectorAll('#edge-layer path.lit').length"), 3)
+        p.locator('#sel-links a[data-id="def:server.py:LabServer.set_graph"]').first.click(); p.wait_for_function("() => document.getElementById('sel-title').textContent.includes('set_graph')")
+        p.fill('#map-search', 'library'); p.wait_for_function("() => document.querySelectorAll('.mnode.hit').length > 5 && document.querySelectorAll('.mnode.dim').length > 100")
+        p.fill('#map-search', '')
+        p.click('#map-collapse'); p.wait_for_function("() => document.querySelectorAll('.mnode.method').length === 0 && document.querySelectorAll('.mnode.module').length > 15")
+        p.click('#map-expand'); p.wait_for_function("() => document.querySelectorAll('.mnode.method').length > 100")
+        p.uncheck('#edge-calls'); p.wait_for_function("() => document.querySelectorAll('#edge-layer path.map-calls').length === 0")
+        p.screenshot(path='/tmp/claude-0/-home-claude/a8759d54-ed59-512b-84e2-204b2e346c72/scratchpad/map.png')
