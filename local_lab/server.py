@@ -25,6 +25,9 @@ from . import decide as lab_decide
 from . import network as lab_network
 from . import codemap as lab_codemap
 from . import events as lab_events
+from .memory import MemoryStore
+from . import memory_api, memory_browser
+from .browser_import import BrowserImportManager
 from .journal import Journal
 from .sessions import SessionRegistry
 from .devices import DeviceManager, DeviceError
@@ -86,6 +89,8 @@ class LabServer(ThreadingHTTPServer):
         # given settings; the default runs the kernel inside a Docker container.
         self.kernel_factory=kernel_factory or docker_kernel;self.kernel_lock=threading.Lock()
         self.journal=Journal(state)
+        self.memory=MemoryStore(state)
+        self.browser_import=BrowserImportManager(state, on_capture=lambda capture, job: memory_browser.persist_capture(self, capture, job))
         self.kernels=SessionRegistry(self.kernel_factory,state,self.journal)
         # One graph document in memory (the browser opens/downloads .ipymb files) and at most one run.
         self.graph_doc=graph_module.new_document();self.graph_revision=0;self.graph_run=None;self.graph_lock=threading.RLock()
@@ -230,6 +235,8 @@ class LabServer(ThreadingHTTPServer):
             self.events.close()
             self.kernels.stop_all()
             self.devices.close()
+            self.browser_import.close()
+            self.memory.close()
         finally: super().server_close()
     def start_setup_job(self, action, runner=None):
         """Run one long setup operation in the background; `runner(progress)` returns {'ok','output'}."""
@@ -298,8 +305,20 @@ class LabHandler(BaseHTTPRequestHandler):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
         assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8'),'/map':('map.html','text/html; charset=utf-8'),'/map.js':('map.js','text/javascript; charset=utf-8'),'/map.css':('map.css','text/css; charset=utf-8')}
+        assets.update({'/memory': ('memory.html', 'text/html; charset=utf-8'), '/memory.js': ('memory.js', 'text/javascript; charset=utf-8'), '/memory.css': ('memory.css', 'text/css; charset=utf-8')})
+        assets['/browser-memory.js'] = ('browser-memory.js', 'text/javascript; charset=utf-8')
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
+        if path == '/api/memory' or path.startswith('/api/memory/'):
+            session = self.session()
+            if not session: return self.out(401, {'error': 'Local owner sign-in required'})
+            try:
+                if path == '/api/memory/browser/bundle':
+                    return self.out(200, raw=memory_browser.bundle(self.server), kind='application/zip')
+                result = memory_browser.status(self.server) if path == '/api/memory/browser' else memory_api.get(self.server, path, urlsplit(self.path).query)
+                if path == '/api/memory': result['csrf'] = session['csrf']
+                return self.out(200, result)
+            except (ValueError, TypeError) as e: return self.out(400, {'error': str(e)})
         if path=='/api/state':
             session=self.session()
             if not session:return self.out(401,{'error':'Local owner sign-in required'})
@@ -468,7 +487,13 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.host_ok() or not self.origin_ok():return self.out(403,{'error':'Local same-origin request required'})
         try:
-            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path in ('/api/graph','/api/graph/import') else 600000 if path in ('/api/models/chat','/api/models/decide') else 25000)
+            path=urlsplit(self.path).path
+            # Authenticate before reading a potentially large archive into memory.
+            if path.startswith('/api/memory/'):
+                owner = self.session()
+                if not owner or not hmac.compare_digest(self.headers.get('X-CSRF-Token', ''), owner['csrf']):
+                    return self.out(403, {'error': 'Local owner sign-in required'})
+            data=self.body(limit=45000000 if path == '/api/memory/import' else 4000000 if path.startswith('/api/memory/') else 4000000 if path in ('/api/graph','/api/graph/import') else 600000 if path in ('/api/models/chat','/api/models/decide') else 25000)
             if path=='/api/login':
                 if set(data)!={'key'} or not isinstance(data['key'],str):raise ValueError('Key required')
                 with self.server.lock:
@@ -481,6 +506,10 @@ class LabHandler(BaseHTTPRequestHandler):
                 return self.out(200,{'csrf':csrf},cookie=f'mainaiger_lab_owner={sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600')
             session=self.session()
             if not session or not hmac.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']):return self.out(403,{'error':'Local owner sign-in required'})
+            if path.startswith('/api/memory/browser/'):
+                return self.out(200, memory_browser.action(self.server, path.rsplit('/', 1)[-1], data))
+            if path.startswith('/api/memory/'):
+                return self.out(200, memory_api.post(self.server, path, data))
             if path=='/api/logout':
                 with self.server.lock:self.server.sessions={k:v for k,v in self.server.sessions.items() if v is not session}
                 return self.out(200,{'ok':True},cookie='mainaiger_lab_owner=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')

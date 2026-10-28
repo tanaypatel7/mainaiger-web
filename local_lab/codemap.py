@@ -107,7 +107,7 @@ def cell_for(node, import_roots):
     """A cell that calls one function from the map: a form for its parameters in front of three lines of code.
 
     ``import_roots`` are the folders (inside the session, then on this device) that hold the
-    package; the code adds the first one that exists to ``sys.path``. Parameters whose default or
+    package; the code selects the first root containing the mapped source file. Parameters whose default or
     annotation gives a type become typed fields; the rest are text fields (strings). Methods get a
     cell that needs an instance, said plainly. Nothing here runs: it is text for a cell.
     """
@@ -139,8 +139,11 @@ def cell_for(node, import_roots):
              '# Made by the Map page: the form above holds the parameters; edit anything.',
              'import os, sys',
              'for _root in (%s):' % roots_literal,
-             '    if _root and os.path.isdir(_root) and _root not in sys.path:',
-             '        sys.path.insert(0, _root); break',
+             '    if _root and os.path.isfile(os.path.join(_root, %r)):' % node['path'],
+             '        if _root not in sys.path: sys.path.insert(0, _root)',
+             '        break',
+             'else:',
+             '    raise FileNotFoundError(%r)' % ('Mapped source is unavailable in this session: ' + node['path']),
              'from %s import %s' % (module, cls if is_method else func)]
     if literal:
         lines += ['def _literal(text):  # a text field with no known type: empty = None, a Python literal if it looks like one, else the text',

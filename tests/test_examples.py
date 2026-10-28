@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from local_lab import graph as g
@@ -101,6 +102,38 @@ class ExampleDocumentTests(unittest.TestCase):
         self.assertEqual(sorted(f.stem for f in EXAMPLES.glob('*.ipymb')), sorted(EXPECTED))
 
 
+class RepositoryCopyTests(unittest.TestCase):
+    def test_copy_uses_the_session_workspace_and_is_unique(self):
+        from examples.build_self_improve_repo import COPY
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'target.py').write_text('VALUE = 1\n')
+            (root / 'outside.py').symlink_to('/etc/passwd')
+            first = {'file': 'target.py'}
+            second = {'file': 'target.py'}
+            try:
+                with patch('os.getcwd', return_value=str(root)):
+                    exec(COPY, first)
+                    exec(COPY, second)
+                self.assertEqual(first['SRC'], str(root))
+                self.assertNotEqual(first['DST'], second['DST'])
+                self.assertEqual((Path(first['DST']) / 'target.py').read_text(), 'VALUE = 1\n')
+                self.assertFalse((Path(first['DST']) / 'outside.py').exists())
+                (Path(first['DST']) / 'target.py').write_text('VALUE = 2\n')
+                self.assertEqual((root / 'target.py').read_text(), 'VALUE = 1\n')
+                self.assertEqual((Path(second['DST']) / 'target.py').read_text(), 'VALUE = 1\n')
+            finally:
+                for state in (first, second):
+                    if 'repo_copy' in state:
+                        state['repo_copy'].cleanup()
+
+    def test_copy_rejects_a_target_outside_the_repository_before_copying(self):
+        from examples.build_self_improve_repo import COPY
+        for name in ('/etc/passwd', '../target.py', 'folder/../../target.py'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                exec(COPY, {'file': name})
+
+
 class ExampleRunTests(unittest.TestCase):
     def setUp(self):
         self.kernel = KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')]); self.kernel.start(timeout=20)
@@ -114,7 +147,7 @@ class ExampleRunTests(unittest.TestCase):
                     doc = g.validate(load_example(name))
                     fake = make_fake_model(expect['model']) if expect.get('model') else None
                     run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake).start()
-                    self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error'))
+                    self.assertEqual(run.wait(60), 'finished', run.snapshot())
                     snap = run.snapshot()
                     self.assertTrue(all(n['status'] == 'ok' for n in snap['nodes'].values()), {k: v['status'] for k, v in snap['nodes'].items()})
                     self.assertIn(expect['contains'], snap['nodes'][expect['last']]['output'])
