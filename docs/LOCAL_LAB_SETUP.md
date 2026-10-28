@@ -142,6 +142,14 @@ What the pieces do, and which file implements them:
   magics and constructs the analysis cannot see. **Export .ipynb**
   (`graph.to_notebook()`) writes the cells in trigger order and says whether
   a branching graph was flattened.
+- **Save as Mainbook… / Open Mainbook…** (`local_lab/mainbooks.py`) — the
+  first time you save, the Lab shows the folder it will write to (default
+  `~/Documents/MainAIger Lab/Mainbooks`, editable) and creates it only after
+  you approve. The choice is remembered in the private state directory. Names
+  are letters, digits, spaces, dashes and underscores; files are `name.ipymb`;
+  writes are atomic; symlinks are refused; replacing an existing name asks
+  first. ⌘S/Ctrl+S opens the save dialog. The folder is a document store only
+  and is never mounted into a container.
 - Outputs and execution counts are written back into the notebook cells, so
   **Download .ipymb** carries results; **Open** accepts `.ipymb` or a plain
   `.ipynb` (converted into a sequential Start → cells → Finish chain).

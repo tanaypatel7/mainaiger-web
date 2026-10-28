@@ -17,6 +17,7 @@ from .kernel_session import KernelSession, KernelError, KernelBusy
 from . import setup as lab_setup
 from . import graph as graph_module
 from . import models as lab_models
+from . import mainbooks as lab_mainbooks
 from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
@@ -228,6 +229,15 @@ class LabHandler(BaseHTTPRequestHandler):
             if not session:return self.out(401,{'error':'Local owner sign-in required'})
             view=self.server.graph_view();view['csrf']=session['csrf'];view['session']=self.server.kernel_status()
             return self.out(200,view)
+        if path=='/api/mainbooks':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            data=lab_mainbooks.status(self.server.state_dir);data['mainbooks']=lab_mainbooks.listing(self.server.state_dir)
+            return self.out(200,data)
+        if path.startswith('/api/mainbooks/'):
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            name=__import__('urllib.parse').parse.unquote(path[len('/api/mainbooks/'):])
+            try:return self.out(200,{'document':lab_mainbooks.load(self.server.state_dir,name),'name':name})
+            except lab_mainbooks.MainbookError as e:return self.out(404,{'error':str(e)})
         if path=='/api/examples':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             items=[]
@@ -350,6 +360,20 @@ class LabHandler(BaseHTTPRequestHandler):
                 if set(data)!={'document'}:raise ValueError('Send {document}')
                 try:return self.out(200,self.server.set_graph(data['document']))
                 except graph_module.GraphError as e:return self.out(409 if 'in progress' in str(e) else 400,{'error':str(e)})
+            if path=='/api/mainbooks/folder':
+                if set(data)!={'folder','confirm'} or data['confirm'] is not True:raise ValueError('Confirm the folder choice')
+                try:return self.out(200,lab_mainbooks.configure(self.server.state_dir,data['folder']))
+                except lab_mainbooks.MainbookError as e:return self.out(400,{'error':str(e)})
+                except OSError as e:return self.out(400,{'error':'The folder could not be created: %s'%e})
+            if path=='/api/mainbooks/save':
+                if set(data)-{'name','overwrite'} or 'name' not in data or not isinstance(data.get('overwrite',False),bool):raise ValueError('Send {name, overwrite}')
+                with self.server.graph_lock:
+                    if self.server.graph_running():return self.out(409,{'error':'Wait for the run to finish before saving'})
+                    try:result=lab_mainbooks.save(self.server.state_dir,data['name'],self.server.graph_doc,bool(data.get('overwrite',False)))
+                    except lab_mainbooks.MainbookError as e:return self.out(409 if 'already exists' in str(e) else 400,{'error':str(e)})
+                    except OSError as e:return self.out(400,{'error':'The Mainbook could not be written: %s'%e})
+                    self.server.graph_doc=result['document']
+                return self.out(200,{'name':result['name'],'path':result['path'],'bytes':result['bytes']})
             if path=='/api/graph/import':
                 if set(data)!={'notebook'}:raise ValueError('Send {notebook}')
                 try:document,report=graph_module.from_notebook(data['notebook'])

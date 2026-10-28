@@ -350,6 +350,36 @@
     $('import-dialog').showModal(); $('import-ok').focus();
   }
   $('import-ok').addEventListener('click', () => $('import-dialog').close());
+  // ---- saved Mainbooks (owner-approved folder)
+  let books = {configured: false, folder: null, default: '', mainbooks: []};
+  async function refreshMainbooks() {
+    try { books = await api('/api/mainbooks'); const select = $('open-mainbook'); select.textContent = ''; const first = document.createElement('option'); first.value = ''; first.textContent = books.configured ? (books.mainbooks.length ? 'Open Mainbook…' : 'Open Mainbook… (none saved yet)') : 'Open Mainbook… (choose a folder first)'; select.append(first);
+      for (const m of books.mainbooks) { const o = document.createElement('option'); o.value = m.name; o.textContent = `${m.name}${m.cells != null ? ' (' + m.cells + ' cells)' : ''}`; select.append(o); } } catch {}
+  }
+  function docName() { const own = state.doc && state.doc.notebook.metadata && state.doc.notebook.metadata.mainaiger; return own && own.name ? own.name : ''; }
+  $('save-mainbook').addEventListener('click', async () => {
+    await refreshMainbooks();
+    $('folder-section').hidden = books.configured; $('folder-input').value = books.folder || books.default || ''; $('folder-note').textContent = books.configured ? '' : 'Default shown; you can change it. The folder is created if it does not exist.';
+    $('name-input').value = docName(); $('save-note').textContent = books.configured ? `Saved into ${books.folder}. Letters, digits, spaces, dashes and underscores.` : 'Letters, digits, spaces, dashes and underscores. The file becomes name.ipymb.';
+    $('save-dialog').showModal(); (books.configured ? $('name-input') : $('folder-input')).focus();
+  });
+  $('save-cancel').addEventListener('click', () => $('save-dialog').close());
+  $('save-confirm').addEventListener('click', async () => {
+    const name = $('name-input').value.trim(); if (!name) { $('save-note').textContent = 'Enter a name.'; return; }
+    try {
+      if (!books.configured) { books = await api('/api/mainbooks/folder', {folder: $('folder-input').value, confirm: true}); $('folder-section').hidden = true; }
+      if (state.dirty) { clearTimeout(state.saveTimer); await save(); }
+      let result;
+      try { result = await api('/api/mainbooks/save', {name, overwrite: false}); }
+      catch (error) { if (error.status === 409 && window.confirm(`Replace the existing Mainbook "${name}"?`)) result = await api('/api/mainbooks/save', {name, overwrite: true}); else throw error; }
+      $('save-dialog').close(); const view = await api('/api/graph'); const run = state.run; applyView(view); state.run = run; $('save-state').textContent = 'Saved · ' + name; toast(`Saved ${name}.ipymb in ${books.folder}`); refreshMainbooks();
+    } catch (error) { $('save-note').textContent = error.message; }
+  });
+  $('open-mainbook').addEventListener('change', async () => {
+    const name = $('open-mainbook').value; $('open-mainbook').value = ''; if (!name) return;
+    try { const data = await api('/api/mainbooks/' + encodeURIComponent(name)); await openDocument(data.document, name + '.ipymb'); $('save-state').textContent = 'Saved · ' + name; } catch (error) { toast(error.message); }
+  });
+  document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); $('save-mainbook').click(); } });
   $('open-example').addEventListener('change', async () => {
     const name = $('open-example').value; $('open-example').value = ''; if (!name) return;
     try { const data = await api('/examples/' + encodeURIComponent(name)); await openDocument(data.document, name); } catch (error) { toast(error.message); }
@@ -422,7 +452,7 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', drawEdges);
