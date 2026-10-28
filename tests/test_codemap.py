@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -53,13 +54,44 @@ class ScanTests(unittest.TestCase):
             with self.assertRaises(codemap.MapError): codemap.scan(root / 'pkg' / 'a.py')
 
 
+SAMPLE = 'def scale(values, factor=2.0, *, round_to: int = 1, label="x", verbose=False, seed=None, cb=print, **extra):\n    """Scale values."""\n    return [round(v * factor, round_to) for v in values]\n\n\nclass Box:\n    def __init__(self, size=1):\n        self.size = size\n    def grow(self, by: int = 1):\n        return self.size + by\n'
+
+
+def sample_package(root):
+    (root / 'tools').mkdir(); (root / 'tools' / '__init__.py').write_text(''); (root / 'tools' / 'ops.py').write_text(SAMPLE)
+
+
+class CellFromMapTests(unittest.TestCase):
+    def test_params_and_cell_for_a_function_and_a_method(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); sample_package(root); m = codemap.scan(root); ids = {n['id']: n for n in m['nodes']}
+            fn = ids['def:tools/ops.py:scale']; self.assertEqual(fn['module'], 'tools.ops')
+            self.assertEqual([(p['name'], p['kind'], p.get('default', p.get('default_text'))) for p in fn['params']],
+                             [('values', 'positional', None), ('factor', 'positional', 2.0), ('round_to', 'keyword', 1), ('label', 'keyword', 'x'), ('verbose', 'keyword', False), ('seed', 'keyword', 'None'), ('cb', 'keyword', 'print'), ('extra', 'kwarg', None)])
+            cell = codemap.cell_for(fn, ['/workspace', str(root)])
+            self.assertEqual(cell['title'], 'scale'); self.assertEqual(cell['note'], 'Scale values.'); self.assertEqual(cell['from'], {'path': 'tools/ops.py', 'line': 1, 'name': 'scale', 'module': 'tools.ops'})
+            self.assertEqual([(f['name'], f['type'], f.get('default')) for f in cell['form']['fields']],
+                             [('values', 'text', None), ('factor', 'number', 2.0), ('round_to', 'integer', 1), ('label', 'text', 'x'), ('verbose', 'flag', False), ('seed', 'text', None), ('cb', 'text', None)])
+            self.assertIn('from tools.ops import scale', cell['source']); self.assertIn('result = scale(values, factor, round_to=round_to, label=label, verbose=verbose, seed=seed, cb=cb)', cell['source'])
+            self.assertIn("for _root in ('/workspace', '%s', ):" % root, cell['source']); self.assertIn('**extra is not on the form', cell['source']); self.assertIn('values = _literal(values)', cell['source']); self.assertNotIn('label = _literal', cell['source'])
+            # It runs: the form values are bound first, exactly as a form cell does.
+            import subprocess, sys
+            from local_lab import graph as g
+            form = {'fields': cell['form']['fields'], 'values': {'values': '[1, 2.5, 3]', 'factor': 3.0, 'round_to': 1, 'label': 'x', 'verbose': False, 'seed': '', 'cb': 'print'}}
+            out = subprocess.run([sys.executable, '-I', '-c', g.form_prelude(form) + cell['source']], capture_output=True, text=True); self.assertEqual(out.stdout, '[3.0, 7.5, 9.0]\n', out.stderr)
+            method = codemap.cell_for(ids['def:tools/ops.py:Box.grow'], [str(root)])
+            self.assertIn('obj = Box()  # an instance of Box', method['source']); self.assertIn('result = obj.grow(by)', method['source']); self.assertEqual([f['name'] for f in method['form']['fields']], ['by'])
+            with self.assertRaisesRegex(codemap.MapError, 'functions and methods'): codemap.cell_for(ids['mod:tools/ops.py'], [])
+
+
 class CodemapHttpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); state, key = initialize_state(Path(self.tmp.name) / 'private'); self.key = key
-        self.server = LabServer(('127.0.0.1', 0), state, key); threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        from tests.test_sessions import local_factory
+        self.server = LabServer(('127.0.0.1', 0), state, key, kernel_factory=local_factory); threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.port = self.server.server_port; self.origin = f'http://127.0.0.1:{self.port}'
     def tearDown(self):
-        self.server.shutdown(); self.server.server_close(); self.tmp.cleanup()
+        self.server.kernels.stop_all(); self.server.shutdown(); self.server.server_close(); self.tmp.cleanup()
     def req(self, path, body=None, headers=None):
         c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=60); h = {'Host': f'127.0.0.1:{self.port}'}; h.update(headers or {})
         if body is not None: h['Content-Type'] = 'application/json'
@@ -74,6 +106,31 @@ class CodemapHttpTests(unittest.TestCase):
         status, data, _ = self.req('/api/codemap/source?root=self&path=graph.py&line=1&end_line=2', headers=cookie); self.assertEqual(status, 200); self.assertIn('Graph documents', data['text'])
         self.assertEqual(self.req('/api/codemap/source?root=self&path=../tests/test_codemap.py&line=1&end_line=2', headers=cookie)[0], 400)
         c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10); c.request('GET', '/map', headers={'Host': f'127.0.0.1:{self.port}'}); r = c.getresponse(); self.assertEqual(r.status, 200); self.assertIn(b'Code map', r.read()); c.close()
+    def test_a_function_on_the_map_becomes_a_cell_that_runs(self):
+        status, data, head = self.req('/api/login', {'key': self.key}, {'Origin': self.origin}); auth = {'Origin': self.origin, 'Cookie': head['Set-Cookie'].split(';')[0], 'X-CSRF-Token': data['csrf']}; cookie = {'Cookie': auth['Cookie']}
+        ws = Path(self.tmp.name) / 'ws'; ws.mkdir(); sample_package(ws); self.server.settings['workspace'] = str(ws)
+        self.assertEqual(self.req('/api/codemap/cell', {'root': 'workspace', 'id': 'def:nope'}, auth)[0], 404)
+        status, made, _ = self.req('/api/codemap/cell', {'root': 'workspace', 'id': 'def:tools/ops.py:scale'}, auth)
+        self.assertEqual((status, made['queued'], made['cell']['title'], made['cell']['warning']), (200, 1, 'scale', None)); self.assertIn("('/workspace', '%s', )" % ws, made['cell']['source'])
+        self.assertEqual([c['id'] for c in self.req('/api/graph/inbox', headers=cookie)[1]['cells']], [made['cell']['id']])
+        again = self.req('/api/codemap/cell', {'root': 'workspace', 'id': 'def:tools/ops.py:scale'}, auth)[1]; self.assertEqual(again['queued'], 1, 'the same function replaces its earlier queued cell')
+        # The Graph page would add the cell; here the test adds it the same way and runs it on the real kernel with form values.
+        from local_lab import graph as g
+        doc = g.new_document(); cell = again['cell']
+        doc['notebook']['cells'][0] = {'id': 'cell-1', 'cell_type': 'code', 'metadata': {'mainaiger': {'title': cell['title'], 'form': {'fields': cell['form']['fields'], 'values': {'values': '[2, 4]', 'factor': 0.5}}}}, 'source': cell['source'], 'execution_count': None, 'outputs': []}
+        self.assertEqual(self.req('/api/graph', {'document': doc}, auth)[0], 200)
+        self.assertEqual(self.req('/api/graph/inbox/take', {'ids': [cell['id']]}, auth)[1], {'taken': 1, 'left': 0})
+        rev = self.req('/api/sessions', headers=cookie)[1]['revision']; self.req('/api/sessions/start', {'confirm': True, 'revision': rev}, auth)
+        self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth)
+        for _ in range(400):
+            run = self.req('/api/graph/run', headers=cookie)[1]['run']
+            if run['state'] not in ('pending', 'running'): break
+            time.sleep(0.05)
+        self.assertEqual((run['state'], run['nodes']['cell-1']['output']), ('finished', '[1.0, 2.0]\n'), run['nodes']['cell-1'].get('error'))
+        self.assertIn('map.cell', [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']])
+        # Without a workspace that contains the folder, the cell says what to set.
+        self.server.settings['workspace'] = None
+        self.assertIn('set the workspace', self.req('/api/codemap/cell', {'root': 'self', 'id': 'def:graph.py:validate'}, auth)[1]['cell']['warning'])
 
 
 if __name__ == '__main__':

@@ -146,7 +146,12 @@ already allowed; editing (B2) needs a write-approved Projects folder like
 Mainbooks. Deliverable of B1: the map of `local_lab` itself, reviewed by you for
 "is this true?"
 
-### B2. Navigate and modify
+### B2. Navigate and modify — first step built (28 Oct 2026)
+
+*Built:* "Make a cell from this…" on the Map turns a function into a form
+cell in the open Mainbook (fields = parameters, code = import and call), so a
+repository's functions get GUI elements without writing code. Editing a
+function from the map and writing it back is still to do.
 
 *What:* edit a function in its node; the Lab writes it back to the file (approved
 folder, atomic, diff shown before writing), and for this repository runs the test

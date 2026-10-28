@@ -727,6 +727,32 @@ is done with Python's `ast` and never executes anything.
 This is roadmap B1. The LLM labelling of clusters (B3) and editing from the
 map (B2) come next; both build on these nodes.
 
+### Make a cell from a function (`codemap.cell_for`, `POST /api/codemap/cell`, the Graph page inbox)
+
+The first way GUI elements get tied to repository code. Select a function or
+method on the Map and press **Make a cell from this…**: the Lab reads the
+function's parameters (`params` on every function node: names, literal
+defaults, simple annotations) and queues a cell for the open Mainbook. The
+Graph page picks it up within a few seconds (or when you switch to it), chains
+it after the selected cell (else after the last cell), and shows it as a
+**form cell**: one field per parameter, typed from the default or annotation
+(`int` → integer, `float` → number, `bool` → flag, `str` → text; anything else
+is a text field read as a Python literal when it looks like one, empty = None),
+in front of a few lines of code that put the package's folder on `sys.path`
+(`/workspace/…` inside the session when the workspace holds it, else the host
+path), import the function and print the result. `*args`/`**kwargs` and
+non-literal defaults are left out of the form and said so in a comment;
+methods get a cell that constructs an instance and says it needs one. If the
+session cannot see the folder, the cell carries a warning naming the workspace
+to set. Routes and UI files do not become cells (the session has no network);
+their handlers do. Every queued cell is a journal line (`map.cell`).
+
+**Status:** parameters, the generated cell (run for real with form values),
+methods, the route, the inbox (queue, replace, take) and the cell running on a
+real kernel are tested (`tests/test_codemap.py`); the full path Map → button →
+Graph page → form on the card → run is tested in headless Chromium
+(`MapToCellTests`).
+
 **Status:** modules/classes/functions, import and call resolution, routes and
 UI edges on the Lab itself, relative imports, hidden/symlink/skipped files and
 syntax errors on a synthetic folder, and the routes are tested

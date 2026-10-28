@@ -90,6 +90,7 @@ class LabServer(ThreadingHTTPServer):
         # One graph document in memory (the browser opens/downloads .ipymb files) and at most one run.
         self.graph_doc=graph_module.new_document();self.graph_revision=0;self.graph_run=None;self.graph_lock=threading.RLock()
         self.env_build=None;self.image_ready=lab_environment.image_ready
+        self.cell_inbox=[]  # cells made elsewhere (the Map page) waiting for the Graph page to add them to the open Mainbook
         super().__init__(address,LabHandler)
         self.devices=DeviceManager(state,local_port=self.server_port,journal=self.journal)
         # Event triggers: a timer, a changed file, a chat prompt or "Fire now" may start a run once the owner arms the Mainbook.
@@ -337,6 +338,9 @@ class LabHandler(BaseHTTPRequestHandler):
             return self.out(200,{'sessions':self.server.kernels.list(),'active':self.server.kernels.active_id,'max':__import__('local_lab.sessions',fromlist=['MAX_SESSIONS']).MAX_SESSIONS,
                                  'defaults':{'cpus':settings['cpus'],'memory':settings['memory'],'workspace':settings['workspace']},'revision':revision,
                                  'environment':{'image':env['image'],'derived':env['derived'],'ready':env['ready']},'options':{'cpus':sorted(CPUS,key=float),'memory':sorted(MEMORY,key=lambda m:int(m[:-1])*(1024 if m.endswith('g') else 1))}})
+        if path=='/api/graph/inbox':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            with self.server.graph_lock:return self.out(200,{'cells':list(self.server.cell_inbox)})
         if path=='/api/events':
             # What may fire this Mainbook, whether it is armed, and the recent firings.
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
@@ -723,6 +727,35 @@ class LabHandler(BaseHTTPRequestHandler):
                 run=self.server.graph_run
                 if run is None or not self.server.graph_running():return self.out(409,{'error':'No graph run is in progress'})
                 run.cancel();return self.out(200,{'run':run.snapshot()})
+            if path=='/api/codemap/cell':
+                # A function on the Map becomes a cell: a form for its parameters in front of a call. Queued for the Graph page.
+                if set(data)!={'root','id'} or not isinstance(data['root'],str) or not isinstance(data['id'],str):raise ValueError('Send {root, id}')
+                with self.server.lock: settings=dict(self.server.settings)
+                roots={'self':str(Path(__file__).resolve().parent),**lab_files.roots(settings,self.server.state_dir)}
+                if data['root'] not in roots:return self.out(404,{'error':'Unknown folder'})
+                try:
+                    scanned=lab_codemap.scan(roots[data['root']]);node=next((n for n in scanned['nodes'] if n['id']==data['id']),None)
+                    if node is None:return self.out(404,{'error':'No such node on the map (reload the map)'})
+                    host_root=str(Path(roots[data['root']]).resolve().parent) if data['root']=='self' else roots[data['root']]
+                    import_roots=[]
+                    if settings.get('workspace'):
+                        ws=Path(settings['workspace']).resolve();hr=Path(host_root).resolve()
+                        if hr==ws:import_roots.append('/workspace')
+                        elif ws in hr.parents:import_roots.append('/workspace/'+hr.relative_to(ws).as_posix())
+                    import_roots.append(host_root)
+                    cell=lab_codemap.cell_for(node,import_roots)
+                except lab_codemap.MapError as e:return self.out(400,{'error':str(e)})
+                cell['id']='inbox-'+secrets.token_hex(3);cell['root']=data['root'];cell['queued_at']=time.time()
+                cell['warning']=None if len(import_roots)>1 else 'The session cannot see this folder: set the workspace (Setup page) to %s or a parent of it so the container can import the package'%host_root
+                with self.server.graph_lock:
+                    self.server.cell_inbox=[c for c in self.server.cell_inbox if c['from']!=cell['from']][-19:]+[cell]
+                self.server.journal.write('map.cell','Cell made from %s (%s:%d), waiting for the Graph page'%(node['name'],node['path'],node['line']),{'id':cell['id'],'node':node['id'],'root':data['root']})
+                return self.out(200,{'cell':cell,'queued':len(self.server.cell_inbox)})
+            if path=='/api/graph/inbox/take':
+                if set(data)!={'ids'} or not isinstance(data['ids'],list) or not all(isinstance(i,str) for i in data['ids']):raise ValueError('Send {ids}')
+                with self.server.graph_lock:
+                    taken=[c for c in self.server.cell_inbox if c['id'] in set(data['ids'])];self.server.cell_inbox=[c for c in self.server.cell_inbox if c['id'] not in set(data['ids'])]
+                return self.out(200,{'taken':len(taken),'left':len(self.server.cell_inbox)})
             if path=='/api/events/arm':
                 # The reviewed step: the owner saw exactly what may fire this Mainbook (the dialog lists /api/events descriptions).
                 if set(data)!={'confirm','revision'} or data['confirm'] is not True or type(data['revision']) is not int:raise ValueError('Review what may fire the Mainbook, then confirm')

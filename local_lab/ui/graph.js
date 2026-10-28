@@ -1107,6 +1107,31 @@
     catch (error) { toast(error.message); }
     setTimeout(watchForRuns, 800); refreshEvents();
   });
+  async function takeInbox() {
+    // Cells made on the Map page ("Make a cell from this…") are added to the open Mainbook here, through the same insert path as "+".
+    if (state.takingInbox) return; state.takingInbox = true;
+    try {
+    let data; try { data = await api('/api/graph/inbox'); } catch { return; }
+    if (!data.cells || !data.cells.length || state.readOnly) return;
+    const finish = nodes().find(n => n.kind === 'finish');
+    for (const c of data.cells) {
+      const id = freshId('cell-');
+      // Chain after the selected cell, else after the last cell (the one that leads to Finish), else from Start.
+      let sel = state.selected && state.selected.type === 'node' ? nodeById(state.selected.id) : null;
+      if (!sel && finish) { const last = edges().find(e => e.kind === 'control' && e.target === finish.id && nodeById(e.source) && nodeById(e.source).kind === 'code'); sel = last ? nodeById(last.source) : null; }
+      const spot = freeSpot(sel);
+      const own = {title: c.title, from: c.from}; if (c.form) own.form = {fields: c.form.fields, values: Object.fromEntries(c.form.fields.filter(f => f.default !== undefined).map(f => [f.name, f.default]))};
+      cells().push({id, cell_type: 'code', metadata: {mainaiger: own}, source: c.source, execution_count: null, outputs: []});
+      nodes().push({id, kind: 'code', cell_index: cells().length - 1}); reindex(); state.doc.layout.nodes[id] = spot;
+      if (sel && sel.kind !== 'finish' && sel.kind !== 'markdown') { const toFinish = edges().find(e => e.kind === 'control' && e.source === sel.id && finish && e.target === finish.id); if (toFinish) { toFinish.target = id; edges().push({id: freshId('e'), kind: 'control', source: id, target: finish.id}); } else edges().push({id: freshId('e'), kind: 'control', source: sel.id, target: id}); }
+      else { const start = nodes().find(n => n.kind === 'start'); edges().push({id: freshId('e'), kind: 'control', source: start.id, target: id}); }
+      buildNodes(); select('node', id); toast(`Added "${c.title}" from the Map${c.warning ? ' — ' + c.warning : ''}`);
+    }
+    markDirty(); await save();
+    try { await api('/api/graph/inbox/take', {ids: data.cells.map(c => c.id)}); } catch {}
+    } finally { state.takingInbox = false; }
+  }
+  window.addEventListener('focus', takeInbox);
   async function watchForRuns() {
     // A run started by an event (not by a click here) must show up on the canvas like any other.
     if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) return;
@@ -1115,11 +1140,11 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); refreshModels(); renderEventSources(); refreshEvents(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); refreshModels(); renderEventSources(); refreshEvents(); takeInbox(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });
   // Keep the session pill truthful when the session is started or stopped from another tab or page.
-  setInterval(async () => { if (document.hidden || (state.run && (state.run.state === 'running' || state.run.state === 'pending'))) return; try { const s = await api('/api/kernel'); const was = state.session.alive; state.session = s; if (was !== s.alive) { renderInspector(); if (s.alive) refreshVariables(); } else renderInspector(); } catch {} refreshSessions(); refreshJournal(); refreshEvents(); watchForRuns(); }, 5000);
+  setInterval(async () => { if (document.hidden || (state.run && (state.run.state === 'running' || state.run.state === 'pending'))) return; try { const s = await api('/api/kernel'); const was = state.session.alive; state.session = s; if (was !== s.alive) { renderInspector(); if (s.alive) refreshVariables(); } else renderInspector(); } catch {} refreshSessions(); refreshJournal(); refreshEvents(); watchForRuns(); takeInbox(); }, 5000);
   boot();
 })();

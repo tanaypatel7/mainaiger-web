@@ -7,8 +7,11 @@
   const COL_W = 250, COL_GAP = 70, ROW_H = 28, TOP = 40;
   const state = {map: null, root: 'self', pan: {x: 30, y: 20}, zoom: 1, panning: null, selected: null, collapsed: new Set(), pos: {}, visible: new Set(), search: ''};
   let toastTimer = null; const toast = t => { $('toast').textContent = t; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4000); };
-  async function api(path) {
-    let response; try { response = await fetch(path, {credentials: 'same-origin', cache: 'no-store', redirect: 'error'}); } catch { throw new Error('Unable to reach your local Lab.'); }
+  let csrf = '';
+  async function api(path, body) {
+    const options = {credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers: {'Content-Type': 'application/json', ...(csrf ? {'X-CSRF-Token': csrf} : {})}};
+    if (body !== undefined) { options.method = 'POST'; options.body = JSON.stringify(body); }
+    let response; try { response = await fetch(path, options); } catch { throw new Error('Unable to reach your local Lab.'); }
     let data = {}; try { data = await response.json(); } catch {}
     if (response.status === 401) { $('locked').hidden = false; $('map-main').hidden = true; throw new Error('Unlock the Lab first.'); }
     if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : 'The local request could not be completed.');
@@ -90,6 +93,8 @@
     const id = state.selected; const n = id && byId()[id];
     if (!n) { $('sel-title').textContent = 'Click a node.'; $('sel-meta').textContent = ''; $('sel-doc').textContent = ''; $('sel-links').textContent = ''; $('sel-source').hidden = true; return; }
     $('sel-title').textContent = `${n.kind}: ${n.name}`; $('sel-meta').textContent = `${n.path}:${n.line}-${n.end_line}`; $('sel-doc').textContent = n.doc || (n.routes_called ? 'calls: ' + n.routes_called.join(', ') : '');
+    const canCell = n.kind === 'function' || n.kind === 'method'; $('sel-cell').hidden = !canCell; $('sel-cell-note').hidden = !canCell;
+    if (canCell) { const ps = (n.params || []).filter(p => !['self', 'cls'].includes(p.name) && !['vararg', 'kwarg'].includes(p.kind)); $('sel-cell-note').textContent = ps.length ? `A form with ${ps.length} field${ps.length === 1 ? '' : 's'} (${ps.map(p => p.name).join(', ')}) in front of a call to ${n.name}.` : `A cell that calls ${n.name}() and prints the result.`; }
     const links = $('sel-links'); links.textContent = '';
     const group = (title, items, pick) => { if (!items.length) return; const b = document.createElement('b'); b.textContent = title; links.append(b); for (const e of items.slice(0, 40)) { const t = byId()[pick(e)]; if (!t) continue; const a = document.createElement('a'); a.textContent = `${t.kind === 'method' || t.kind === 'function' || t.kind === 'class' ? t.name : t.name} · ${t.path}`; a.dataset.id = t.id; links.append(a); } if (items.length > 40) { const m = document.createElement('span'); m.className = 'muted'; m.textContent = `… ${items.length - 40} more`; links.append(m); } };
     const out = state.map.out[id] || [], inn = state.map.in[id] || [];
@@ -119,5 +124,10 @@
   $('map-root').addEventListener('change', () => load($('map-root').value).catch(e => toast(e.message)));
   $('map-reload').addEventListener('click', () => load(state.root).catch(e => toast(e.message)));
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.target.closest('input')) select(null); });
-  (async () => { try { await api('/api/state'); $('map-main').hidden = false; await load('self'); } catch (error) { if ($('locked').hidden) toast(error.message); } })();
+  $('sel-cell').addEventListener('click', async () => {
+    const n = state.selected && byId()[state.selected]; if (!n) return;
+    try { const r = await api('/api/codemap/cell', {root: state.root, id: n.id}); $('sel-cell-note').textContent = `Queued for the Graph page: "${r.cell.title}"${r.cell.form ? ` with ${r.cell.form.fields.length} form field${r.cell.form.fields.length === 1 ? '' : 's'}` : ''}. Open the Graph page and it is added to the open Mainbook.` + (r.cell.warning ? ' Note: ' + r.cell.warning : ''); toast('Cell queued: open the Graph page.'); }
+    catch (error) { toast(error.message); }
+  });
+  (async () => { try { const st = await api('/api/state'); csrf = st.csrf; $('map-main').hidden = false; await load('self'); } catch (error) { if ($('locked').hidden) toast(error.message); } })();
 })();

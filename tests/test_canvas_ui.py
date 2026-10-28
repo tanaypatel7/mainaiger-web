@@ -570,3 +570,43 @@ class MapPageTests(RealServerCase):
         p.click('#map-expand'); p.wait_for_function("() => document.querySelectorAll('.mnode.method').length > 100")
         p.uncheck('#edge-calls'); p.wait_for_function("() => document.querySelectorAll('#edge-layer path.map-calls').length === 0")
         p.screenshot(path='/tmp/claude-0/-home-claude/a8759d54-ed59-512b-84e2-204b2e346c72/scratchpad/map.png')
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class MapToCellTests(RealServerCase):
+    """Map page -> "Make a cell from this…" -> the Graph page adds a form cell that calls the function; run it."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sys
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        from tests.test_codemap import sample_package
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+        cls.ws = cls.root / 'ws'; cls.ws.mkdir(); sample_package(cls.ws); cls.server.settings['workspace'] = str(cls.ws)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+
+    def test_make_a_cell_from_a_function_and_run_it(self):
+        p = self.page
+        p.goto(self.origin + '/map'); p.wait_for_selector('#map-main:not([hidden])'); p.wait_for_function("() => document.querySelectorAll('.mnode').length > 300")
+        p.select_option('#map-root', 'workspace'); p.wait_for_selector('.mnode[data-id="def:tools/ops.py:scale"]')
+        p.locator('.mnode[data-id="mod:tools/ops.py"]').click(); p.wait_for_function("() => document.getElementById('sel-title').textContent.includes('module')"); self.assertTrue(p.locator('#sel-cell').is_hidden(), 'modules do not become cells')
+        p.locator('.mnode[data-id="def:tools/ops.py:scale"]').click(); p.wait_for_selector('#sel-cell:not([hidden])')
+        self.assertIn('A form with 7 fields (values, factor, round_to, label, verbose, seed, cb)', p.inner_text('#sel-cell-note'))
+        p.click('#sel-cell'); p.wait_for_function("() => document.getElementById('sel-cell-note').textContent.includes('Queued for the Graph page')")
+        # The Graph page picks it up, chained after the selected cell, with the form on the card.
+        p.goto(self.origin + '/graph'); p.wait_for_selector('.node[data-id="cell-2"]'); p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        self.assertEqual(p.inner_text('.node[data-id="cell-2"] .node-head b'), 'scale'); self.assertIn('from tools.ops import scale', p.input_value('.node[data-id="cell-2"] textarea'))
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('.node[data-id=\"cell-2\"] .node-form [data-field]')].map(i => i.dataset.field)"), ['values', 'factor', 'round_to', 'label', 'verbose', 'seed', 'cb'])
+        self.assertEqual(p.input_value('#form-cell-2-factor'), '2'); self.assertEqual(self.server.cell_inbox, [], 'taken')
+        self.assertTrue(any(e['source'] == 'cell-1' and e['target'] == 'cell-2' for e in self.server.graph_doc['graph']['edges']))
+        p.fill('#form-cell-2-values', '[10, 20]'); p.fill('#form-cell-2-factor', '0.5'); p.press('#form-cell-2-factor', 'Tab'); p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm'); p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]'); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => /finished|failed/.test(document.getElementById('run-summary').textContent)", timeout=30000)
+        self.assertEqual(p.inner_text('.node[data-id="cell-2"] .node-output').strip().splitlines()[0], '[5.0, 10.0]')

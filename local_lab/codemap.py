@@ -51,6 +51,117 @@ def _module_name(rel):
     return '.'.join(parts)
 
 
+def _params(func):
+    """The parameters of a def, with literal defaults and simple annotations, for the form a cell shows."""
+    args = func.args
+    out = []
+    positional = list(args.posonlyargs) + list(args.args)
+    defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    def one(arg, default, kind):
+        item = {'name': arg.arg, 'kind': kind}
+        ann = getattr(arg, 'annotation', None)
+        if ann is not None:
+            try:
+                item['annotation'] = ast.unparse(ann)[:60]
+            except Exception:
+                pass
+        if default is not None:
+            item['has_default'] = True
+            if isinstance(default, ast.Constant) and isinstance(default.value, (bool, int, float, str)):
+                item['default'] = default.value
+            elif isinstance(default, ast.Constant) and default.value is None:
+                item['default_text'] = 'None'
+            else:
+                try:
+                    item['default_text'] = ast.unparse(default)[:80]
+                except Exception:
+                    item['default_text'] = '…'
+        return item
+    for arg, default in zip(positional, defaults):
+        out.append(one(arg, default, 'positional'))
+    if args.vararg:
+        out.append({'name': args.vararg.arg, 'kind': 'vararg'})
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        out.append(one(arg, default, 'keyword'))
+    if args.kwarg:
+        out.append({'name': args.kwarg.arg, 'kind': 'kwarg'})
+    return out
+
+
+def _field_type(param):
+    """A form field type for a parameter: from its default's type, else its annotation, else text."""
+    default = param.get('default')
+    if isinstance(default, bool):
+        return 'flag'
+    if isinstance(default, int):
+        return 'integer'
+    if isinstance(default, float):
+        return 'number'
+    if isinstance(default, str):
+        return 'text'
+    ann = (param.get('annotation') or '').strip()
+    return {'bool': 'flag', 'int': 'integer', 'float': 'number', 'str': 'text'}.get(ann, 'text')
+
+
+def cell_for(node, import_roots):
+    """A cell that calls one function from the map: a form for its parameters in front of three lines of code.
+
+    ``import_roots`` are the folders (inside the session, then on this device) that hold the
+    package; the code adds the first one that exists to ``sys.path``. Parameters whose default or
+    annotation gives a type become typed fields; the rest are text fields (strings). Methods get a
+    cell that needs an instance, said plainly. Nothing here runs: it is text for a cell.
+    """
+    if node.get('kind') not in ('function', 'method'):
+        raise MapError('Cells are made from functions and methods; routes and UI files are reached through them')
+    params = node.get('params') or []
+    module = node.get('module') or _module_name(node['path'])
+    is_method = node['kind'] == 'method'
+    cls, _, func = node['name'].partition('.') if is_method else ('', '', node['name'])
+    skip = {'self', 'cls'} if is_method else set()
+    fields, calls, notes, literal = [], [], [], []
+    for param in params:
+        if param['name'] in skip:
+            continue
+        if param['kind'] in ('vararg', 'kwarg'):
+            notes.append('%s%s is not on the form; add it in the call if you need it.' % ('*' if param['kind'] == 'vararg' else '**', param['name']))
+            continue
+        field = {'name': param['name'], 'type': _field_type(param), 'label': param['name'] + ((' (%s)' % param['annotation']) if param.get('annotation') else '')}
+        if 'default' in param:
+            field['default'] = param['default']
+        elif param.get('has_default'):
+            notes.append('%s defaults to %s in the code; the form passes what you type.' % (param['name'], param.get('default_text', '…')))
+        if field['type'] == 'text' and not isinstance(param.get('default'), str):
+            literal.append(param['name'])  # unknown type: what is typed is read as a Python literal when it looks like one
+        fields.append(field)
+        calls.append('%s=%s' % (param['name'], param['name']) if param['kind'] == 'keyword' else param['name'])
+    roots_literal = ''.join(repr(r) + ', ' for r in import_roots)
+    lines = ['# From %s:%d — %s(%s)' % (node['path'], node['line'], node['name'], ', '.join(p['name'] for p in params)),
+             '# Made by the Map page: the form above holds the parameters; edit anything.',
+             'import os, sys',
+             'for _root in (%s):' % roots_literal,
+             '    if _root and os.path.isdir(_root) and _root not in sys.path:',
+             '        sys.path.insert(0, _root); break',
+             'from %s import %s' % (module, cls if is_method else func)]
+    if literal:
+        lines += ['def _literal(text):  # a text field with no known type: empty = None, a Python literal if it looks like one, else the text',
+                  '    if text == "": return None',
+                  '    try: return __import__("ast").literal_eval(text)',
+                  '    except Exception: return text']
+        lines += ['%s = _literal(%s)' % (name, name) for name in literal]
+    if is_method:
+        lines.append('obj = %s()  # an instance of %s: give it what its __init__ needs' % (cls, cls))
+        lines.append('result = obj.%s(%s)' % (func, ', '.join(calls)))
+    else:
+        lines.append('result = %s(%s)' % (func, ', '.join(calls)))
+    lines.append('print(result)')
+    for note in notes:
+        lines.insert(2, '# ' + note)
+    doc = (node.get('doc') or '').strip().splitlines()
+    title = node['name'] if len(node['name']) <= 60 else node['name'][:59] + '…'
+    return {'title': title, 'source': '\n'.join(lines) + '\n', 'form': {'fields': fields} if fields else None,
+            'note': doc[0] if doc else '', 'from': {'path': node['path'], 'line': node['line'], 'name': node['name'], 'module': module}}
+
+
 class _Module:
     def __init__(self, rel, tree):
         self.rel, self.tree = rel, tree
@@ -121,7 +232,7 @@ def scan(root, max_files=MAX_FILES):
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 ident = 'def:%s:%s' % (rel, item.name)
                 module.defs[item.name] = ident
-                nodes.append({'id': ident, 'kind': 'function', 'name': item.name, 'path': rel, 'line': item.lineno, 'end_line': item.end_lineno or item.lineno, 'doc': _doc(item), 'parent': mod_id, 'handler': item.name in HANDLER_NAMES})
+                nodes.append({'id': ident, 'kind': 'function', 'name': item.name, 'path': rel, 'line': item.lineno, 'end_line': item.end_lineno or item.lineno, 'doc': _doc(item), 'parent': mod_id, 'handler': item.name in HANDLER_NAMES, 'params': _params(item), 'module': module.name})
                 edges.append({'source': mod_id, 'target': ident, 'kind': 'contains'})
             elif isinstance(item, ast.ClassDef):
                 cid = 'def:%s:%s' % (rel, item.name)
@@ -134,7 +245,7 @@ def scan(root, max_files=MAX_FILES):
                         mid = 'def:%s:%s.%s' % (rel, item.name, sub.name)
                         module.defs['%s.%s' % (item.name, sub.name)] = mid
                         module.classes[item.name].add(sub.name)
-                        nodes.append({'id': mid, 'kind': 'method', 'name': '%s.%s' % (item.name, sub.name), 'path': rel, 'line': sub.lineno, 'end_line': sub.end_lineno or sub.lineno, 'doc': _doc(sub), 'parent': cid, 'handler': sub.name in HANDLER_NAMES})
+                        nodes.append({'id': mid, 'kind': 'method', 'name': '%s.%s' % (item.name, sub.name), 'path': rel, 'line': sub.lineno, 'end_line': sub.end_lineno or sub.lineno, 'doc': _doc(sub), 'parent': cid, 'handler': sub.name in HANDLER_NAMES, 'params': _params(sub), 'module': module.name})
                         edges.append({'source': cid, 'target': mid, 'kind': 'contains'})
         if len(nodes) > MAX_NODES:
             stats['skipped'].append('more than %d nodes: later files were not mapped' % MAX_NODES)
