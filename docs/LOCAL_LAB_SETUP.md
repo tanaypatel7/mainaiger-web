@@ -703,8 +703,8 @@ thing being improved is a **repository** — for MainAIger, this one. The
 session's workspace must be a checkout; nothing is ever written to it.
 
 ```
-Start → Task (form: what to change, file, test module) → Copy repository → Baseline tests
-      → Read the file → Propose change (model) → Apply to copy → Run tests
+Start → Task (form: what to change, file, test module, held-out module) → Copy repository → Baseline tests
+      → Read the file → Propose change (model) → Apply to copy → Run tests → Held-out tests
       → Judge (model) → Report → Finish        ↑ loop Judge → Propose, at most 2×, while not "keep"
 ```
 
@@ -722,18 +722,27 @@ Start → Task (form: what to change, file, test module) → Copy repository →
   `find` that is missing or ambiguous, refuses a result that is not valid
   Python, and prints the unified diff. **Run tests** runs the same module in
   the changed copy.
-- **Judge** reads the diff and the test output; the loop arrow sends the run
-  back to Propose while the verdict is not "keep", at most twice, and the
-  next prompt carries the previous attempt.
-- **Report** lists every attempt and, for a keep, the patch: *you* apply it
-  with `git apply` in your checkout, read it, run the full suite, commit.
+- **Held-out tests** runs a second module in the copy whose output goes to
+  the judge only: the Propose prompt references `{{output:Run tests}}` but
+  never `{{output:Held-out tests}}`, so the proposer cannot tune a change to
+  a test it has seen — the structural version of the "held-out gate the
+  proposer never sees" rule in `AI_HARNESS.md` §3.
+- **Judge** reads the diff and both test outputs; "keep" needs both to pass.
+  The loop arrow sends the run back to Propose while the verdict is not
+  "keep", at most twice, and the next prompt carries the previous attempt.
+- **Report** lists every attempt (`tests OK, held-out FAILED` and so on)
+  and, for a keep, the patch: paste it into the Map page's **PATCH** box,
+  where every hunk is checked and shown before a reviewed, atomic write into
+  your checkout — or save it and `git apply` it yourself. Either way the
+  loop never writes to the checkout.
 
 **Status:** runs in CI on a real kernel with a fake model against this very
 repository (`tests/test_examples.py`): the fake first renames a function
 (the tests fail, the judge reverts, the loop fires), then adds a comment
 (the tests pass, the judge keeps); the test checks that each judge prompt
-carried that pass's diff and test result, that the second proposal prompt
-carried the first attempt, and that the checkout was not written. With a
+carried that pass's diff and both test results, that no proposal prompt
+carried the held-out results, that the second proposal prompt carried the
+first attempt, and that the checkout was not written. With a
 real Ollama model: unverified; expect many proposals to be refused or to
 fail the tests, which the Report shows plainly.
 
@@ -913,6 +922,21 @@ without confirm, refuse after the file changed), the re-read map and the
 journal lines are tested (`tests/test_codemap.py`); edit → diff → allow →
 write → map reloads, a broken edit refused, and the folder's tests running
 in the session are tested in headless Chromium (`MapToCellTests`).
+
+**PATCH** (`codemap.apply_patch`, `POST /api/codemap/patch`): the same
+reviewed path for a whole unified diff — the one the repository loop's
+Report prints for a kept change, or any `git diff`. Paste it into the PATCH
+box; *Review patch…* parses it (`parse_patch`: file headers, hunks, `\ No
+newline`; `diff --git`/`index` lines skipped; only changes to existing files
+— no new files, deletions or renames; at most 20 files, 400 kB), applies
+every hunk to the file's current text in memory (each hunk must match at
+its hinted line or at exactly one other place), checks that Python files
+still parse, and shows the resulting diff in the same review dialog; the
+write (confirm + the folder allowed once, never `self`) is atomic per file,
+re-reads the map and is a `map.patch` Log line. **Status:** parse, hint
+offset, ambiguity, every refusal and the atomic write are tested
+(`tests/test_codemap.py`), the route too; paste → review → allow → write
+→ map reloads in headless Chromium (`MapPatchTests`).
 
 **Status:** modules/classes/functions, import and call resolution, routes and
 UI edges on the Lab itself, relative imports, hidden/symlink/skipped files and

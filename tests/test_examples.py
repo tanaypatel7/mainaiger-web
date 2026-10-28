@@ -26,8 +26,8 @@ EXPECTED = {
     'ask-memory': {'last': 'report', 'contains': 'model: fake:1b', 'fired': 8, 'steps': 7, 'memory': True, 'also': {'choose': 'using 1:', 'report': 'saved as: notes/q-what-do-i-know.md'}},
     'review-chats': {'last': 'report', 'contains': 'kept 0 draft note(s) from chats/b.md; 0 chat(s) still pending', 'fired': 10, 'steps': 8, 'memory': True,
                      'also': {'choose': 'chat: B | 0 proposed, keeping 0 | 0 chat(s) still pending'}, 'loop': ('e-report-review', 1, 'not_fired')},
-    'self-improve-repo': {'last': 'report', 'contains': 'Repository self-improvement loop: 2 attempts', 'fired': 15, 'steps': 13, 'model': 'repo',
-                          'also': {'copy': 'copied', 'baseline': 'baseline: OK', 'tests': 'tests after the change: OK', 'report': 'git apply change.patch'},
+    'self-improve-repo': {'last': 'report', 'contains': 'Repository self-improvement loop: 2 attempts', 'fired': 17, 'steps': 15, 'model': 'repo',
+                          'also': {'copy': 'copied', 'baseline': 'baseline: OK', 'tests': 'tests after the change: OK', 'heldout': 'held-out tests (tests.test_graph): OK', 'report': 'git apply change.patch'},
                           'loop': ('e-judge-propose', 1, 'not_fired')},
 }
 
@@ -135,6 +135,8 @@ class ExampleRunTests(unittest.TestCase):
                     if expect.get('model') == 'repo':
                         judge_prompts = [p for p in fake.seen['prompts'] if 'Decide:' in p]
                         self.assertEqual(len(judge_prompts), 2); self.assertIn('tests after the change: FAILED', judge_prompts[0]); self.assertIn('-def extract_json(text):', judge_prompts[0]); self.assertIn('tests after the change: OK', judge_prompts[1])
+                        self.assertIn('held-out tests (tests.test_graph): OK', judge_prompts[1], 'the judge sees the held-out run'); self.assertFalse(any('held-out tests (' in p for p in fake.seen['prompts'] if 'Decide:' not in p), 'the proposer never sees the held-out results (only the module name on the Task line)')
+                        self.assertIn('2. tests OK, held-out OK', snap['nodes']['report']['output'])
                         self.assertIn('Rename the function', fake.seen['prompts'][2], 'the second proposal prompt carries the first attempt'); self.assertRegex(fake.seen['prompts'][0], r'\n +\d+  def extract_json\(text\):', 'the model saw the numbered file')
                         self.assertIn('1. tests FAILED', snap['nodes']['report']['output']); self.assertIn('2. tests OK', snap['nodes']['report']['output']); self.assertIn('+# Pulls the first JSON object', snap['nodes']['report']['output'])
                         self.assertNotIn('Pulls the first JSON object', (Path(__file__).resolve().parent.parent / 'local_lab' / 'decide.py').read_text(), 'the checkout is never written')

@@ -411,6 +411,127 @@ def source(root, rel, line, end_line, max_lines=400):
 
 
 MAX_EDIT_BYTES = 200000
+MAX_PATCH_BYTES = 400000
+MAX_PATCH_FILES = 20
+HUNK = re.compile(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
+
+
+def _patch_path(line):
+    name = line[4:].split('\t')[0].strip()
+    if name == '/dev/null':
+        return None
+    for prefix in ('a/', 'b/'):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+    return name
+
+
+def parse_patch(patch):
+    """A unified diff → [{path, hunks: [{old_start, lines: [(tag, text)]}]}]. Only changes to existing files; no renames, no binaries."""
+    if not isinstance(patch, str) or not patch.strip() or len(patch.encode('utf-8')) > MAX_PATCH_BYTES or '\x00' in patch:
+        raise MapError('The patch must be text of at most %d KB' % (MAX_PATCH_BYTES // 1000))
+    files, current, hunk = [], None, None
+    lines = patch.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith('--- ') and i + 1 < len(lines) and lines[i + 1].startswith('+++ '):
+            old, new = _patch_path(line), _patch_path(lines[i + 1])
+            if old is None or new is None:
+                raise MapError('The patch creates or deletes a file; only changes to existing files are applied here')
+            if old != new:
+                raise MapError('The patch renames %s; renames are not applied here' % old)
+            current = {'path': new, 'hunks': []}; files.append(current); hunk = None; i += 2; continue
+        m = HUNK.match(line)
+        if m:
+            if current is None:
+                raise MapError('A hunk appears before any file header')
+            hunk = {'old_start': int(m.group(1)), 'old_len': int(m.group(2) or 1), 'new_len': int(m.group(4) or 1), 'lines': []}; current['hunks'].append(hunk); i += 1; continue
+        if hunk is not None and line[:1] in (' ', '-', '+') :
+            hunk['lines'].append((line[0], line[1:])); i += 1; continue
+        if hunk is not None and line.startswith('\\ No newline'):
+            hunk['lines'].append(('\\', '')); i += 1; continue
+        if hunk is not None and line == '':
+            hunk['lines'].append((' ', '')); i += 1; continue  # a blank context line whose leading space was trimmed
+        hunk = None; i += 1  # headers like "diff --git", "index", "Binary files" and prose between files
+    files = [f for f in files if f['hunks']]
+    if not files:
+        raise MapError('No hunks found: paste a unified diff (the output of git diff or the loop\'s Report)')
+    if len(files) > MAX_PATCH_FILES:
+        raise MapError('At most %d files per patch' % MAX_PATCH_FILES)
+    return files
+
+
+def _apply_hunks(path, text, hunks):
+    """Apply hunks to one file's text; each hunk's old lines must match at the hinted line or at exactly one other place."""
+    lines = text.splitlines(keepends=True)
+    offset = 0
+    for n, hunk in enumerate(hunks, 1):
+        old = [t for tag, t in hunk['lines'] if tag in (' ', '-')]
+        new = [t for tag, t in hunk['lines'] if tag in (' ', '+')]
+        no_newline = any(tag == '\\' for tag, _ in hunk['lines'])
+        def matches(at):
+            return at >= 0 and at + len(old) <= len(lines) and all(lines[at + k].rstrip('\r\n') == old[k] for k in range(len(old)))
+        hint = hunk['old_start'] - 1 + offset
+        if matches(hint):
+            at = hint
+        else:
+            found = [k for k in range(len(lines) - len(old) + 1) if matches(k)] if old else []
+            if len(found) != 1:
+                raise MapError('%s: hunk %d does not match the file (%s)' % (path, n, 'the lines were not found' if not found else 'they occur %d times' % len(found)))
+            at = found[0]
+        ending = '\n'
+        if old and at + len(old) - 1 < len(lines) and not lines[at + len(old) - 1].endswith('\n'):
+            ending = ''
+        replacement = [t + '\n' for t in new]
+        if replacement and (no_newline or ending == ''):
+            replacement[-1] = replacement[-1].rstrip('\n')
+        lines[at:at + len(old)] = replacement
+        offset += len(new) - len(old)
+    return ''.join(lines)
+
+
+def apply_patch(root, patch, write=False):
+    """Apply a unified diff to files under the root: every hunk checked first, Python files must still parse,
+    then (write=True) each file written atomically. Returns {files: [{path, hunks, changed, diff}], diff, written}."""
+    import difflib
+    import tempfile
+    files = parse_patch(patch)
+    plan = []
+    for entry in files:
+        resolved = _safe_file(root, entry['path'])
+        if resolved.stat().st_size > MAX_FILE_BYTES:
+            raise MapError('%s is larger than 1 MB; not patched here' % entry['path'])
+        current = resolved.read_text(encoding='utf-8', errors='replace')
+        new_text = _apply_hunks(entry['path'], current, entry['hunks'])
+        if resolved.suffix == '.py':
+            try:
+                ast.parse(new_text, filename=entry['path'])
+            except SyntaxError as error:
+                raise MapError('%s would not parse after this patch: line %s: %s' % (entry['path'], error.lineno, error.msg)) from None
+        diff = ''.join(difflib.unified_diff(current.splitlines(keepends=True), new_text.splitlines(keepends=True), fromfile=entry['path'], tofile=entry['path'], n=3))
+        plan.append({'path': entry['path'], 'hunks': len(entry['hunks']), 'changed': new_text != current, 'diff': diff, 'resolved': resolved, 'text': new_text})
+    out = {'files': [{k: f[k] for k in ('path', 'hunks', 'changed', 'diff')} for f in plan], 'diff': ''.join(f['diff'] for f in plan), 'written': False, 'changed': any(f['changed'] for f in plan)}
+    if write and out['changed']:
+        for f in plan:
+            if not f['changed']:
+                continue
+            resolved = f['resolved']
+            mode = resolved.stat().st_mode & 0o777
+            fd, tmp = tempfile.mkstemp(prefix='.' + resolved.name + '.', suffix='.tmp', dir=str(resolved.parent))
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                    handle.write(f['text'])
+                os.chmod(tmp, mode)
+                os.replace(tmp, resolved)
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        out['written'] = True
+    return out
 
 
 def replace_lines(root, rel, line, end_line, text, expected_hash, write=False):

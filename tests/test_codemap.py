@@ -110,6 +110,54 @@ class ReplaceLinesTests(unittest.TestCase):
             self.assertEqual(out['lines'], {'before': 2, 'after': 2}); self.assertIn('return self.size + by * 2\n', f.read_text()); self.assertEqual(f.read_text().count('def '), 3)
 
 
+PATCH = '''--- a/tools/ops.py
++++ b/tools/ops.py
+@@ -1,3 +1,4 @@
++# Scales a list of numbers.
+ def scale(values, factor=2.0, *, round_to: int = 1, label="x", verbose=False, seed=None, cb=print, **extra):
+-    """Scale values."""
++    """Scale values, rounded."""
+     return [round(v * factor, round_to) for v in values]
+@@ -8,3 +9,3 @@ class Box:
+         self.size = size
+     def grow(self, by: int = 1):
+-        return self.size + by
++        return self.size + by * 2
+'''
+
+
+class ApplyPatchTests(unittest.TestCase):
+    def test_parse_check_and_atomic_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); sample_package(root); f = root / 'tools' / 'ops.py'; os.chmod(f, 0o640)
+            parsed = codemap.parse_patch(PATCH); self.assertEqual([(p['path'], len(p['hunks'])) for p in parsed], [('tools/ops.py', 2)])
+            dry = codemap.apply_patch(root, PATCH)
+            self.assertEqual((dry['written'], dry['changed'], [(x['path'], x['hunks'], x['changed']) for x in dry['files']]), (False, True, [('tools/ops.py', 2, True)]))
+            self.assertIn('+# Scales a list of numbers.', dry['diff']); self.assertIn('+        return self.size + by * 2', dry['diff']); self.assertEqual(f.read_text(), SAMPLE, 'a dry run writes nothing')
+            # A git-style patch with headers and a hunk whose line hint is off still applies when the lines are found exactly once.
+            shifted = 'diff --git a/tools/ops.py b/tools/ops.py\nindex 000..111 100644\n' + PATCH.replace('@@ -8,3 +9,3 @@ class Box:', '@@ -20,3 +21,3 @@')
+            self.assertEqual(codemap.apply_patch(root, shifted)['diff'], dry['diff'])
+            bad = [
+                (PATCH.replace('+    """Scale values, rounded."""', '+    """Scale values, rounded.""" def ('), 'would not parse'),
+                (PATCH.replace('tools/ops.py', '../outside.py'), 'inside the folder'),
+                (PATCH.replace('tools/ops.py', 'tools/nope.py'), 'No such file'),
+                ('--- /dev/null\n+++ b/tools/new.py\n@@ -0,0 +1 @@\n+x = 1\n', 'creates or deletes'),
+                ('--- a/tools/ops.py\n+++ b/tools/other.py\n@@ -1 +1 @@\n-x\n+y\n', 'renames'),
+                ('just some text\n', 'No hunks'),
+                ('', 'at most'),
+            ]
+            for patch, message in bad:
+                with self.subTest(message=message), self.assertRaisesRegex(codemap.MapError, message): codemap.apply_patch(root, patch)
+            done = codemap.apply_patch(root, PATCH, write=True); self.assertTrue(done['written'])
+            text = f.read_text(); self.assertTrue(text.startswith('# Scales a list of numbers.\ndef scale(')); self.assertIn('return self.size + by * 2\n', text); self.assertEqual(text.count('def '), 3); self.assertEqual(oct(f.stat().st_mode & 0o777), '0o640')
+            self.assertEqual([p.name for p in (root / 'tools').iterdir() if p.name.startswith('.')], [], 'no temp file left')
+            with self.assertRaisesRegex(codemap.MapError, 'hunk 1 does not match'): codemap.apply_patch(root, PATCH)
+            # A hunk whose old lines occur twice is ambiguous when the hint is wrong.
+            (root / 'tools' / 'two.py').write_text('x = 1\ny = 2\nx = 1\n')
+            with self.assertRaisesRegex(codemap.MapError, 'occur 2 times'): codemap.apply_patch(root, '--- a/tools/two.py\n+++ b/tools/two.py\n@@ -9 +9 @@\n-x = 1\n+x = 3\n')
+            ok = codemap.apply_patch(root, '--- a/tools/two.py\n+++ b/tools/two.py\n@@ -3 +3 @@\n-x = 1\n+x = 3\n', write=True); self.assertEqual((root / 'tools' / 'two.py').read_text(), 'x = 1\ny = 2\nx = 3\n', 'the hint picks the right one')
+
+
 class CodemapHttpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); state, key = initialize_state(Path(self.tmp.name) / 'private'); self.key = key
@@ -175,6 +223,18 @@ class CodemapHttpTests(unittest.TestCase):
         self.assertEqual(self.req('/api/codemap/write', dict(body, confirm=True), auth)[0], 409, 'the hash moved on: the editor must reload')
         m = self.req('/api/codemap?root=workspace', headers=cookie)[1]; self.assertTrue(m['writable']); self.assertEqual(next(n for n in m['nodes'] if n['id'] == 'def:tools/ops.py:scale')['doc'], 'Scale values, rounded.', 'the map is re-read after a write')
         kinds = [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]; self.assertIn('map.write.allow', kinds); self.assertIn('map.write', kinds)
+    def test_a_patch_is_a_reviewed_write_too(self):
+        status, data, head = self.req('/api/login', {'key': self.key}, {'Origin': self.origin}); auth = {'Origin': self.origin, 'Cookie': head['Set-Cookie'].split(';')[0], 'X-CSRF-Token': data['csrf']}; cookie = {'Cookie': auth['Cookie']}
+        ws = Path(self.tmp.name) / 'ws'; ws.mkdir(); sample_package(ws); self.server.settings['workspace'] = str(ws)
+        status, dry, _ = self.req('/api/codemap/patch', {'root': 'workspace', 'patch': PATCH}, auth); self.assertEqual((status, dry['changed'], dry['written'], dry['files'][0]['hunks']), (200, True, False, 2))
+        self.assertEqual(self.req('/api/codemap/patch', {'root': 'workspace', 'patch': 'nonsense'}, auth)[0], 400)
+        self.assertEqual(self.req('/api/codemap/patch', {'root': 'workspace', 'patch': PATCH, 'confirm': True}, auth)[0], 409, 'no write until the folder is allowed')
+        self.assertEqual(self.req('/api/codemap/patch', {'root': 'self', 'patch': PATCH, 'confirm': True}, auth)[0], 409, 'never the running app')
+        self.req('/api/codemap/approve-write', {'root': 'workspace', 'confirm': True}, auth)
+        status, out, _ = self.req('/api/codemap/patch', {'root': 'workspace', 'patch': PATCH, 'confirm': True}, auth); self.assertEqual((status, out['written']), (200, True))
+        self.assertIn('# Scales a list of numbers.', (ws / 'tools' / 'ops.py').read_text())
+        m = self.req('/api/codemap?root=workspace', headers=cookie)[1]; self.assertEqual(next(n for n in m['nodes'] if n['id'] == 'def:tools/ops.py:scale')['doc'], 'Scale values, rounded.', 'the map is re-read after a patch')
+        entries = self.req('/api/journal', headers=cookie)[1]['entries']; self.assertTrue(any(e['kind'] == 'map.patch' and 'tools/ops.py' in e['text'] for e in entries))
 
 
 if __name__ == '__main__':

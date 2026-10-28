@@ -25,7 +25,7 @@
       "title": "How this loop works"
      }
     },
-    "source": "# Self-improvement loop on a repository\n\nThe session's workspace must be a checkout of a repository (for MainAIger itself: this repository). **Copy repository** copies it into the session's own `/tmp` (the workspace stays read-only), **Baseline tests** runs the test module you name there, **Read the file** prints the file you name, **Propose change** asks a model for ONE find/replace change for the task you typed, **Apply to copy** restores the file from the workspace and applies the change to the copy (never the checkout), **Run tests** runs the same tests in the copy, **Judge** decides keep / revert / ask from the diff and the test output, and the dashed loop arrow sends the run back to **Propose** (at most twice) while the verdict is not \"keep\", with the previous attempt pasted into the next prompt. **Report** prints every attempt and, for a keep, the patch to apply with `git apply` in your checkout.\n\nFill the form on **Task**: what to change, which file, which test module (dotted, e.g. `tests.test_decide`). Needs a running session, a workspace, and an installed Ollama model named in the two model cells (Models page). Keep the test module small: a cell has 60 seconds.\n",
+    "source": "# Self-improvement loop on a repository\n\nThe session's workspace must be a checkout of a repository (for MainAIger itself: this repository). **Copy repository** copies it into the session's own `/tmp` (the workspace stays read-only), **Baseline tests** runs the test module you name there, **Read the file** prints the file you name, **Propose change** asks a model for ONE find/replace change for the task you typed, **Apply to copy** restores the file from the workspace and applies the change to the copy (never the checkout), **Run tests** runs the same tests in the copy, **Held-out tests** runs a second test module whose output goes only to the judge — the proposer never sees it, so it cannot write to the test — **Judge** decides keep / revert / ask from the diff and both test outputs, and the dashed loop arrow sends the run back to **Propose** (at most twice) while the verdict is not \"keep\", with the previous attempt pasted into the next prompt. **Report** prints every attempt and, for a keep, the patch: paste it into the Map page's PATCH box, where every hunk is checked and shown before a reviewed, atomic write into your checkout.\n\nFill the form on **Task**: what to change, which file, which test module (dotted, e.g. `tests.test_decide`) and which held-out module. Needs a running session, a workspace, and an installed Ollama model named in the two model cells (Models page). Keep the test modules small: a cell has 60 seconds.\n",
     "outputs": []
    },
    {
@@ -55,6 +55,12 @@
          "default": "tests.test_decide"
         },
         {
+         "name": "heldout_module",
+         "type": "text",
+         "label": "Held-out test module (the proposer never sees its output)",
+         "default": "tests.test_graph"
+        },
+        {
          "name": "max_lines",
          "type": "integer",
          "label": "Lines of the file shown to the model",
@@ -65,7 +71,7 @@
       }
      }
     },
-    "source": "print(\"task:\", task)\nprint(\"file:\", file, \"| tests:\", test_module)\n",
+    "source": "print(\"task:\", task)\nprint(\"file:\", file, \"| tests:\", test_module, \"| held-out:\", heldout_module)\n",
     "execution_count": null,
     "outputs": []
    },
@@ -89,7 +95,7 @@
       "title": "Baseline tests"
      }
     },
-    "source": "# The named tests, in the untouched copy: the bar every proposal must clear.\nimport subprocess, sys\ndef run_tests():\n    r = subprocess.run([sys.executable, \"-m\", \"unittest\", test_module], cwd=DST, capture_output=True, text=True, timeout=50)\n    tail = \"\\n\".join((r.stdout + r.stderr).strip().splitlines()[-12:])\n    return r.returncode == 0, tail\nbaseline_ok, baseline_text = run_tests()\nprint(\"baseline:\", \"OK\" if baseline_ok else \"FAILED\")\nprint(baseline_text)\n",
+    "source": "# The named tests, in the untouched copy: the bar every proposal must clear.\nimport subprocess, sys\ndef run_tests(module=None):\n    r = subprocess.run([sys.executable, \"-m\", \"unittest\", module or test_module], cwd=DST, capture_output=True, text=True, timeout=50)\n    tail = \"\\n\".join((r.stdout + r.stderr).strip().splitlines()[-12:])\n    return r.returncode == 0, tail\nbaseline_ok, baseline_text = run_tests()\nprint(\"baseline:\", \"OK\" if baseline_ok else \"FAILED\")\nprint(baseline_text)\n",
     "execution_count": null,
     "outputs": []
    },
@@ -167,6 +173,18 @@
     "outputs": []
    },
    {
+    "id": "heldout",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Held-out tests"
+     }
+    },
+    "source": "# Tests the proposer never sees: their output goes to the judge only (no {{output:Held-out tests}} in the Propose prompt).\nif history[-1][\"applied\"]:\n    heldout_ok, heldout_text = run_tests(heldout_module)\nelse:\n    heldout_ok, heldout_text = False, \"(not run: the proposal could not be applied)\"\nhistory[-1][\"heldout_ok\"] = heldout_ok\nprint(\"held-out tests (%s): %s\" % (heldout_module, \"OK\" if heldout_ok else \"FAILED\"))\nprint(heldout_text)\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
     "id": "judge",
     "cell_type": "code",
     "metadata": {
@@ -205,7 +223,7 @@
       }
      }
     },
-    "source": "A change was applied to a copy of a repository and its tests were run.\n{{output:Task}}\n\nThe change:\n{{output:Apply to copy}}\n\nThe tests afterwards:\n{{output:Run tests}}\n\nDecide: \"keep\" only if the change was applied, the tests pass, and it does what the task asked; \"revert\" if the tests fail, the change could not be applied, or it does something else; \"ask\" if you cannot tell. Give up to three short reasons.\n",
+    "source": "A change was applied to a copy of a repository and its tests were run.\n{{output:Task}}\n\nThe change:\n{{output:Apply to copy}}\n\nThe tests afterwards:\n{{output:Run tests}}\n\nHeld-out tests the proposer never saw:\n{{output:Held-out tests}}\n\nDecide: \"keep\" only if the change was applied, both test runs pass, and it does what the task asked; \"revert\" if the tests fail, the change could not be applied, or it does something else; \"ask\" if you cannot tell. Give up to three short reasons.\n",
     "execution_count": null,
     "outputs": []
    },
@@ -217,7 +235,7 @@
       "title": "Report"
      }
     },
-    "source": "print(\"=\" * 56)\nprint(\"Repository self-improvement loop: %d attempt%s\" % (len(history), \"\" if len(history) == 1 else \"s\"))\nprint(\"=\" * 56)\nprint(\"task:\", task)\nprint(\"file:\", file, \"| tests:\", test_module, \"| baseline:\", \"OK\" if baseline_ok else \"FAILED\")\nfor i, h in enumerate(history, 1):\n    state = (\"tests OK\" if h.get(\"tests_ok\") else \"tests FAILED\") if h[\"applied\"] else \"not applied: \" + str(h[\"error\"])\n    print(\"  %d. %s - %s\" % (i, state, h[\"why\"]))\nprint(\"last verdict:\", verdict[\"action\"], \"(confidence %.2f)\" % verdict[\"confidence\"])\nfor r in verdict.get(\"reasons\", []):\n    print(\" -\", r)\nif verdict[\"action\"] == \"keep\" and history[-1][\"applied\"]:\n    print()\n    print(\"Nothing was written to your checkout. To keep this change, save the patch below as change.patch\")\n    print(\"in your checkout and run: git apply change.patch   (then read it, run the full suite, commit)\")\n    print(\"-\" * 56)\n    print(history[-1][\"diff\"])\nelif verdict[\"action\"] == \"ask\":\n    print(\"Could not tell after the loop's budget: run again, narrow the task, or name a more specific test module.\")\nelse:\n    print(\"Every attempt was reverted: the checkout is untouched. Run again for new proposals, or narrow the task.\")\n",
+    "source": "print(\"=\" * 56)\nprint(\"Repository self-improvement loop: %d attempt%s\" % (len(history), \"\" if len(history) == 1 else \"s\"))\nprint(\"=\" * 56)\nprint(\"task:\", task)\nprint(\"file:\", file, \"| tests:\", test_module, \"| baseline:\", \"OK\" if baseline_ok else \"FAILED\")\nfor i, h in enumerate(history, 1):\n    state = (\"tests OK\" if h.get(\"tests_ok\") else \"tests FAILED\") + (\", held-out OK\" if h.get(\"heldout_ok\") else \", held-out FAILED\") if h[\"applied\"] else \"not applied: \" + str(h[\"error\"])\n    print(\"  %d. %s - %s\" % (i, state, h[\"why\"]))\nprint(\"last verdict:\", verdict[\"action\"], \"(confidence %.2f)\" % verdict[\"confidence\"])\nfor r in verdict.get(\"reasons\", []):\n    print(\" -\", r)\nif verdict[\"action\"] == \"keep\" and history[-1][\"applied\"]:\n    print()\n    print(\"Nothing was written to your checkout. To keep this change, paste the patch below into the\")\n    print(\"Map page's PATCH box (every hunk is checked and shown before a reviewed write), or save it as\")\n    print(\"change.patch and run: git apply change.patch   (then read it, run the full suite, commit)\")\n    print(\"-\" * 56)\n    print(history[-1][\"diff\"])\nelif verdict[\"action\"] == \"ask\":\n    print(\"Could not tell after the loop's budget: run again, narrow the task, or name a more specific test module.\")\nelse:\n    print(\"Every attempt was reverted: the checkout is untouched. Run again for new proposals, or narrow the task.\")\n",
     "execution_count": null,
     "outputs": []
    }
@@ -270,14 +288,19 @@
     "cell_index": 7
    },
    {
-    "id": "judge",
+    "id": "heldout",
     "kind": "code",
     "cell_index": 8
    },
    {
-    "id": "report",
+    "id": "judge",
     "kind": "code",
     "cell_index": 9
+   },
+   {
+    "id": "report",
+    "kind": "code",
+    "cell_index": 10
    },
    {
     "id": "finish",
@@ -328,9 +351,15 @@
     "target": "tests"
    },
    {
-    "id": "e-tests-judge",
+    "id": "e-tests-heldout",
     "kind": "control",
     "source": "tests",
+    "target": "heldout"
+   },
+   {
+    "id": "e-heldout-judge",
+    "kind": "control",
+    "source": "heldout",
     "target": "judge"
    },
    {
@@ -398,13 +427,17 @@
     "x": 1660.0,
     "y": 40.0
    },
-   "judge": {
+   "heldout": {
     "x": 1660.0,
     "y": 460.0
    },
-   "report": {
+   "judge": {
     "x": 2060.0,
     "y": 40.0
+   },
+   "report": {
+    "x": 2060.0,
+    "y": 460.0
    }
   },
   "viewport": {

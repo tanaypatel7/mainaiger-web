@@ -830,6 +830,29 @@ class MapToCellTests(RealServerCase):
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class MapPatchTests(RealServerCase):
+    """The Map page's PATCH box: a unified diff is checked and shown, the folder allowed once, the write atomic."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tests.test_codemap import sample_package
+        cls.ws = cls.root / 'ws'; cls.ws.mkdir(); sample_package(cls.ws); cls.server.settings['workspace'] = str(cls.ws)
+    def test_patch_review_allow_write(self):
+        from tests.test_codemap import PATCH
+        p = self.page
+        p.goto(self.origin + '/map'); p.wait_for_selector('#map-main:not([hidden])'); p.wait_for_function("() => document.querySelectorAll('.mnode').length > 300")
+        p.fill('#patch-text', PATCH); self.assertTrue(p.locator('#patch-review').is_disabled(), 'the running app is never patched'); self.assertIn('not patched in place', p.inner_text('#patch-note'))
+        p.select_option('#map-root', 'workspace'); p.wait_for_selector('.mnode[data-id="def:tools/ops.py:scale"]'); p.wait_for_function("() => document.getElementById('patch-note').textContent === ''")
+        p.fill('#patch-text', 'nonsense'); p.wait_for_function("() => !document.getElementById('patch-review').disabled"); p.click('#patch-review'); p.wait_for_function("() => document.getElementById('patch-note').textContent.includes('No hunks found')")
+        p.fill('#patch-text', PATCH); p.click('#patch-review'); p.wait_for_selector('#write-dialog[open]')
+        self.assertIn('tools/ops.py (2 hunks): every hunk matches', p.inner_text('#write-dialog-intro')); self.assertIn('+# Scales a list of numbers.', p.inner_text('#write-dialog-diff'))
+        p.click('#write-dialog-confirm'); p.wait_for_selector('#allow-dialog[open]'); p.click('#allow-dialog-confirm')
+        p.wait_for_function("() => document.getElementById('patch-note').textContent.startsWith('Patched tools/ops.py')")
+        self.assertIn('# Scales a list of numbers.', (self.ws / 'tools' / 'ops.py').read_text()); self.assertEqual(p.input_value('#patch-text'), '')
+        p.locator('.mnode[data-id="def:tools/ops.py:scale"]').click(); p.wait_for_function("() => document.getElementById('sel-doc').textContent.includes('Scale values, rounded.')")
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
 class BrowserPageTests(RealServerCase):
     """The Browser page: a script from a template, the reviewed run against the Lab's own page, the capture into chats; the Graph inspector's BROWSER section."""
     @classmethod

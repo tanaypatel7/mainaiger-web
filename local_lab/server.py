@@ -1029,6 +1029,23 @@ class LabHandler(BaseHTTPRequestHandler):
                     self.server.cell_inbox=[c for c in self.server.cell_inbox if c['from']!=cell['from']][-19:]+[cell]
                 self.server.journal.write('map.cell','Cell made from %s (%s:%d), waiting for the Graph page'%(node['name'],node['path'],node['line']),{'id':cell['id'],'node':node['id'],'root':data['root']})
                 return self.out(200,{'cell':cell,'queued':len(self.server.cell_inbox)})
+            if path=='/api/codemap/patch':
+                # A unified diff (git diff, or the repository loop's Report) applied to files under an allowed map root: checked first
+                # (every hunk must match, Python must still parse), written atomically only with confirm and the folder's write approval.
+                if set(data)-{'root','patch','confirm'} or not isinstance(data.get('root'),str) or not isinstance(data.get('patch'),str):raise ValueError('Send {root, patch, confirm?}')
+                with self.server.lock: settings=dict(self.server.settings)
+                roots={'self':str(Path(__file__).resolve().parent),**lab_files.roots(settings,self.server.state_dir)}
+                if data['root'] not in roots:return self.out(404,{'error':'Unknown folder'})
+                writing=data.get('confirm') is True
+                if writing and data['root']=='self':return self.out(409,{'error':'The running app\'s own code is not patched in place; map a checkout of the repository'})
+                if writing and data['root'] not in self.server.write_roots:return self.out(409,{'error':'Allow writes under this folder first (the Map asks once per Lab session)'})
+                try:result=lab_codemap.apply_patch(roots[data['root']],data['patch'],write=writing)
+                except lab_codemap.MapError as e:return self.out(400,{'error':str(e)})
+                except OSError as e:return self.out(500,{'error':'The files could not be written: %s'%e})
+                if result['written']:
+                    self.server._codemap_cache={}
+                    self.server.journal.write('map.patch','Patched %s under %s'%(', '.join(f['path'] for f in result['files'] if f['changed']),roots[data['root']]),{'root':data['root'],'files':[{'path':f['path'],'hunks':f['hunks']} for f in result['files'] if f['changed']]})
+                return self.out(200,result)
             if path in ('/api/codemap/approve-write','/api/codemap/diff','/api/codemap/write'):
                 # Editing from the map: a diff first, then an atomic write into a folder the owner allowed this Lab to write, this session.
                 if not isinstance(data.get('root'),str):raise ValueError('Send the map root')

@@ -363,7 +363,7 @@ have, mapped onto the Lab):
 | Rule from the literature | In MainAIger |
 |---|---|
 | The evaluator is read-only to the proposer (AHE; DGM's detector removal) | `evaluate` is a code cell the model cell cannot edit: model cells only *answer*; the workspace is mounted read-only; "apply to checkout" is a reviewed step you approve |
-| Held-in and held-out tests; accept only if neither regresses (Self-Harness) | two test folders; the Run tests cell reports both; the judge sees only the held-in log |
+| Held-in and held-out tests; accept only if neither regresses (Self-Harness) | built 28 Oct: the repository loop runs a held-out module in a cell whose output only the judge's prompt references; "keep" needs both to pass |
 | One edit = one commit with a written prediction, file-level rollback (AHE) | the proposal schema carries `predicted_effect`; Report writes it into the journal; keeping = one commit you make |
 | Gains must beat the noise band; extra tokens must pay for themselves (RRSI) | run `evaluate` twice before the loop; the judge schema includes `noise_band` as context; `attempts` capped at 3 by `decide.py` |
 | Budgets: iterations, wall clock, per-evaluation timeout, diff size; stop after consecutive rejects (autoresearch, Rehearse) | loop arrows carry `max_fires` and every run stops at `MAX_STEPS` cell executions (built 28 Oct); the cell timeout already exists (60 s, interruptible); wall-clock and diff-size budgets are still to add |
@@ -380,10 +380,12 @@ and is unverified with a real Ollama model. **The repository version exists
 too**: `examples/self-improve-repo.ipymb` copies the workspace checkout into
 the session's `/tmp`, applies one find/replace proposal to the copy, runs the
 test module you name there, judges from the diff and the test output, loops
-at most twice, and reports the patch for you to `git apply` (described in
-`docs/LOCAL_LAB_SETUP.md` "The repository loop example"; CI runs it against
-this repository with a fake model). Still future: a held-out test folder the
-proposer never sees, and a reviewed "apply to checkout" step.
+at most twice, runs a held-out test module the proposer never sees, and
+reports the patch (described in `docs/LOCAL_LAB_SETUP.md` "The repository
+loop example"; CI runs it against this repository with a fake model).
+Applying the patch to the checkout is a reviewed step on the Map page
+(PATCH box: every hunk checked, the diff shown, the folder allowed once, an
+atomic write in the Log). Still future: wall-clock and diff-size budgets.
 
 ## 4. The thin-slice pattern (how model output becomes decisions)
 

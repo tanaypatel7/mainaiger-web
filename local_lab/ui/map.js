@@ -28,6 +28,7 @@
     const members = map.nodes.filter(n => n.kind !== 'module' && n.kind !== 'route' && n.kind !== 'ui').length;
     state.collapsed = new Set(members > 600 ? map.nodes.filter(n => n.kind === 'module').map(n => n.id) : []);
     $('map-stats').textContent = `${map.stats.nodes} nodes · ${map.stats.edges} edges · ${map.stats.python} Python files · ${map.stats.ui} UI files`;
+    $('patch-review').disabled = !$('patch-text').value.trim() || map.can_write === false; $('patch-note').textContent = map.can_write === false ? 'The running app\'s own code is not patched in place; map a checkout of the repository (set it as the workspace).' : '';
     $('map-summary').textContent = `${map.root}: ${map.stats.python} Python and ${map.stats.ui} UI files read; ${map.stats.unresolved_calls} calls to names outside this folder were counted, not drawn.` + (map.stats.syntax_errors ? ` ${map.stats.syntax_errors} file(s) had syntax errors.` : '');
     const sk = $('map-skipped'); sk.textContent = ''; for (const s of map.stats.skipped) { const li = document.createElement('li'); li.textContent = s; sk.append(li); }
     state.selected = null; layout(); render(); fit(); renderSelection();
@@ -128,12 +129,36 @@
   $('allow-dialog-cancel').addEventListener('click', () => $('allow-dialog').close());
   async function writeBack() {
     const e = state.editing; if (!e) return;
+    if (e.kind === 'patch') {
+      try {
+        const r = await api('/api/codemap/patch', {root: state.root, patch: e.patch, confirm: true});
+        const names = r.files.filter(f => f.changed).map(f => f.path);
+        toast(r.written ? `Patched ${names.join(', ')}.` : 'Nothing was written.'); state.editing = null; if (r.written) $('patch-text').value = '';
+        await load(state.root);
+        $('patch-note').textContent = r.written ? `Patched ${names.join(', ')}. Run the tests below, then commit in your checkout.` : 'Nothing was written.';
+      } catch (error) { toast(error.message); $('patch-note').textContent = error.message; }
+      return;
+    }
     try {
       const r = await api('/api/codemap/write', {root: state.root, path: e.path, line: e.line, end_line: e.end_line, text: $('sel-text').value, expected_hash: e.hash, confirm: true});
       toast(r.written ? `Wrote ${e.path}.` : 'Nothing was written.'); state.editing = null; $('sel-editor').hidden = true;
       const keep = e.node; await load(state.root); if (byId()[keep]) { if (!state.visible.has(keep)) { let cur = byId()[keep]; while (cur && cur.parent) { cur = byId()[cur.parent]; if (cur && cur.kind === 'module') state.collapsed.delete(cur.id); } layout(); render(); } select(keep); }
     } catch (error) { toast(error.message); }
   }
+  // ---- a patch: the loop's Report prints one for a kept change; the same review → allow once → atomic write path as an edit
+  $('patch-text').addEventListener('input', () => { $('patch-review').disabled = !$('patch-text').value.trim() || !state.map || state.map.can_write === false; });
+  $('patch-review').addEventListener('click', async () => {
+    const patch = $('patch-text').value; if (!patch.trim()) return;
+    try {
+      const r = await api('/api/codemap/patch', {root: state.root, patch});
+      if (!r.changed) { $('patch-note').textContent = 'The patch changes nothing (already applied?).'; return; }
+      const names = r.files.filter(f => f.changed).map(f => `${f.path} (${f.hunks} hunk${f.hunks === 1 ? '' : 's'})`);
+      state.editing = {kind: 'patch', patch};
+      $('write-dialog-intro').textContent = `${names.join(', ')}: every hunk matches and the files parse. The write is atomic and recorded in the Log.`;
+      $('write-dialog-diff').textContent = r.diff; $('write-dialog-note').textContent = state.map.writable ? '' : `Writes under ${state.map.folder} are not allowed yet; you will be asked once.`;
+      $('patch-note').textContent = ''; $('write-dialog').showModal(); $('write-dialog-cancel').focus();
+    } catch (error) { $('patch-note').textContent = error.message; }
+  });
   $('write-dialog-confirm').addEventListener('click', async () => {
     $('write-dialog').close();
     if (state.map.writable) { await writeBack(); return; }
