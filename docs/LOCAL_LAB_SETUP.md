@@ -400,6 +400,24 @@ decision step of the self-improvement loop in `docs/AI_HARNESS.md`.
 reason, attempt cap and the route are tested against a fake Ollama
 (`tests/test_decide.py`); a real model's answers are unverified here.
 
+## Devices (`/devices`, `local_lab/network.py`, `GET /api/network`)
+
+The fourth page shows **this device** (host name, system, chip, memory, free
+disk, Python, whether Docker and Ollama are present), its **sessions** (the
+same table as Resources), and the **tailnet** exactly as Tailscale reports it
+with `tailscale status --json` (on a Mac the CLI inside `Tailscale.app`,
+elsewhere `tailscale` on PATH): logged in or not, tailnet name, this device's
+addresses, and the peers with OS, online state, addresses and exit-node flag,
+online first. When Tailscale is absent or logged out the page says so; nothing
+is guessed. The Lab never runs `tailscale up`, `login`, `serve` or any other
+command that changes the network; **Paired MainAIger devices** is shown as
+future until `docs/INTEGRATION.md` step I1 lands.
+
+**Status:** parsing, sorting, the read-only guarantee (only `status --json`
+is ever run), login/absent/garbage cases and the route are tested with a fake
+CLI (`tests/test_network.py`); the page was opened in headless Chromium. A real
+tailnet listing on your Mac is unverified.
+
 ## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it

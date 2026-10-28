@@ -22,6 +22,7 @@ from . import library as lab_library
 from . import environment as lab_environment
 from . import files as lab_files
 from . import decide as lab_decide
+from . import network as lab_network
 from .journal import Journal
 from .sessions import SessionRegistry
 from .graph_run import GraphRun
@@ -259,7 +260,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
-        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8')}
+        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8')}
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
         if path=='/api/state':
@@ -358,6 +359,10 @@ class LabHandler(BaseHTTPRequestHandler):
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             run=self.server.graph_run
             return self.out(200,{'run':run.snapshot() if run else None,'session':self.server.kernel_status(),'revision':self.server.graph_revision})
+        if path=='/api/network':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            data=lab_network.overview();data['sessions']=self.server.kernels.list();data['journal_seq']=self.server.journal.seq
+            return self.out(200,data)
         if path=='/api/models':
             session=self.session()
             if not session:return self.out(401,{'error':'Local owner sign-in required'})
