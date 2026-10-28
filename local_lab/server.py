@@ -21,6 +21,7 @@ from . import mainbooks as lab_mainbooks
 from . import library as lab_library
 from . import environment as lab_environment
 from . import files as lab_files
+from . import decide as lab_decide
 from .journal import Journal
 from .sessions import SessionRegistry
 from .graph_run import GraphRun
@@ -374,7 +375,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.host_ok() or not self.origin_ok():return self.out(403,{'error':'Local same-origin request required'})
         try:
-            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path in ('/api/graph','/api/graph/import') else 600000 if path=='/api/models/chat' else 25000)
+            path=urlsplit(self.path).path;data=self.body(limit=4000000 if path in ('/api/graph','/api/graph/import') else 600000 if path in ('/api/models/chat','/api/models/decide') else 25000)
             if path=='/api/login':
                 if set(data)!={'key'} or not isinstance(data['key'],str):raise ValueError('Key required')
                 with self.server.lock:
@@ -405,6 +406,13 @@ class LabHandler(BaseHTTPRequestHandler):
             if path=='/api/models/chat':
                 if set(data)!={'model','messages'}:raise ValueError('Send {model, messages}')
                 result=lab_models.chat(data['model'],data['messages'])
+                return self.out(200 if result.get('ok') else 409,result)
+            if path=='/api/models/decide':
+                # Thin slice: one question, a JSON answer constrained and checked against a small schema (local_lab/decide.py).
+                if set(data)-{'model','question','context','schema','attempts'} or not {'model','question','schema'}<=set(data):raise ValueError('Send {model, question, context, schema, attempts}')
+                if not isinstance(data['model'],str):raise ValueError('model must be text')
+                result=lab_decide.ask(data['model'],data['question'],data.get('context',''),data['schema'],attempts=data.get('attempts',2) if isinstance(data.get('attempts',2),int) else 2)
+                self.server.journal.write('model.decide','Decision %s via %s (%d attempt%s)'%('ok' if result.get('ok') else 'failed',result.get('model',data['model']),result.get('attempts',0),'' if result.get('attempts')==1 else 's'),{'model':data['model'],'ok':bool(result.get('ok')),'attempts':result.get('attempts'),'error':result.get('error')})
                 return self.out(200 if result.get('ok') else 409,result)
             if path=='/api/setup/docker/open':
                 if data != {'confirm': True} or type(data.get('confirm')) is not bool:raise ValueError('Explicit confirmation is required')

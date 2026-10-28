@@ -313,8 +313,9 @@ def pull(model, progress_callback=None):
         except OSError: pass
 
 
-def chat(model, messages, timeout=300):
-    """One chat completion from the local Ollama. Returns {'ok', 'reply', 'model', 'timing'} or an error."""
+def chat(model, messages, timeout=300, format=None):
+    """One chat completion from the local Ollama. Returns {'ok', 'reply', 'model', 'timing'} or an error.
+    ``format`` may be a JSON schema (dict) or "json": Ollama then constrains the reply to it."""
     if not isinstance(model, str) or not MODEL_NAME.match(model):
         return {'ok': False, 'output': 'Choose an installed model.'}
     if not isinstance(messages, list) or not 0 < len(messages) <= 100:
@@ -328,7 +329,12 @@ def chat(model, messages, timeout=300):
     if model not in names and model.split(':')[0] + ':latest' not in names:
         return {'ok': False, 'output': 'Model %s is not downloaded yet.' % model}
     started = time.monotonic()
-    code, data = _request('POST', '/api/chat', {'model': model, 'messages': clean, 'stream': False}, timeout=timeout)
+    body = {'model': model, 'messages': clean, 'stream': False}
+    if format is not None:
+        if not (format == 'json' or isinstance(format, dict)):
+            return {'ok': False, 'output': 'format must be "json" or a JSON schema object.'}
+        body['format'] = format
+    code, data = _request('POST', '/api/chat', body, timeout=timeout)
     if code != 200 or not isinstance(data, dict) or not isinstance(data.get('message'), dict):
         return {'ok': False, 'output': 'Ollama did not answer (HTTP %s). %s' % (code, str((data or {}).get('error', ''))[:300])}
     return {'ok': True, 'model': str(data.get('model', model))[:120], 'reply': str(data['message'].get('content', ''))[:200000],

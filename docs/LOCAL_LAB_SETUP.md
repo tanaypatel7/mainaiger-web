@@ -378,6 +378,28 @@ fit rules, the routes and the page are tested against a fake Ollama server
 download and its signature/notarization checks run in the macOS acceptance
 workflow; installing and running Ollama, and model downloads, need a real Mac.
 
+### Thin-slice decisions (`local_lab/decide.py`, `POST /api/models/decide`)
+
+The pattern every AI-made decision in MainAIger follows: the harness asks the
+model **one small question** and names the **exact shape** of the answer (a
+small JSON schema: typed fields, enums, limits); the model answers in JSON
+only (Ollama is asked for structured output with that schema); the harness
+**parses and checks** the answer in code, tells the model once why it was
+wrong if it was, and gives up with `ok: false` after that. Only a validated
+object reaches the code that acts on it. `decide.ask(model, question, context,
+schema, chat=...)` takes any chat function with `models.chat`'s signature, so
+the same decision runs on Ollama today and on an OpenAI-compatible endpoint
+(ASU Sol) once a provider is added. Budgets: question ≤ 4 kB, context ≤ 24 kB,
+at most 3 attempts. Each call is one journal line (`model.decide`).
+
+Example: "Given this diff and these test results, keep or revert?" with
+`{action: keep|revert|ask, confidence: number, reasons: string[≤3]}` is the
+decision step of the self-improvement loop in `docs/AI_HARNESS.md`.
+
+**Status:** schema checks, parsing of fenced or chatty replies, retry with
+reason, attempt cap and the route are tested against a fake Ollama
+(`tests/test_decide.py`); a real model's answers are unverified here.
+
 ## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it
