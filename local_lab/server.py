@@ -26,6 +26,7 @@ from . import network as lab_network
 from . import codemap as lab_codemap
 from . import events as lab_events
 from . import memory as lab_memory
+from . import ideas as lab_ideas
 from .journal import Journal
 from .sessions import SessionRegistry
 from .devices import DeviceManager, DeviceError
@@ -789,6 +790,23 @@ class LabHandler(BaseHTTPRequestHandler):
                         if set(data)!={'path','confirm'} or data['confirm'] is not True or not isinstance(data['path'],str):raise ValueError('Confirm the deletion')
                         lab_memory.delete(self.server.state_dir,data['path']);self.server.journal.write('memory.delete','Note %s deleted'%data['path'],{'path':data['path']});return self.out(200,{'ok':True})
                     if path=='/api/memory/reindex':return self.out(200,lab_memory.reindex(self.server.state_dir))
+                    if path=='/api/memory/idea/draft':
+                        # Thin slice: the description -> a title, summary, tags and first tasks from the local model; nothing is written.
+                        if set(data)-{'text','model'} or not isinstance(data.get('text'),str):raise ValueError('Send {text, model?}')
+                        if 'model' in data and data['model'] is not None and not isinstance(data['model'],str):raise ValueError('model must be text')
+                        lab_memory._root(self.server.state_dir)
+                        out=lab_ideas.draft(self.server.state_dir,data['text'],model=data.get('model') or None)
+                        self.server.journal.write('memory.idea.draft','Idea drafted%s: %s'%((' by '+out['model']) if out['model'] else ' without a model',out['draft']['title']),{'model':out['model'],'ok':out['ok'],'elapsed_ms':out['elapsed_ms'],'attempts':out['attempts'],'error':out['error']})
+                        return self.out(200,out)
+                    if path=='/api/memory/idea':
+                        if set(data)-{'text','draft','model','confirm'} or data.get('confirm') is not True or not isinstance(data.get('text'),str):raise ValueError('Review the idea card, then confirm')
+                        row=lab_ideas.create(self.server.state_dir,data['text'],data.get('draft') or {},model=data.get('model') if isinstance(data.get('model'),str) else None)
+                        self.server.journal.write('memory.idea','Idea "%s" saved'%row['title'],{'path':row['path'],'id':row['id']});return self.out(200,{'note':row})
+                    if path=='/api/memory/idea/grow':
+                        if set(data)!={'path','text'} or not isinstance(data['path'],str) or not isinstance(data['text'],str):raise ValueError('Send {path, text}')
+                        note=lab_ideas.grow(self.server.state_dir,data['path'],data['text'])
+                        self.server.journal.write('memory.idea.grow','Idea "%s" grew'%note['title'],{'path':note['path'],'status':note['status']});return self.out(200,{'note':note})
+                except lab_ideas.IdeaError as e:return self.out(400,{'error':str(e)})
                 except lab_memory.MemoryError as e:return self.out(409 if ('changed since' in str(e) or 'Choose a Memory folder' in str(e)) else 400,{'error':str(e)})
                 except OSError as e:return self.out(500,{'error':'The Memory folder could not be written: %s'%e})
                 return self.out(404,{'error':'Unknown memory route'})

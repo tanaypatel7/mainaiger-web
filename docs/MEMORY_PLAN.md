@@ -70,7 +70,7 @@ the same approved parent as Mainbooks (`…/MainAIger/Memory`); notes are
 plain files, so "security" is the folder approval, the visibility field, the
 Log of every model read, and the rule that chats are never rewritten.
 
-## 2. Ideas (M2)
+## 2. Ideas (M2) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Ideas"
 
 **What:** an "Idea" box on the Memory page. You type what you want; the Lab
 creates one idea note with the description, a title, tags and a first task

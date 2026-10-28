@@ -5,6 +5,7 @@ install chromium); otherwise they are skipped so the plain unittest run stays gr
 They use tests/perf/stub_server.py, which serves the real UI with a fake /api/graph.
 """
 import json, os, subprocess, sys, time, unittest, urllib.request
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8791
@@ -534,6 +535,25 @@ class MemoryPageTests(RealServerCase):
         p.locator('.mnode[data-path="notes/quantum-kernels.md"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Quantum kernels'")
         p.click('#view-list'); p.click('#tier-chats'); p.wait_for_function("() => document.getElementById('list-note').textContent.includes('No chats')")
         kinds = [e['kind'] for e in self.server.journal.tail(0, 200)]; self.assertIn('memory.create', kinds); self.assertIn('memory.folder', kinds); self.assertIn('memory.append', kinds)
+
+    def test_idea_box_drafts_reviews_saves_and_grows(self):
+        from local_lab import ideas
+        p = self.page
+        p.goto(self.origin + '/memory'); p.wait_for_selector('#memory-main:not([hidden])')
+        if 'No Memory folder' in p.inner_text('#memory-stats'):
+            p.click('#memory-choose'); p.wait_for_selector('#folder-dialog[open]'); p.click('#folder-confirm'); p.wait_for_function("() => !document.getElementById('memory-stats').textContent.includes('No Memory folder')")
+        self.assertTrue(p.locator('#idea-draft').is_disabled())
+        # No model is running in this test: the draft comes from the words and says so; the card is editable before saving.
+        with patch.object(ideas.models, 'installed_models', return_value=[]):
+            p.fill('#idea-text', 'I want MainAIger to export my ChatGPT chats and keep the useful parts as memory'); p.click('#idea-draft'); p.wait_for_selector('#idea-dialog[open]')
+            self.assertIn('No local model', p.inner_text('#idea-dialog-meta')); self.assertEqual(p.input_value('#idea-title'), 'I want MainAIger to export my ChatGPT chats and keep the useful parts as memory'); self.assertTrue(p.locator('#idea-similar').is_hidden())
+            p.fill('#idea-title', 'Chat export into memory'); p.fill('#idea-tags', 'memory, chats'); p.fill('#idea-tasks', 'Parse the export zip\nShow what to keep'); p.click('#idea-confirm')
+            p.wait_for_function("() => document.getElementById('note-title').value === 'Chat export into memory'"); self.assertEqual(p.input_value('#note-kind'), 'idea'); self.assertIn('- [ ] Parse the export zip', p.input_value('#note-body')); self.assertEqual(p.input_value('#note-tags'), 'memory, chats')
+            # Asking about it again offers the existing idea; choosing it grows the note instead of making another.
+            p.fill('#idea-text', 'Also export my Claude chats into memory'); p.click('#idea-draft'); p.wait_for_selector('#idea-dialog[open]'); p.wait_for_selector('#idea-similar:not([hidden])')
+            self.assertIn('Add to "Chat export into memory"', p.inner_text('#idea-similar-list')); p.locator('#idea-similar-list input[type=radio]').first.check(); p.click('#idea-confirm')
+            p.wait_for_function("() => document.getElementById('note-status').value === 'growing'"); self.assertIn('Claude chats', p.input_value('#note-body'))
+            self.assertEqual(len([n for n in self.server.journal.tail(0, 300) if n['kind'] == 'memory.idea']), 1, 'one idea note, grown once')
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')

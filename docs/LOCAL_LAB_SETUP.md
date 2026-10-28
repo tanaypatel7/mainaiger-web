@@ -896,13 +896,34 @@ Writes are atomic, a note is only overwritten when it still hashes to what
 the editor read, and every change is a Log line (`memory.folder`,
 `memory.create`, `memory.update`, `memory.append`, `memory.delete`).
 
+### Ideas: describe what you want (`local_lab/ideas.py`, `POST /api/memory/idea/*`)
+
+The IDEA box at the top of the Memory page. Type what you want; **Draft an
+idea…** sends the description to your local model as one thin-slice question
+(`decide.ask` with a fixed shape: a title of at most 80 characters, a
+one-sentence summary, up to 6 tags, up to 6 first tasks) and shows the card
+in a review dialog with the model's name and the seconds it took — editable,
+nothing saved yet. Without a running model the card is built from your
+words and says so. If existing idea notes share real words with the
+description, the dialog offers **Add to "…"** instead of a new note; choosing
+it appends a dated "Asked again" section (a draft becomes *growing*). Saving
+writes an `idea` note with the summary, "What I asked for" and a task
+checklist, `sources: idea-box: <model>`; every draft, save and growth is a
+Log line (`memory.idea.draft`, `memory.idea`, `memory.idea.grow`).
+
+**Status:** the draft (model answer cleaned, no model, a refused answer, a
+bad model name), create, similar-ideas matching (content words only, at
+least two shared) and grow are tested (`tests/test_memory.py`); the routes
+against a fake Ollama too; the box, the review, saving and growing without a
+model are tested in headless Chromium.
+
 **Status:** the format (front matter round trip, links), folder approval
 rules, create/read/update/append/delete, the chat tier's read-only rule, path
 safety, the link graph (title or id, case-insensitive, unresolved listed),
 the index following file changes and the scan fallback are tested
 (`tests/test_memory.py`), the routes too; the page is tested in headless
-Chromium (`MemoryPageTests`). Next: ideas (M2), chat import (M4), the ask
-box with cost estimates (M3).
+Chromium (`MemoryPageTests`). Next: chat import (M4), the ask box with cost
+estimates (M3).
 
 ## Settings
 

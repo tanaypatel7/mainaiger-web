@@ -24,7 +24,7 @@
     $('memory-stats').textContent = st.configured ? `${st.counts.notes} note${st.counts.notes === 1 ? '' : 's'} · ${st.counts.chats} chat${st.counts.chats === 1 ? '' : 's'} · search: ${st.search}` : 'No Memory folder yet';
     $('memory-summary').textContent = st.configured ? `${st.folder} — notes/ holds what you keep (${st.counts.notes}), chats/ holds imported conversations (${st.counts.chats}). Search uses ${st.search === 'fts5' ? 'an SQLite full-text index in the private state folder' : 'a plain scan (SQLite FTS5 is not available here)'}.` : 'Approve a folder to start keeping notes.';
     for (const sel of [$('filter-kind'), $('note-kind'), $('new-kind')]) { const keep = sel.value; sel.textContent = ''; if (sel.id === 'filter-kind') { const o = document.createElement('option'); o.value = ''; o.textContent = 'any kind'; sel.append(o); } for (const k of st.kinds) { if (k === 'chat' && sel.id !== 'filter-kind') continue; const o = document.createElement('option'); o.value = k; o.textContent = k; sel.append(o); } if (keep) sel.value = keep; }
-    $('note-new').disabled = !st.configured;
+    $('note-new').disabled = !st.configured; $('idea-draft').disabled = !st.configured || !$('idea-text').value.trim();
   }
   async function refreshList() {
     if (!state.status || !state.status.configured) { $('list-note').textContent = 'Choose a Memory folder to begin.'; $('note-list').textContent = ''; return; }
@@ -89,6 +89,34 @@
   $('delete-confirm').addEventListener('click', async () => {
     $('delete-dialog').close(); const n = state.note; if (!n) return;
     try { await api('/api/memory/note/delete', {path: n.path, confirm: true}); state.note = null; state.selected = null; renderNote(); toast('Deleted.'); await refreshStatus(); await refreshList(); if (state.view === 'graph') await drawGraph(); } catch (error) { toast(error.message); }
+  });
+  // ---- ideas: describe -> draft (model) -> review -> save as new or grow an existing idea
+  let ideaDraft = null;
+  $('idea-text').addEventListener('input', () => { $('idea-draft').disabled = !$('idea-text').value.trim() || !(state.status && state.status.configured); });
+  $('idea-draft').addEventListener('click', async () => {
+    const text = $('idea-text').value.trim(); if (!text) return;
+    $('idea-draft').disabled = true; $('idea-note').textContent = 'Asking your local model…';
+    try { ideaDraft = await api('/api/memory/idea/draft', {text}); } catch (error) { $('idea-note').textContent = error.message; $('idea-draft').disabled = false; return; }
+    $('idea-draft').disabled = false; $('idea-note').textContent = '';
+    const d = ideaDraft.draft;
+    $('idea-dialog-meta').textContent = ideaDraft.ok ? `Drafted by ${ideaDraft.model} in ${(ideaDraft.elapsed_ms / 1000).toFixed(1)} s (${ideaDraft.attempts} attempt${ideaDraft.attempts === 1 ? '' : 's'}). Edit anything; nothing is saved until you confirm.` : `${ideaDraft.error || 'No model answer'} — the card below is built from your words; edit it by hand.`;
+    $('idea-title').value = d.title; $('idea-summary').value = d.summary; $('idea-tags').value = d.tags.join(', '); $('idea-tasks').value = d.tasks.join('\n');
+    const box = $('idea-similar'), list = $('idea-similar-list'); list.textContent = ''; box.hidden = !ideaDraft.similar.length;
+    for (const s of ideaDraft.similar) { const label = document.createElement('label'); label.className = 'toggle'; const r = document.createElement('input'); r.type = 'radio'; r.name = 'idea-where'; r.value = s.path; label.append(r, ` Add to "${s.title}" (${s.status})`); const snip = document.createElement('div'); snip.className = 'snip'; snip.textContent = (s.snippet || '').replace(/[\[\]]/g, '').slice(0, 140); list.append(label, snip); }
+    box.querySelector('input[value=""]').checked = true;
+    $('idea-dialog').showModal(); $('idea-title').focus();
+  });
+  $('idea-cancel').addEventListener('click', () => $('idea-dialog').close());
+  $('idea-confirm').addEventListener('click', async () => {
+    const text = $('idea-text').value.trim(); const where = (document.querySelector('input[name="idea-where"]:checked') || {}).value || '';
+    const card = {title: $('idea-title').value, summary: $('idea-summary').value, tags: $('idea-tags').value.split(',').map(s => s.trim()).filter(Boolean), tasks: $('idea-tasks').value.split('\n').map(s => s.trim()).filter(Boolean)};
+    try {
+      let note;
+      if (where) note = (await api('/api/memory/idea/grow', {path: where, text})).note;
+      else note = (await api('/api/memory/idea', {text, draft: card, model: ideaDraft && ideaDraft.model, confirm: true})).note;
+      $('idea-dialog').close(); $('idea-text').value = ''; $('idea-draft').disabled = true; toast(where ? 'Added to the idea.' : 'Idea saved as a draft note.');
+      await refreshStatus(); state.tier = 'notes'; setTier(); await refreshList(); open(note.path);
+    } catch (error) { toast(error.message); }
   });
   // ---- new note
   $('note-new').addEventListener('click', () => { $('new-title').value = ''; $('new-tags').value = ''; $('new-body').value = ''; $('new-dialog').showModal(); $('new-title').focus(); });

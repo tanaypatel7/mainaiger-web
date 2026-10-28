@@ -86,6 +86,37 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(m.search(self.state, 'hilbert')[0]['title'], 'Quantum kernels', 'the scan fallback finds it too'); self.assertEqual(m.status(self.state)['search'], 'scan')
 
 
+class IdeaTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name).resolve(); self.state = self.root / 'state'; self.state.mkdir(mode=0o700)
+        self.home = patch.object(Path, 'home', return_value=self.root); self.home.start(); m.configure(self.state, str(self.root / 'Memory'))
+    def tearDown(self):
+        self.home.stop(); self.tmp.cleanup()
+    def test_draft_create_similar_and_grow(self):
+        from local_lab import ideas
+        text = 'I want MainAIger to import my ChatGPT chats and let me pick what to keep as memory.'
+        asked = []
+        def ask(model, question, context, schema, attempts=2):
+            asked.append((model, context, schema)); return {'ok': True, 'decision': {'title': 'Import chats into memory.', 'summary': 'Pull chat exports in and keep the useful parts.', 'tags': ['Memory', 'import chats', 'memory'], 'tasks': ['Parse the export zip', 'Show items to keep', '', 'Write kept items as notes']}, 'elapsed_ms': 1200, 'attempts': 1, 'model': model}
+        out = ideas.draft(self.state, text, ask=ask, installed=lambda: [{'name': 'llama3.2:3b'}])
+        self.assertEqual((out['ok'], out['model'], out['elapsed_ms'], out['similar']), (True, 'llama3.2:3b', 1200, []))
+        self.assertEqual(out['draft'], {'title': 'Import chats into memory', 'summary': 'Pull chat exports in and keep the useful parts.', 'tags': ['memory', 'import-chats'], 'tasks': ['Parse the export zip', 'Show items to keep', 'Write kept items as notes']})
+        self.assertEqual(asked[0][1], text); self.assertEqual(asked[0][2], ideas.SCHEMA)
+        none = ideas.draft(self.state, text, installed=lambda: []); self.assertEqual((none['ok'], none['model'], none['draft']['title']), (False, None, 'I want MainAIger to import my ChatGPT chats and let me pick what to keep as memo')); self.assertIn('No local model', none['error'])
+        bad = ideas.draft(self.state, text, ask=lambda *a, **k: {'ok': False, 'error': 'No valid answer after 2 attempt(s): missing field "title"', 'attempts': 2}, installed=lambda: [{'name': 'x:1b'}]); self.assertFalse(bad['ok']); self.assertIn('missing field', bad['error']); self.assertEqual(bad['draft']['tags'], [])
+        self.assertIn('Choose a model name', ideas.draft(self.state, text, model='Bad Name!')['error'])
+        with self.assertRaisesRegex(ideas.IdeaError, 'Describe'): ideas.draft(self.state, '   ')
+        note = ideas.create(self.state, text, out['draft'], model='llama3.2:3b')
+        self.assertEqual((note['kind'], note['status'], note['tags'], note['path']), ('idea', 'draft', ['memory', 'import-chats'], 'notes/import-chats-into-memory.md'))
+        full = m.read(self.state, note['path']); self.assertIn('## What I asked for', full['body']); self.assertIn('- [ ] Parse the export zip', full['body']); self.assertEqual(full['sources'], ['idea-box: llama3.2:3b']); self.assertTrue(full['body'].startswith('Pull chat exports'))
+        with self.assertRaisesRegex(ideas.IdeaError, 'needs a title'): ideas.create(self.state, text, {'title': '  '})
+        again = ideas.draft(self.state, 'Also import my Claude chats into memory', installed=lambda: [])
+        self.assertEqual([s['path'] for s in again['similar']], [note['path']], 'an existing idea with the same words is offered')
+        grown = ideas.grow(self.state, note['path'], 'Also import my Claude chats into memory'); self.assertEqual(grown['status'], 'growing'); self.assertIn('## Asked again', grown['body']); self.assertIn('Claude chats', grown['body'])
+        fact = m.create(self.state, 'A fact', 'x')
+        with self.assertRaisesRegex(ideas.IdeaError, 'not an idea'): ideas.grow(self.state, fact['path'], 'y')
+
+
 class HttpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name).resolve()
@@ -126,6 +157,28 @@ class HttpTests(unittest.TestCase):
         kinds = [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]
         for k in ('memory.folder', 'memory.create', 'memory.update', 'memory.append', 'memory.delete'): self.assertIn(k, kinds)
         c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10); c.request('GET', '/memory', headers={'Host': f'127.0.0.1:{self.port}'}); r = c.getresponse(); self.assertEqual(r.status, 200); self.assertIn(b'Memory', r.read()); c.close()
+    def test_idea_routes_with_a_fake_ollama(self):
+        from http.server import HTTPServer
+        from local_lab import models
+        from tests.test_decide import FakeOllama
+        FakeOllama.replies = ['{"title": "Chat importer", "summary": "Bring chats in.", "tags": ["memory"], "tasks": ["Parse zips"]}']; FakeOllama.seen = []
+        ollama = HTTPServer(('127.0.0.1', 0), FakeOllama); threading.Thread(target=ollama.serve_forever, daemon=True).start()
+        try:
+            with patch.object(models, 'OLLAMA_PORT', ollama.server_port):
+                status, data, head = self.req('/api/login', {'key': self.key}, {'Origin': self.origin}); auth = {'Origin': self.origin, 'Cookie': head['Set-Cookie'].split(';')[0], 'X-CSRF-Token': data['csrf']}; cookie = {'Cookie': auth['Cookie']}
+                self.assertEqual(self.req('/api/memory/idea/draft', {'text': 'import my chats'}, auth)[0], 409, 'a Memory folder first')
+                self.req('/api/memory/folder', {'folder': str(self.root / 'Memory'), 'confirm': True}, auth)
+                status, out, _ = self.req('/api/memory/idea/draft', {'text': 'import my chats into memory'}, auth)
+                self.assertEqual((status, out['ok'], out['model'], out['draft']['title'], out['draft']['tasks']), (200, True, 'llama3.2:3b', 'Chat importer', ['Parse zips']))
+                self.assertIn('import my chats into memory', FakeOllama.seen[-1]['messages'][-1]['content']); self.assertEqual(FakeOllama.seen[-1].get('format', {}).get('type'), 'object', 'structured output is requested')
+                self.assertEqual(self.req('/api/memory/idea', {'text': 'import my chats into memory', 'draft': out['draft']}, auth)[0], 400, 'confirm required')
+                note = self.req('/api/memory/idea', {'text': 'import my chats into memory', 'draft': dict(out['draft'], title='Chat importer (edited)'), 'model': 'llama3.2:3b', 'confirm': True}, auth)[1]['note']
+                self.assertEqual((note['title'], note['kind'], note['status']), ('Chat importer (edited)', 'idea', 'draft'))
+                again = self.req('/api/memory/idea/draft', {'text': 'also import Claude chats into memory'}, auth)[1]; self.assertEqual([s['title'] for s in again['similar']], ['Chat importer (edited)'])
+                grown = self.req('/api/memory/idea/grow', {'path': note['path'], 'text': 'also import Claude chats into memory'}, auth)[1]['note']; self.assertEqual(grown['status'], 'growing')
+                kinds = [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]; self.assertIn('memory.idea.draft', kinds); self.assertIn('memory.idea', kinds); self.assertIn('memory.idea.grow', kinds)
+        finally:
+            ollama.shutdown(); ollama.server_close(); FakeOllama.seen = []
 
 
 if __name__ == '__main__':
