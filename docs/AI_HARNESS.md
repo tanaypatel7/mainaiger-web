@@ -369,10 +369,13 @@ have, mapped onto the Lab):
 | Cheap pre-run judge with memory of similar past attempts (Rehearse) | a second model cell using `nimble`-style decision models (Ollama `/v1/systemone`) once that provider path exists; the journal is the memory |
 | Everything sandboxed, no network, auditable lineage (DGM) | sessions run with `--network=none`, limits and a read-only workspace; the journal is the lineage |
 
-**Status:** future. The pieces (model cells, decide, sessions, journal) are
-tested; the loop Mainbook itself is the next build after your go, as
-`examples/self-improve.ipymb` plus a reviewed "apply to checkout" step and the
-two test folders.
+**Status:** the first version exists: `examples/self-improve.ipymb` (open it
+from **Open example…**; described in `docs/LOCAL_LAB_SETUP.md` "The
+self-improvement loop example"). It improves a classifier function rather than
+the Lab's own repository, so no step can touch your files; it runs in CI on a
+real kernel with a fake model, and is unverified with a real Ollama model. The
+repository-copy version with the two test folders and a reviewed "apply to
+checkout" step is still future.
 
 ## 4. The thin-slice pattern (how model output becomes decisions)
 

@@ -1,0 +1,436 @@
+{
+ "format": "mainaiger",
+ "schema_version": 2,
+ "notebook": {
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+   "kernelspec": {
+    "name": "python3",
+    "display_name": "Python 3",
+    "language": "python"
+   },
+   "mainaiger": {
+    "example": true,
+    "name": "self-improve",
+    "title": "Self-improvement loop (one pass)"
+   }
+  },
+  "cells": [
+   {
+    "id": "readme",
+    "cell_type": "markdown",
+    "metadata": {
+     "mainaiger": {
+      "title": "How this loop works"
+     }
+    },
+    "source": "# The first self-improvement loop\n\nOne pass: **Propose** (a model rewrites the training cell) \u2192 **Apply to copy** (the proposal runs on a copy of the session, never touching the baseline) \u2192 **Judge** (a model reads both results and says keep / revert / ask) \u2192 **Report**. You approve the run; keeping a change is your decision: paste the proposed code into the training cell, or push it to the Library as a new version. Every step is on this canvas and in the Log.\n\nNeeds: a running session, an installed Ollama model named in the two model cells (Models page). Without a model the two model cells stop the run with a plain error.",
+    "outputs": []
+   },
+   {
+    "id": "load",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Load data",
+      "inputs": [],
+      "outputs": [
+       "rows"
+      ]
+     }
+    },
+    "source": "import random\nrandom.seed(7)\n# Synthetic dataset: two blobs in 2-D. Replace with a real loader; keep `rows` as [(features, label), ...].\nrows = []\nfor _ in range(200):\n    label = random.randint(0, 1)\n    centre = (0.0, 0.0) if label == 0 else (2.0, 1.5)\n    rows.append(([random.gauss(centre[0], 1.0), random.gauss(centre[1], 1.0)], label))\nprint(f\"loaded {len(rows)} rows, {sum(r[1] for r in rows)} positive\")\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "features",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Extract features",
+      "inputs": [
+       "rows"
+      ],
+      "outputs": [
+       "X",
+       "y",
+       "feature_names"
+      ]
+     }
+    },
+    "source": "# From rows -> X (list of feature lists) and y (labels). Adds x1*x2 and standardises columns.\nraw = [feat + [feat[0] * feat[1]] for feat, _ in rows]\ny = [label for _, label in rows]\ncols = list(zip(*raw))\nmeans = [sum(c) / len(c) for c in cols]\nstds = [max(1e-9, (sum((v - m) ** 2 for v in c) / len(c)) ** 0.5) for c, m in zip(cols, means)]\nX = [[(v - m) / s for v, m, s in zip(r, means, stds)] for r in raw]\nfeature_names = [\"x1\", \"x2\", \"x1*x2\"]\nprint(f\"{len(X)} samples x {len(feature_names)} features: {feature_names}\")\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "split",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Split train/test",
+      "inputs": [
+       "X",
+       "y"
+      ],
+      "outputs": [
+       "X_train",
+       "y_train",
+       "X_test",
+       "y_test"
+      ]
+     }
+    },
+    "source": "import random\nrng = random.Random(42)\norder = list(range(len(X)))\nrng.shuffle(order)\ncut = int(len(order) * 0.75)\nX_train = [X[i] for i in order[:cut]]; y_train = [y[i] for i in order[:cut]]\nX_test = [X[i] for i in order[cut:]]; y_test = [y[i] for i in order[cut:]]\nprint(f\"train {len(X_train)} / test {len(X_test)}\")\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "train",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Train classifier (baseline)",
+      "inputs": [
+       "X_train",
+       "y_train"
+      ],
+      "outputs": [
+       "model"
+      ]
+     }
+    },
+    "source": "import math\n# Logistic regression, gradient descent, standard library only.\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.1\nfor epoch in range(300):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "evaluate",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Evaluate",
+      "inputs": [
+       "model",
+       "X_test",
+       "y_test"
+      ],
+      "outputs": [
+       "metrics"
+      ]
+     }
+    },
+    "source": "pred = [model[\"predict\"](x) for x in X_test]\ntp = sum(1 for p, t in zip(pred, y_test) if p == 1 and t == 1)\ntn = sum(1 for p, t in zip(pred, y_test) if p == 0 and t == 0)\nfp = sum(1 for p, t in zip(pred, y_test) if p == 1 and t == 0)\nfn = sum(1 for p, t in zip(pred, y_test) if p == 0 and t == 1)\nprecision = tp / (tp + fp) if tp + fp else 0.0\nrecall = tp / (tp + fn) if tp + fn else 0.0\nmetrics = {\"accuracy\": (tp + tn) / len(y_test), \"precision\": precision, \"recall\": recall,\n           \"f1\": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,\n           \"confusion\": {\"tp\": tp, \"tn\": tn, \"fp\": fp, \"fn\": fn}}\nprint({k: (round(v, 3) if isinstance(v, float) else v) for k, v in metrics.items()})\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "propose",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Propose change",
+      "inputs": [],
+      "outputs": [
+       "proposal"
+      ],
+      "model": {
+       "model": "qwen2.5-coder:7b",
+       "output": "proposal",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "source": {
+          "type": "string",
+          "description": "the complete new training cell"
+         },
+         "why": {
+          "type": "string",
+          "maxLength": 300
+         }
+        },
+        "required": [
+         "source",
+         "why"
+        ]
+       },
+       "attempts": 2
+      }
+     }
+    },
+    "source": "You improve a small machine-learning training cell written in plain Python (standard library only, no numpy).\nHere are the baseline metrics the current cell achieved:\n{{output:Evaluate}}\n\nHere is the current training cell. It must keep defining `model` as a dict with \"weights\", \"bias\" and a \"predict\" function taking one feature list and returning 0 or 1. It may use the variables X_train and y_train only.\n----\nimport math\n# Logistic regression, gradient descent, standard library only.\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.1\nfor epoch in range(300):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n----\nPropose ONE small change that might improve accuracy (for example the learning rate, the number of epochs, or feature scaling inside the loop). Return the complete new cell source and one sentence why.",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "apply",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Apply to copy",
+      "inputs": [
+       "proposal",
+       "X_test",
+       "y_test",
+       "metrics"
+      ],
+      "outputs": [
+       "candidate_metrics"
+      ]
+     }
+    },
+    "source": "# Run the proposal on a COPY of this session's variables; the baseline `model` is untouched.\nimport json as _json\ncandidate_ns = {k: v for k, v in globals().items() if not k.startswith(\"_\")}\ntry:\n    exec(proposal[\"source\"], candidate_ns)\n    candidate = candidate_ns[\"model\"]\n    pred = [candidate[\"predict\"](x) for x in X_test]\n    tp = sum(1 for p, t in zip(pred, y_test) if p == 1 and t == 1); tn = sum(1 for p, t in zip(pred, y_test) if p == 0 and t == 0)\n    candidate_metrics = {\"accuracy\": (tp + tn) / len(y_test)}\n    print(\"why:\", proposal[\"why\"])\n    print(\"baseline accuracy: %.3f\" % metrics[\"accuracy\"])\n    print(\"candidate accuracy: %.3f\" % candidate_metrics[\"accuracy\"])\n    print(\"delta: %+.3f\" % (candidate_metrics[\"accuracy\"] - metrics[\"accuracy\"]))\nexcept Exception as error:\n    candidate_metrics = {\"accuracy\": None, \"error\": \"%s: %s\" % (type(error).__name__, error)}\n    print(\"the proposal failed:\", candidate_metrics[\"error\"])\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "judge",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Judge",
+      "inputs": [],
+      "outputs": [
+       "verdict"
+      ],
+      "model": {
+       "model": "qwen2.5-coder:7b",
+       "output": "verdict",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "action": {
+          "type": "string",
+          "enum": [
+           "keep",
+           "revert",
+           "ask"
+          ]
+         },
+         "confidence": {
+          "type": "number"
+         },
+         "reasons": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "maxItems": 3
+         }
+        },
+        "required": [
+         "action",
+         "confidence"
+        ]
+       }
+      }
+     }
+    },
+    "source": "A proposed change to a training cell was tried on a copy. Here is what happened:\n{{output:Apply to copy}}\n\nDecide: \"keep\" only if the candidate accuracy is clearly better than the baseline (at least +0.02) and nothing failed; \"revert\" if it is worse or failed; \"ask\" if the difference is too small to tell.",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "report",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Report",
+      "inputs": [
+       "verdict",
+       "metrics",
+       "candidate_metrics",
+       "proposal"
+      ],
+      "outputs": []
+     }
+    },
+    "source": "print(\"=\" * 48)\nprint(\"Self-improvement loop: one pass\")\nprint(\"=\" * 48)\nprint(\"verdict:\", verdict[\"action\"], \"(confidence %.2f)\" % verdict[\"confidence\"])\nfor r in verdict.get(\"reasons\", []):\n    print(\" -\", r)\nprint(\"baseline accuracy: %.3f\" % metrics[\"accuracy\"])\nprint(\"candidate accuracy:\", candidate_metrics.get(\"accuracy\"))\nif verdict[\"action\"] == \"keep\":\n    print()\n    print(\"To keep this change: paste the source below into 'Train classifier (baseline)',\")\n    print(\"or push it to the Library as a new version of train-classifier.\")\n    print(\"-\" * 48)\n    print(proposal[\"source\"])\nelif verdict[\"action\"] == \"ask\":\n    print(\"Too close to call: run the loop again, or change the proposal prompt.\")\nelse:\n    print(\"Reverted: the baseline stays. Run the loop again for another proposal.\")\n",
+    "execution_count": null,
+    "outputs": []
+   }
+  ]
+ },
+ "graph": {
+  "nodes": [
+   {
+    "id": "start",
+    "kind": "start"
+   },
+   {
+    "id": "readme",
+    "kind": "markdown",
+    "cell_index": 0
+   },
+   {
+    "id": "load",
+    "kind": "code",
+    "cell_index": 1
+   },
+   {
+    "id": "features",
+    "kind": "code",
+    "cell_index": 2
+   },
+   {
+    "id": "split",
+    "kind": "code",
+    "cell_index": 3
+   },
+   {
+    "id": "train",
+    "kind": "code",
+    "cell_index": 4
+   },
+   {
+    "id": "evaluate",
+    "kind": "code",
+    "cell_index": 5
+   },
+   {
+    "id": "propose",
+    "kind": "code",
+    "cell_index": 6
+   },
+   {
+    "id": "apply",
+    "kind": "code",
+    "cell_index": 7
+   },
+   {
+    "id": "judge",
+    "kind": "code",
+    "cell_index": 8
+   },
+   {
+    "id": "report",
+    "kind": "code",
+    "cell_index": 9
+   },
+   {
+    "id": "finish",
+    "kind": "finish"
+   }
+  ],
+  "edges": [
+   {
+    "id": "e-start-load",
+    "kind": "control",
+    "source": "start",
+    "target": "load"
+   },
+   {
+    "id": "e-load-features",
+    "kind": "control",
+    "source": "load",
+    "target": "features"
+   },
+   {
+    "id": "e-features-split",
+    "kind": "control",
+    "source": "features",
+    "target": "split"
+   },
+   {
+    "id": "e-split-train",
+    "kind": "control",
+    "source": "split",
+    "target": "train"
+   },
+   {
+    "id": "e-train-evaluate",
+    "kind": "control",
+    "source": "train",
+    "target": "evaluate"
+   },
+   {
+    "id": "e-evaluate-propose",
+    "kind": "control",
+    "source": "evaluate",
+    "target": "propose"
+   },
+   {
+    "id": "e-propose-apply",
+    "kind": "control",
+    "source": "propose",
+    "target": "apply"
+   },
+   {
+    "id": "e-apply-judge",
+    "kind": "control",
+    "source": "apply",
+    "target": "judge"
+   },
+   {
+    "id": "e-judge-report",
+    "kind": "control",
+    "source": "judge",
+    "target": "report"
+   },
+   {
+    "id": "e-report-finish",
+    "kind": "control",
+    "source": "report",
+    "target": "finish"
+   }
+  ]
+ },
+ "layout": {
+  "nodes": {
+   "readme": {
+    "x": 40.0,
+    "y": 40.0
+   },
+   "load": {
+    "x": 460.0,
+    "y": 40.0
+   },
+   "features": {
+    "x": 460.0,
+    "y": 300.0
+   },
+   "split": {
+    "x": 460.0,
+    "y": 560.0
+   },
+   "train": {
+    "x": 860.0,
+    "y": 40.0
+   },
+   "evaluate": {
+    "x": 860.0,
+    "y": 420.0
+   },
+   "propose": {
+    "x": 1260.0,
+    "y": 40.0
+   },
+   "apply": {
+    "x": 1260.0,
+    "y": 420.0
+   },
+   "judge": {
+    "x": 1660.0,
+    "y": 40.0
+   },
+   "report": {
+    "x": 1660.0,
+    "y": 420.0
+   },
+   "start": {
+    "x": 40.0,
+    "y": 520.0
+   },
+   "finish": {
+    "x": 2060.0,
+    "y": 520.0
+   }
+  },
+  "viewport": {
+   "x": 40,
+   "y": 30,
+   "zoom": 0.6
+  }
+ }
+}

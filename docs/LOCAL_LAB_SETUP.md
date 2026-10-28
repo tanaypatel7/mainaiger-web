@@ -133,8 +133,8 @@ What the pieces do, and which file implements them:
 - **Export Python** writes the cells reachable from Start, in trigger order,
   as one `.py` with the notes as comments. **Clear outputs** resets counts.
 - **Open example…** lists the Mainbooks in `examples/` (`signal-demo`,
-  `csv-pipeline`, `branching-stats`); `tests/test_examples.py` runs each one
-  with the real kernel, so they cannot rot. **Open .ipymb / .ipynb** sends a
+  `csv-pipeline`, `branching-stats`, `self-improve`); `tests/test_examples.py`
+  runs each one with the real kernel, so they cannot rot. **Open .ipymb / .ipynb** sends a
   plain notebook to `POST /api/graph/import` (`graph.from_notebook()`): cells
   are chained in notebook order, notes kept, ids/outputs/counts preserved,
   titles taken from the nearest heading or first comment, and an import
@@ -458,6 +458,53 @@ decision step of the self-improvement loop in `docs/AI_HARNESS.md`.
 **Status:** schema checks, parsing of fenced or chatty replies, retry with
 reason, attempt cap and the route are tested against a fake Ollama
 (`tests/test_decide.py`); a real model's answers are unverified here.
+
+### The self-improvement loop example (`examples/self-improve.ipymb`)
+
+One pass of the loop described in `docs/AI_HARNESS.md` §3, as a Mainbook you
+can open from **Open example…**, read on the canvas, and run with a local
+model. Ten cells in one chain:
+
+```
+Start → How this loop works (note) → Load data → Extract features → Split train/test
+      → Train classifier (baseline) → Evaluate → Propose change (model)
+      → Apply to copy → Judge (model) → Report → Finish
+```
+
+- **Load → Evaluate** are plain Python (a small synthetic dataset, a
+  nearest-centroid classifier written in the standard library, an accuracy
+  number). The baseline is the thing to improve.
+- **Propose change** is a *model cell*: its prompt pastes the baseline source
+  and the accuracy, asks for `{source, why}` (a rewritten `train` function and
+  one reason), and stores the answer in `proposal`.
+- **Apply to copy** runs the proposed `train` on a *copy* of the data in the
+  same session (`exec` into a fresh namespace), evaluates it the same way, and
+  prints `baseline accuracy`, `candidate accuracy` and `delta`. The baseline
+  function is never replaced; nothing on disk changes.
+- **Judge** is a second model cell whose whole prompt is
+  `{{output:Apply to copy}}` plus the question; its answer is schema-checked
+  as `{action: keep|revert|ask, confidence, reasons[≤3]}` and stored in
+  `verdict`.
+- **Report** prints what happened: the delta, the verdict, its reasons, and
+  what *you* would do next (keeping a change is a commit you make after
+  reading it; the loop never writes to the checkout).
+
+Why this shape: the thing being improved is a function, not the Lab's own
+repository, so the first run proves the plumbing (model reads a result,
+answers in a fixed shape, the answer drives code, every step is on the canvas
+and in the Log) without any step that can touch your files. The stricter loop
+(repository copy, held-out tests, budgets) is the table in `AI_HARNESS.md` §3.
+
+**Status:** tested in CI with a *fake* model (`tests/test_examples.py`): the
+fake proposes a better `train`, the apply cell measures it, the judge sees the
+numbers through the placeholder (the test asserts the delta reached the
+report) and the report prints the verdict; run on a real kernel like every
+other example. With a real Ollama model (`qwen2.5-coder:7b` is named in the
+two model cells; change it on the card to any installed coder model) the run
+is unverified here: expect most proposals to be rejected or to fail the
+schema, which the run shows plainly. Fixed while building it: output
+placeholders now accept cell titles with spaces (`{{output:Apply to copy}}`
+was left literal before).
 
 ## Devices: run cells on another machine (`local_lab/devices.py`, `remote.py`, `/api/devices/*`)
 

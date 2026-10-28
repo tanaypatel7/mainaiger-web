@@ -71,7 +71,7 @@ def form_prelude(form):
 
 
 MODEL_NAME = re.compile(r'^[a-z0-9][a-z0-9._/-]{0,80}(:[a-z0-9][a-z0-9._-]{0,40})?$')
-PLACEHOLDER = re.compile(r'\{\{\s*(var|output)\s*:\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}')
+PLACEHOLDER = re.compile(r'\{\{\s*(var|output)\s*:\s*([^{}\n]+?)\s*\}\}')  # {{output:Cell title with spaces}} / {{var:name}}
 SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}(/[A-Za-z0-9][A-Za-z0-9 _-]{0,30})?$')  # "label" or "device/label"
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
@@ -395,7 +395,7 @@ def declared(doc, node_id):
     cfg = model_config(cell)
     if cfg:
         # The source is a prompt: it reads the variables it mentions and defines the output name.
-        result = {'inputs': [n for k, n in prompt_placeholders(source_text(cell)) if k == 'var'], 'outputs': [cfg['output']], 'error': None, 'model': cfg['model']}
+        result = {'inputs': [n for k, n in prompt_placeholders(source_text(cell)) if k == 'var' and NAME.match(n)], 'outputs': [cfg['output']], 'error': None, 'model': cfg['model']}
         if 'inputs' in own:
             result['inputs'] = list(own['inputs'])
         result['declared'] = True

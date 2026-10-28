@@ -21,7 +21,38 @@ EXPECTED = {
     'signal-demo': {'last': 'check-signal', 'contains': 'Check passed', 'fired': 3},
     'csv-pipeline': {'last': 'report', 'contains': 'Hottest: Phoenix', 'fired': 5, 'also': {'clean': '1 row(s) dropped'}},
     'branching-stats': {'last': 'report', 'contains': 'Report complete.', 'fired': 7, 'also': {'load': '200 samples'}},
+    'self-improve': {'last': 'report', 'contains': 'Self-improvement loop: one pass', 'fired': 9, 'also': {'apply': 'candidate accuracy'}, 'model': True},
 }
+
+BETTER_TRAIN = '''import math
+weights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.3
+for epoch in range(600):
+    grad_w = [0.0] * len(weights); grad_b = 0.0
+    for xi, yi in zip(X_train, y_train):
+        z = sum(w * v for w, v in zip(weights, xi)) + bias
+        p = 1 / (1 + math.exp(-max(-30, min(30, z))))
+        err = p - yi
+        for j, v in enumerate(xi):
+            grad_w[j] += err * v
+        grad_b += err
+    n = len(X_train)
+    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]
+    bias -= lr * grad_b / n
+def predict(x):
+    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0
+model = {"weights": weights, "bias": bias, "predict": predict}
+print("candidate trained")
+'''
+
+
+def fake_model(cfg, prompt):
+    """Stands in for Ollama in CI: a plausible proposal, then a verdict that reads the numbers in the prompt."""
+    if cfg['output'] == 'proposal':
+        return {'ok': True, 'value': {'source': BETTER_TRAIN, 'why': 'A higher learning rate and more epochs for a tiny dataset.'}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+    import re
+    delta = re.search(r'delta: ([+-][0-9.]+)', prompt)
+    action = 'keep' if delta and float(delta.group(1)) >= 0.02 else ('revert' if delta and float(delta.group(1)) < 0 else 'ask')
+    return {'ok': True, 'value': {'action': action, 'confidence': 0.8, 'reasons': ['delta ' + (delta.group(1) if delta else 'unknown')]}, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
 
 
 def load_example(name):
@@ -52,11 +83,12 @@ class ExampleRunTests(unittest.TestCase):
                 kernel = KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')]); kernel.start(timeout=20)
                 try:
                     doc = g.validate(load_example(name))
-                    run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r)).start()
+                    run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake_model if expect.get('model') else None).start()
                     self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error'))
                     snap = run.snapshot()
                     self.assertTrue(all(n['status'] == 'ok' for n in snap['nodes'].values()), {k: v['status'] for k, v in snap['nodes'].items()})
                     self.assertIn(expect['contains'], snap['nodes'][expect['last']]['output'])
+                    if expect.get('model'): self.assertIn('delta -0.020', snap['nodes']['report']['output'], 'the judge saw the Apply cell\'s printed output through {{output:Apply to copy}}')
                     self.assertEqual(len(snap['fired']), expect['fired'])
                     for ident, text in expect.get('also', {}).items():
                         self.assertIn(text, snap['nodes'][ident]['output'])
