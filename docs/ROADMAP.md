@@ -1,7 +1,8 @@
 # MainAIger roadmap · from the Lab of today to MainAIger built with MainAIger
 
-Written 27 October 2026. Supersedes the milestone list in `DESIGN_PLAN.md` §10
-where they differ; `LOCAL_LAB_SETUP.md` stays the feature → file map.
+Written 27 October 2026; A1, A2 and the first half of B2 were built on 28 October
+(see `SESSION_2026-10-28.md`). Supersedes the milestone list in `DESIGN_PLAN.md`
+§10 where they differ; `LOCAL_LAB_SETUP.md` stays the feature → file map.
 
 ## The goal, in one paragraph
 
