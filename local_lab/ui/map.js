@@ -94,6 +94,7 @@
     if (!n) { $('sel-title').textContent = 'Click a node.'; $('sel-meta').textContent = ''; $('sel-doc').textContent = ''; $('sel-links').textContent = ''; $('sel-source').hidden = true; return; }
     $('sel-title').textContent = `${n.kind}: ${n.name}`; $('sel-meta').textContent = `${n.path}:${n.line}-${n.end_line}`; $('sel-doc').textContent = n.doc || (n.routes_called ? 'calls: ' + n.routes_called.join(', ') : '');
     const canCell = n.kind === 'function' || n.kind === 'method'; $('sel-cell').hidden = !canCell; $('sel-cell-note').hidden = !canCell;
+    $('sel-edit').hidden = !(state.map.can_write && n.path.endsWith('.py')); $('sel-editor').hidden = true; state.editing = null;
     if (canCell) { const ps = (n.params || []).filter(p => !['self', 'cls'].includes(p.name) && !['vararg', 'kwarg'].includes(p.kind)); $('sel-cell-note').textContent = ps.length ? `A form with ${ps.length} field${ps.length === 1 ? '' : 's'} (${ps.map(p => p.name).join(', ')}) in front of a call to ${n.name}.` : `A cell that calls ${n.name}() and prints the result.`; }
     const links = $('sel-links'); links.textContent = '';
     const group = (title, items, pick) => { if (!items.length) return; const b = document.createElement('b'); b.textContent = title; links.append(b); for (const e of items.slice(0, 40)) { const t = byId()[pick(e)]; if (!t) continue; const a = document.createElement('a'); a.textContent = `${t.kind === 'method' || t.kind === 'function' || t.kind === 'class' ? t.name : t.name} · ${t.path}`; a.dataset.id = t.id; links.append(a); } if (items.length > 40) { const m = document.createElement('span'); m.className = 'muted'; m.textContent = `… ${items.length - 40} more`; links.append(m); } };
@@ -104,8 +105,52 @@
     group('Called from UI', inn.filter(e => e.kind === 'ui'), e => e.source); group('Calls routes', out.filter(e => e.kind === 'ui'), e => e.target);
     group('Contains', out.filter(e => e.kind === 'contains'), e => e.target);
     const src = $('sel-source'); src.hidden = false; src.textContent = 'Loading source…';
-    try { const data = await api(`/api/codemap/source?root=${encodeURIComponent(state.root)}&path=${encodeURIComponent(n.path)}&line=${n.line}&end_line=${n.end_line}`); if (state.selected !== id) return; src.textContent = data.text + (data.truncated ? '\n…' : ''); } catch (error) { src.textContent = error.message; }
+    try { const data = await api(`/api/codemap/source?root=${encodeURIComponent(state.root)}&path=${encodeURIComponent(n.path)}&line=${n.line}&end_line=${n.end_line}`); if (state.selected !== id) return; src.textContent = data.text + (data.truncated ? '\n…' : ''); state.source = data; $('sel-edit').disabled = !!data.truncated; } catch (error) { src.textContent = error.message; }
   }
+  // ---- editing: textarea -> diff (server) -> allow the folder once -> atomic write -> reload the map
+  $('sel-edit').addEventListener('click', () => {
+    const n = state.selected && byId()[state.selected]; const data = state.source; if (!n || !data || data.path !== n.path) return;
+    state.editing = {node: n.id, path: n.path, line: data.line, end_line: data.end_line, hash: data.file_hash};
+    $('sel-text').value = data.text; $('sel-editor').hidden = false; $('sel-source').hidden = true; $('sel-edit-note').textContent = `Editing ${n.path} lines ${data.line}–${data.end_line}. Nothing is written until you review the diff and confirm.`; $('sel-text').focus();
+  });
+  $('sel-edit-cancel').addEventListener('click', () => { state.editing = null; $('sel-editor').hidden = true; $('sel-source').hidden = false; });
+  $('sel-review').addEventListener('click', async () => {
+    const e = state.editing; if (!e) return;
+    try {
+      const r = await api('/api/codemap/diff', {root: state.root, path: e.path, line: e.line, end_line: e.end_line, text: $('sel-text').value, expected_hash: e.hash});
+      if (!r.changed) { toast('No change to write.'); return; }
+      $('write-dialog-intro').textContent = `${e.path}: ${r.lines.before} line${r.lines.before === 1 ? '' : 's'} become ${r.lines.after}. The file parses. The write is atomic and recorded in the Log.`;
+      $('write-dialog-diff').textContent = r.diff; $('write-dialog-note').textContent = state.map.writable ? '' : `Writes under ${state.map.folder} are not allowed yet; you will be asked once.`;
+      $('write-dialog').showModal(); $('write-dialog-cancel').focus();
+    } catch (error) { toast(error.message); }
+  });
+  $('write-dialog-cancel').addEventListener('click', () => $('write-dialog').close());
+  $('allow-dialog-cancel').addEventListener('click', () => $('allow-dialog').close());
+  async function writeBack() {
+    const e = state.editing; if (!e) return;
+    try {
+      const r = await api('/api/codemap/write', {root: state.root, path: e.path, line: e.line, end_line: e.end_line, text: $('sel-text').value, expected_hash: e.hash, confirm: true});
+      toast(r.written ? `Wrote ${e.path}.` : 'Nothing was written.'); state.editing = null; $('sel-editor').hidden = true;
+      const keep = e.node; await load(state.root); if (byId()[keep]) { if (!state.visible.has(keep)) { let cur = byId()[keep]; while (cur && cur.parent) { cur = byId()[cur.parent]; if (cur && cur.kind === 'module') state.collapsed.delete(cur.id); } layout(); render(); } select(keep); }
+    } catch (error) { toast(error.message); }
+  }
+  $('write-dialog-confirm').addEventListener('click', async () => {
+    $('write-dialog').close();
+    if (state.map.writable) { await writeBack(); return; }
+    $('allow-dialog-text').textContent = `Folder: ${state.map.folder}`; $('allow-dialog').showModal(); $('allow-dialog-cancel').focus();
+  });
+  $('allow-dialog-confirm').addEventListener('click', async () => {
+    $('allow-dialog').close();
+    try { await api('/api/codemap/approve-write', {root: state.root, confirm: true}); state.map.writable = true; } catch (error) { toast(error.message); return; }
+    await writeBack();
+  });
+  // ---- tests in the session: the folder's unittest discovery, run like a terminal line inside the container
+  $('map-tests').addEventListener('click', async () => {
+    const out = $('map-tests-output'); out.hidden = false; out.textContent = 'Running in the active session…';
+    const folder = state.map.folder; const inside = state.map.inside || folder;
+    try { const r = await api('/api/sessions/command', {command: `cd "${inside}" 2>/dev/null || cd "${folder}"; python3 -m unittest discover -s tests -p 'test_*.py' 2>&1 | tail -n 40`, confirm: true}); out.textContent = (r.result.output || '') + (r.result.error ? '\n' + r.result.error.evalue : ''); }
+    catch (error) { out.textContent = error.message; }
+  });
   $('sel-links').addEventListener('click', event => { const a = event.target.closest('a[data-id]'); if (!a) return; const id = a.dataset.id; if (!state.visible.has(id)) { const n = byId()[id]; let cur = n; while (cur && cur.parent) { cur = byId()[cur.parent]; if (cur && cur.kind === 'module') state.collapsed.delete(cur.id); } layout(); render(); } select(id); });
   // ---- interactions
   const viewport = $('viewport');

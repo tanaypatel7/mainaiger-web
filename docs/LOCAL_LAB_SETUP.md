@@ -753,6 +753,42 @@ real kernel are tested (`tests/test_codemap.py`); the full path Map → button �
 Graph page → form on the card → run is tested in headless Chromium
 (`MapToCellTests`).
 
+### Edit from the map, write back as a reviewed step (`codemap.replace_lines`, `/api/codemap/diff|write|approve-write`)
+
+Select a function, class or method of a folder you mapped (not the running
+app's own code) and press **Edit…**: its lines become a text box. **Review
+changes…** asks the Lab for a unified diff of the whole file (`POST
+/api/codemap/diff`, nothing written) and shows it in a dialog. **Write to
+file** then:
+
+1. the first time for a folder, asks you to **allow writes under that folder
+   until the Lab stops** (`POST /api/codemap/approve-write`, a journal line;
+   never persisted, like arming) — the only write permission the Lab has
+   besides the Mainbooks and Library folders;
+2. checks that the file still hashes to what the editor read (`file_hash`
+   from `/api/codemap/source`; a change underneath is refused with "reload
+   the map"), that the range is inside the file, that the text is at most
+   200 KB, and, for a `.py` file, that the **whole file still parses** (a
+   syntax error is refused before anything touches disk, naming the line);
+3. writes atomically (a temp file in the same folder, the original's mode,
+   `os.replace`), re-reads the map, keeps your selection, and records
+   `map.write` with the path, lines and bytes in the Log.
+
+**Run tests in session** runs `python3 -m unittest discover -s tests` from
+the mapped folder as the session sees it (`/workspace/…`), the same way a
+Terminal line runs: inside the container, nothing on this Mac. Set your
+workspace to a checkout of a repository (this one included), map it, edit a
+function, run its tests: that is the first "MainAIger working on MainAIger"
+loop, by hand. The running app's own copy (`self`) is read-only here by
+design: edit the checkout, not the app.
+
+**Status:** diff, hash and parse checks, atomic write with mode kept, the
+trailing-newline rule, path safety, the routes (allow, refuse `self`, refuse
+without confirm, refuse after the file changed), the re-read map and the
+journal lines are tested (`tests/test_codemap.py`); edit → diff → allow →
+write → map reloads, a broken edit refused, and the folder's tests running
+in the session are tested in headless Chromium (`MapToCellTests`).
+
 **Status:** modules/classes/functions, import and call resolution, routes and
 UI edges on the Lab itself, relative imports, hidden/symlink/skipped files and
 syntax errors on a synthetic folder, and the routes are tested

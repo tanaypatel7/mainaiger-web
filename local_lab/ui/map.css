@@ -14,3 +14,6 @@
 .map-source{max-height:40vh;font-size:11.5px}#sel-links a{display:block;color:var(--purple);text-decoration:none;cursor:pointer}#sel-links b{display:block;margin-top:6px}
 #map-search{width:180px}
 .mnode.route{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}
+
+.map-editor{width:100%;min-height:200px;max-height:50vh;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;line-height:1.4;tab-size:4;resize:vertical;margin-top:6px}
+.map-diff{max-height:50vh;font-size:11.5px;white-space:pre}

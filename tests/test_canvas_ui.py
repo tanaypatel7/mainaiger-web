@@ -606,7 +606,36 @@ class MapToCellTests(RealServerCase):
         self.assertEqual(p.input_value('#form-cell-2-factor'), '2'); self.assertEqual(self.server.cell_inbox, [], 'taken')
         self.assertTrue(any(e['source'] == 'cell-1' and e['target'] == 'cell-2' for e in self.server.graph_doc['graph']['edges']))
         p.fill('#form-cell-2-values', '[10, 20]'); p.fill('#form-cell-2-factor', '0.5'); p.press('#form-cell-2-factor', 'Tab'); p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
-        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm'); p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        if not p.locator('#session-start').is_disabled(): p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm')
+        p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
         p.click('#run-all'); p.wait_for_selector('#run-dialog[open]'); p.click('#run-dialog-confirm')
         p.wait_for_function("() => /finished|failed/.test(document.getElementById('run-summary').textContent)", timeout=30000)
         self.assertEqual(p.inner_text('.node[data-id="cell-2"] .node-output').strip().splitlines()[0], '[5.0, 10.0]')
+
+    def test_edit_a_function_on_the_map_review_allow_write_and_run_tests(self):
+        p = self.page
+        (self.ws / 'tests').mkdir(exist_ok=True); (self.ws / 'tests' / 'test_ops.py').write_text('import unittest\nfrom tools.ops import scale\nclass T(unittest.TestCase):\n    def test_scale(self):\n        self.assertEqual(scale([1], factor=3), [3])\n')
+        p.goto(self.origin + '/map'); p.wait_for_selector('#map-main:not([hidden])'); p.wait_for_function("() => document.querySelectorAll('.mnode').length > 300")
+        p.locator('.mnode[data-id="def:graph.py:validate"]').click(); p.wait_for_function("() => document.getElementById('sel-source').textContent.includes('def validate')")
+        self.assertTrue(p.locator('#sel-edit').is_hidden(), 'the running app is not edited in place')
+        p.select_option('#map-root', 'workspace'); p.wait_for_selector('.mnode[data-id="def:tools/ops.py:scale"]')
+        p.locator('.mnode[data-id="def:tools/ops.py:scale"]').click(); p.wait_for_function("() => document.getElementById('sel-source').textContent.includes('def scale')"); p.wait_for_selector('#sel-edit:not([hidden])')
+        p.click('#sel-edit'); p.wait_for_selector('#sel-editor:not([hidden])'); self.assertIn('Nothing is written until you review', p.inner_text('#sel-edit-note'))
+        text = p.input_value('#sel-text'); p.fill('#sel-text', text.replace('Scale values.', 'Scale values, rounded.'))
+        p.click('#sel-review'); p.wait_for_selector('#write-dialog[open]')
+        self.assertIn('+    """Scale values, rounded."""', p.inner_text('#write-dialog-diff')); self.assertIn('not allowed yet', p.inner_text('#write-dialog-note'))
+        p.click('#write-dialog-confirm'); p.wait_for_selector('#allow-dialog[open]'); self.assertIn(str(self.ws), p.inner_text('#allow-dialog-text'))
+        p.click('#allow-dialog-confirm'); p.wait_for_function("() => document.getElementById('toast').textContent.includes('Wrote tools/ops.py')")
+        self.assertIn('Scale values, rounded.', (self.ws / 'tools' / 'ops.py').read_text())
+        p.wait_for_function("() => document.getElementById('sel-doc').textContent === 'Scale values, rounded.'", timeout=10000)  # the map re-read the file and kept the selection
+        self.assertTrue(p.locator('#sel-editor').is_hidden())
+        # A broken edit is refused before anything is written.
+        p.click('#sel-edit'); p.wait_for_selector('#sel-editor:not([hidden])'); p.fill('#sel-text', 'def scale(:\n    pass'); p.click('#sel-review')
+        p.wait_for_function("() => document.getElementById('toast').textContent.includes('would not parse')"); p.click('#sel-edit-cancel')
+        # The folder's tests run inside the session.
+        p.goto(self.origin + '/graph'); p.wait_for_selector('.node.code')
+        if not p.locator('#session-start').is_disabled(): p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm')
+        p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.goto(self.origin + '/map'); p.wait_for_selector('#map-main:not([hidden])'); p.select_option('#map-root', 'workspace'); p.wait_for_selector('.mnode[data-id="def:tools/ops.py:scale"]')
+        p.click('#map-tests'); p.wait_for_function("() => document.getElementById('map-tests-output').textContent.includes('Ran 1 test')", timeout=30000)
+        self.assertIn('OK', p.inner_text('#map-tests-output'))

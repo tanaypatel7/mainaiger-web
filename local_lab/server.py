@@ -91,6 +91,7 @@ class LabServer(ThreadingHTTPServer):
         self.graph_doc=graph_module.new_document();self.graph_revision=0;self.graph_run=None;self.graph_lock=threading.RLock()
         self.env_build=None;self.image_ready=lab_environment.image_ready
         self.cell_inbox=[]  # cells made elsewhere (the Map page) waiting for the Graph page to add them to the open Mainbook
+        self.write_roots=set()  # map roots the owner allowed this Lab to write files under, until it stops (never the running app's own code)
         super().__init__(address,LabHandler)
         self.devices=DeviceManager(state,local_port=self.server_port,journal=self.journal)
         # Event triggers: a timer, a changed file, a chat prompt or "Fire now" may start a run once the owner arms the Mainbook.
@@ -419,6 +420,14 @@ class LabHandler(BaseHTTPRequestHandler):
                     cache=getattr(self.server,'_codemap_cache',{});entry=cache.get(root)
                     if not entry or time.time()-entry[0]>10:entry=(time.time(),lab_codemap.scan(roots[root]));cache[root]=entry;self.server._codemap_cache=cache
                     data=dict(entry[1]);data['roots']=sorted(roots);data['root_name']=root;data['root']=roots[root] if root!='self' else 'this Lab (local_lab)'
+                    data['writable']=root in self.server.write_roots;data['can_write']=root!='self';data['folder']=roots[root]
+                    # The same folder as the session sees it (the workspace is mounted at /workspace), or None.
+                    inside=None
+                    if settings.get('workspace') and root!='self':
+                        ws=Path(settings['workspace']).resolve();hr=Path(roots[root]).resolve()
+                        if hr==ws:inside='/workspace'
+                        elif ws in hr.parents:inside='/workspace/'+hr.relative_to(ws).as_posix()
+                    data['inside']=inside
                     return self.out(200,data)
                 data=lab_codemap.source(roots[root],q.get('path',[''])[0],int(q.get('line',['1'])[0]),int(q.get('end_line',['1'])[0]))
                 return self.out(200,data)
@@ -751,6 +760,29 @@ class LabHandler(BaseHTTPRequestHandler):
                     self.server.cell_inbox=[c for c in self.server.cell_inbox if c['from']!=cell['from']][-19:]+[cell]
                 self.server.journal.write('map.cell','Cell made from %s (%s:%d), waiting for the Graph page'%(node['name'],node['path'],node['line']),{'id':cell['id'],'node':node['id'],'root':data['root']})
                 return self.out(200,{'cell':cell,'queued':len(self.server.cell_inbox)})
+            if path in ('/api/codemap/approve-write','/api/codemap/diff','/api/codemap/write'):
+                # Editing from the map: a diff first, then an atomic write into a folder the owner allowed this Lab to write, this session.
+                if not isinstance(data.get('root'),str):raise ValueError('Send the map root')
+                with self.server.lock: settings=dict(self.server.settings)
+                roots={'self':str(Path(__file__).resolve().parent),**lab_files.roots(settings,self.server.state_dir)}
+                if data['root'] not in roots:return self.out(404,{'error':'Unknown folder'})
+                if path.endswith('/approve-write'):
+                    if set(data)!={'root','confirm'} or data['confirm'] is not True:raise ValueError('Confirm the folder')
+                    if data['root']=='self':return self.out(409,{'error':'The running app\'s own code is not edited in place; set your workspace to a checkout of the repository and map that'})
+                    self.server.write_roots.add(data['root']);self.server.journal.write('map.write.allow','Writes allowed under %s until the Lab stops'%roots[data['root']],{'root':data['root'],'folder':roots[data['root']]})
+                    return self.out(200,{'ok':True,'root':data['root'],'folder':roots[data['root']]})
+                need={'root','path','line','end_line','text','expected_hash'}|({'confirm'} if path.endswith('/write') else set())
+                if set(data)!=need or not isinstance(data['path'],str) or type(data['line']) is not int or type(data['end_line']) is not int or not isinstance(data['text'],str) or not isinstance(data['expected_hash'],str):raise ValueError('Send {root, path, line, end_line, text, expected_hash%s}'%(', confirm' if path.endswith('/write') else ''))
+                writing=path.endswith('/write')
+                if writing and data['confirm'] is not True:raise ValueError('Review the diff, then confirm')
+                if writing and data['root'] not in self.server.write_roots:return self.out(409,{'error':'Allow writes under this folder first (the Map asks once per Lab session)'})
+                try:result=lab_codemap.replace_lines(roots[data['root']],data['path'],data['line'],data['end_line'],data['text'],data['expected_hash'],write=writing)
+                except lab_codemap.MapError as e:return self.out(409 if 'changed since' in str(e) else 400,{'error':str(e)})
+                except OSError as e:return self.out(500,{'error':'The file could not be written: %s'%e})
+                if result['written']:
+                    self.server._codemap_cache={}
+                    self.server.journal.write('map.write','Wrote %s lines %d-%d (%d line%s before, %d after)'%(data['path'],data['line'],data['end_line'],result['lines']['before'],'' if result['lines']['before']==1 else 's',result['lines']['after']),{'root':data['root'],'path':data['path'],'line':data['line'],'end_line':data['end_line'],'bytes':len(data['text'].encode('utf-8')),'hash':result['new_hash']})
+                return self.out(200,result)
             if path=='/api/graph/inbox/take':
                 if set(data)!={'ids'} or not isinstance(data['ids'],list) or not all(isinstance(i,str) for i in data['ids']):raise ValueError('Send {ids}')
                 with self.server.graph_lock:

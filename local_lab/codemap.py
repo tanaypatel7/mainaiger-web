@@ -374,10 +374,10 @@ def _route_literals(fn):
     return list(dict.fromkeys(out))
 
 
-def source(root, rel, line, end_line, max_lines=400):
-    """The lines of one node, read from disk; never follows symlinks or leaves the root."""
+def _safe_file(root, rel):
+    """The resolved file for a relative path: never a symlink, never outside the root."""
     root = Path(root).resolve()
-    if not isinstance(rel, str) or '..' in Path(rel).parts or Path(rel).is_absolute():
+    if not isinstance(rel, str) or not rel or '..' in Path(rel).parts or Path(rel).is_absolute():
         raise MapError('Paths stay inside the folder')
     target = root
     for part in Path(rel).parts:
@@ -389,7 +389,73 @@ def source(root, rel, line, end_line, max_lines=400):
         raise MapError('Paths stay inside the folder')
     if not resolved.is_file():
         raise MapError('No such file')
-    lines = resolved.read_text(encoding='utf-8', errors='replace').splitlines()
+    return resolved
+
+
+def file_hash(text):
+    """32-bit FNV-1a of a file's text as 8 hex chars: the editor sends it back so a write only lands on what was read."""
+    value = 0x811c9dc5
+    for byte in text.encode('utf-8'):
+        value = ((value ^ byte) * 0x01000193) & 0xffffffff
+    return '%08x' % value
+
+
+def source(root, rel, line, end_line, max_lines=400):
+    """The lines of one node, read from disk; never follows symlinks or leaves the root."""
+    resolved = _safe_file(root, rel)
+    text = resolved.read_text(encoding='utf-8', errors='replace')
+    lines = text.splitlines()
     start = max(1, int(line))
     end = min(len(lines), max(start, int(end_line)), start + max_lines - 1)
-    return {'path': rel, 'line': start, 'end_line': end, 'text': '\n'.join(lines[start - 1:end]), 'truncated': end < int(end_line)}
+    return {'path': rel, 'line': start, 'end_line': end, 'text': '\n'.join(lines[start - 1:end]), 'truncated': end < int(end_line), 'file_hash': file_hash(text)}
+
+
+MAX_EDIT_BYTES = 200000
+
+
+def replace_lines(root, rel, line, end_line, text, expected_hash, write=False):
+    """Replace lines line..end_line of one file with ``text``: a unified diff first (write=False), then the
+    atomic write (write=True) — only if the file still hashes to ``expected_hash`` and, for a .py file, the
+    whole new file still parses. Returns {diff, changed, file_hash, new_hash, written, lines}."""
+    import difflib
+    import tempfile
+    resolved = _safe_file(root, rel)
+    if not isinstance(text, str) or len(text.encode('utf-8')) > MAX_EDIT_BYTES or '\x00' in text:
+        raise MapError('The new text must be text of at most %d KB' % (MAX_EDIT_BYTES // 1000))
+    if resolved.stat().st_size > MAX_FILE_BYTES:
+        raise MapError('Files larger than 1 MB are not edited here')
+    current = resolved.read_text(encoding='utf-8', errors='replace')
+    if file_hash(current) != expected_hash:
+        raise MapError('The file changed since it was read; reload the map and edit again')
+    lines = current.splitlines(keepends=True)
+    start, end = int(line), int(end_line)
+    if not 1 <= start <= end <= max(1, len(lines)):
+        raise MapError('The line range is outside the file')
+    new_lines = text.splitlines(keepends=True)
+    if new_lines and not new_lines[-1].endswith('\n') and (end < len(lines) or lines[end - 1].endswith('\n')):
+        new_lines[-1] += '\n'  # keep the newline the replaced block ended with, so the next def and the file's end stay intact
+    new_text = ''.join(lines[:start - 1] + new_lines + lines[end:])
+    if resolved.suffix == '.py':
+        try:
+            ast.parse(new_text, filename=rel)
+        except SyntaxError as error:
+            raise MapError('The file would not parse after this change: line %s: %s' % (error.lineno, error.msg)) from None
+    diff = ''.join(difflib.unified_diff(current.splitlines(keepends=True), new_text.splitlines(keepends=True), fromfile=rel, tofile=rel, n=3))
+    out = {'path': rel, 'diff': diff, 'changed': new_text != current, 'file_hash': expected_hash, 'new_hash': file_hash(new_text), 'written': False,
+           'lines': {'before': end - start + 1, 'after': len(new_lines)}}
+    if write and out['changed']:
+        mode = resolved.stat().st_mode & 0o777
+        fd, tmp = tempfile.mkstemp(prefix='.' + resolved.name + '.', suffix='.tmp', dir=str(resolved.parent))
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                handle.write(new_text)
+            os.chmod(tmp, mode)
+            os.replace(tmp, resolved)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        out['written'] = True
+    return out

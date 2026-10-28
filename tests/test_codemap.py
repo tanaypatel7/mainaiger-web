@@ -84,6 +84,32 @@ class CellFromMapTests(unittest.TestCase):
             with self.assertRaisesRegex(codemap.MapError, 'functions and methods'): codemap.cell_for(ids['mod:tools/ops.py'], [])
 
 
+class ReplaceLinesTests(unittest.TestCase):
+    def test_diff_then_atomic_write_with_hash_and_parse_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); sample_package(root); f = root / 'tools' / 'ops.py'; os.chmod(f, 0o640)
+            src = codemap.source(root, 'tools/ops.py', 1, 3); h = src['file_hash']; self.assertEqual(len(h), 8)
+            new = 'def scale(values, factor=2.0, *, round_to: int = 1, label="x", verbose=False, seed=None, cb=print, **extra):\n    """Scale values, rounded."""\n    return [round(v * factor, round_to) for v in values]\n'
+            dry = codemap.replace_lines(root, 'tools/ops.py', 1, 3, new, h)
+            self.assertEqual((dry['written'], dry['changed'], dry['lines']), (False, True, {'before': 3, 'after': 3})); self.assertIn('-    """Scale values."""', dry['diff']); self.assertIn('+    """Scale values, rounded."""', dry['diff'])
+            self.assertEqual(f.read_text(), SAMPLE, 'a dry run writes nothing')
+            same = codemap.replace_lines(root, 'tools/ops.py', 1, 3, src['text'], h); self.assertEqual((same['changed'], same['diff']), (False, ''))
+            done = codemap.replace_lines(root, 'tools/ops.py', 1, 3, new, h, write=True)
+            self.assertTrue(done['written']); self.assertTrue(f.read_text().startswith(new)); self.assertIn('class Box', f.read_text()); self.assertEqual(oct(f.stat().st_mode & 0o777), '0o640', 'the mode is kept')
+            self.assertEqual(codemap.source(root, 'tools/ops.py', 1, 1)['file_hash'], done['new_hash']); self.assertEqual([p.name for p in (root / 'tools').iterdir() if p.name.startswith('.')], [], 'no temp file left')
+            with self.assertRaisesRegex(codemap.MapError, 'changed since'): codemap.replace_lines(root, 'tools/ops.py', 1, 3, new, h, write=True)
+            h2 = done['new_hash']
+            with self.assertRaisesRegex(codemap.MapError, 'would not parse.*line 1'): codemap.replace_lines(root, 'tools/ops.py', 1, 3, 'def broken(:\n    pass\n', h2)
+            with self.assertRaisesRegex(codemap.MapError, 'line range'): codemap.replace_lines(root, 'tools/ops.py', 50, 60, 'x = 1\n', h2)
+            with self.assertRaisesRegex(codemap.MapError, 'at most'): codemap.replace_lines(root, 'tools/ops.py', 1, 1, 'x' * 200001, h2)
+            for bad in ('../x.py', '/etc/passwd', 'nope.py'):
+                with self.subTest(bad=bad), self.assertRaises(codemap.MapError): codemap.replace_lines(root, bad, 1, 1, 'x = 1\n', h2)
+            # A method's lines in the middle of a file; a trailing newline is added so the next def stays intact.
+            m = codemap.source(root, 'tools/ops.py', 9, 10); self.assertTrue(m['text'].startswith('    def grow'))
+            out = codemap.replace_lines(root, 'tools/ops.py', 9, 10, '    def grow(self, by: int = 2):\n        return self.size + by * 2', m['file_hash'], write=True)
+            self.assertEqual(out['lines'], {'before': 2, 'after': 2}); self.assertIn('return self.size + by * 2\n', f.read_text()); self.assertEqual(f.read_text().count('def '), 3)
+
+
 class CodemapHttpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); state, key = initialize_state(Path(self.tmp.name) / 'private'); self.key = key
@@ -131,6 +157,24 @@ class CodemapHttpTests(unittest.TestCase):
         # Without a workspace that contains the folder, the cell says what to set.
         self.server.settings['workspace'] = None
         self.assertIn('set the workspace', self.req('/api/codemap/cell', {'root': 'self', 'id': 'def:graph.py:validate'}, auth)[1]['cell']['warning'])
+    def test_edit_from_the_map_is_a_reviewed_write_into_an_allowed_folder(self):
+        status, data, head = self.req('/api/login', {'key': self.key}, {'Origin': self.origin}); auth = {'Origin': self.origin, 'Cookie': head['Set-Cookie'].split(';')[0], 'X-CSRF-Token': data['csrf']}; cookie = {'Cookie': auth['Cookie']}
+        ws = Path(self.tmp.name) / 'ws'; ws.mkdir(); sample_package(ws); self.server.settings['workspace'] = str(ws)
+        m = self.req('/api/codemap?root=workspace', headers=cookie)[1]; self.assertEqual((m['writable'], m['can_write'], m['folder'], m['inside']), (False, True, str(ws), '/workspace'))
+        self.assertEqual(self.req('/api/codemap?root=self', headers=cookie)[1]['can_write'], False)
+        src = self.req('/api/codemap/source?root=workspace&path=tools/ops.py&line=1&end_line=3', headers=cookie)[1]
+        new = src['text'].replace('Scale values.', 'Scale values, rounded.')
+        body = {'root': 'workspace', 'path': 'tools/ops.py', 'line': 1, 'end_line': 3, 'text': new, 'expected_hash': src['file_hash']}
+        status, diff, _ = self.req('/api/codemap/diff', body, auth); self.assertEqual((status, diff['changed'], diff['written']), (200, True, False)); self.assertIn('+    """Scale values, rounded."""', diff['diff'])
+        self.assertEqual(self.req('/api/codemap/write', dict(body, confirm=True), auth)[0], 409, 'no write until the folder is allowed')
+        self.assertEqual(self.req('/api/codemap/approve-write', {'root': 'self', 'confirm': True}, auth)[0], 409, 'the running app is never edited in place')
+        self.assertEqual(self.req('/api/codemap/approve-write', {'root': 'workspace', 'confirm': True}, auth)[1]['ok'], True)
+        self.assertEqual(self.req('/api/codemap/write', dict(body), auth)[0], 400, 'confirm is required')
+        status, out, _ = self.req('/api/codemap/write', dict(body, confirm=True), auth); self.assertEqual((status, out['written']), (200, True))
+        self.assertIn('Scale values, rounded.', (ws / 'tools' / 'ops.py').read_text())
+        self.assertEqual(self.req('/api/codemap/write', dict(body, confirm=True), auth)[0], 409, 'the hash moved on: the editor must reload')
+        m = self.req('/api/codemap?root=workspace', headers=cookie)[1]; self.assertTrue(m['writable']); self.assertEqual(next(n for n in m['nodes'] if n['id'] == 'def:tools/ops.py:scale')['doc'], 'Scale values, rounded.', 'the map is re-read after a write')
+        kinds = [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]; self.assertIn('map.write.allow', kinds); self.assertIn('map.write', kinds)
 
 
 if __name__ == '__main__':
