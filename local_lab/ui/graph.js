@@ -70,7 +70,7 @@
       el.append(head);
       if (node.kind === 'code') { const needs = document.createElement('div'); needs.className = 'node-needs'; needs.hidden = true; el.append(needs); }
       if (node.kind === 'code' || node.kind === 'markdown') {
-        const area = document.createElement('textarea'); area.spellcheck = false; area.value = sourceOf(cellOf(node)); area.placeholder = node.kind === 'code' ? '# Python — Shift+Enter runs this cell' : 'Write a note…'; area.setAttribute('aria-label', node.kind === 'code' ? 'Python code' : 'Note'); el.append(area);
+        const area = document.createElement('textarea'); area.spellcheck = false; area.value = sourceOf(cellOf(node)); area.placeholder = node.kind === 'code' ? '# Python — Shift+Enter runs this cell' : 'Write a note…'; area.setAttribute('aria-label', node.kind === 'code' ? 'Python code' : 'Note'); el.append(area); if (node.kind === 'markdown') requestAnimationFrame(() => autosize(area));
         if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); el.append(foot); }
       }
       if (node.kind === 'finish') { const foot = document.createElement('div'); foot.className = 'finish-note'; el.append(foot); }
@@ -107,6 +107,7 @@
     el.querySelector('textarea').hidden = !!collapsed.code; out.hidden = !!collapsed.output || (!text && status !== 'running');
     el.querySelector('.node-toggle[data-act="code"]').classList.toggle('off', !!collapsed.code); el.querySelector('.node-toggle[data-act="output"]').classList.toggle('off', !!collapsed.output);
     const area = el.querySelector('textarea'); if (area && document.activeElement !== area && area.value !== sourceOf(cell)) area.value = sourceOf(cell);
+    if (area && !area.hidden) autosize(area);
   }
   function notebookPositions() {
     // Notebook view: the same cells, stacked in trigger order. Positions are computed, never saved.
@@ -115,12 +116,13 @@
     for (const n of nodes()) if (!out[n.id] && n.kind !== 'start' && n.kind !== 'finish') { out[n.id] = {x, y}; y += box(n.id).h + 18; }
     return out;
   }
+  function autosize(area) { area.style.height = 'auto'; area.style.height = Math.min(440, Math.max(56, area.scrollHeight + 2)) + 'px'; }
   function placeNode(id) {
     const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`); if (!el) return;
     if (state.view === 'notebook') { const n = nodeById(id); if (n.kind === 'start' || n.kind === 'finish') { el.style.display = 'none'; return; } el.style.display = ''; const p = (state.notebookPos || {})[id] || {x: 40, y: 30}; el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; return; }
     el.style.display = ''; const p = position(id); el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
   }
-  function layoutNotebook() { if (state.view !== 'notebook') return; state.notebookPos = {}; nodes().forEach(n => placeNode(n.id)); state.notebookPos = notebookPositions(); nodes().forEach(n => placeNode(n.id)); }
+  function layoutNotebook() { if (state.view !== 'notebook') return; const place = () => { state.notebookPos = notebookPositions(); nodes().forEach(n => placeNode(n.id)); }; place(); requestAnimationFrame(place); }
   function box(id) { const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`), p = (state.view === 'notebook' && state.notebookPos && state.notebookPos[id]) || position(id); return {x: p.x, y: p.y, w: el ? el.offsetWidth : widthOf(nodeById(id)), h: el ? el.offsetHeight : 60}; }
   function curve(a, b) { const dy = Math.max(40, Math.abs(b.y - a.y) / 2); return `M${a.x} ${a.y} C${a.x} ${a.y + dy} ${b.x} ${b.y - dy} ${b.x} ${b.y}`; }
   function drawEdges() {
@@ -238,7 +240,11 @@
     const layer = {}; for (const id of state.order) { const preds = edges().filter(e => e.kind === 'control' && e.target === id).map(e => layer[e.source] ?? 0); layer[id] = preds.length ? Math.max(...preds) + 1 : 0; }
     const finish = nodes().find(n => n.kind === 'finish'); const deepest = Math.max(0, ...Object.values(layer)); if (finish) layer[finish.id] = deepest;
     const rows = {}; for (const n of nodes()) { const l = state.disconnected.includes(n.id) || (n.kind === 'markdown') ? -1 : layer[n.id]; (rows[l] = rows[l] || []).push(n); }
-    let y = 40; const heights = {}; Object.keys(rows).map(Number).sort((a, b) => a - b).forEach(l => { const row = rows[l]; const total = row.reduce((w, n) => w + widthOf(n) + 60, -60); let x = Math.max(40, 420 - total / 2) + (l === -1 ? 900 : 0); let tallest = 0; for (const n of row) { state.doc.layout.nodes[n.id] = {x: x + (widthOf(n) === TERMINAL_W ? 0 : 0), y: l === -1 ? 40 : y}; x += widthOf(n) + 60; tallest = Math.max(tallest, box(n.id).h); } if (l !== -1) y += tallest + 90; });
+    // Notes and disconnected cells form a column on the left (the plan before the code); the trigger graph is centered to its right.
+    const side = rows[-1] || []; delete rows[-1];
+    let sideY = 40; for (const n of side) { state.doc.layout.nodes[n.id] = {x: 40, y: sideY}; sideY += box(n.id).h + 40; }
+    const shift = side.length ? NODE_W + 100 : 0;
+    let y = 40; Object.keys(rows).map(Number).sort((a, b) => a - b).forEach(l => { const row = rows[l]; const total = row.reduce((w, n) => w + widthOf(n) + 60, -60); let x = Math.max(40, 560 - total / 2) + shift; let tallest = 0; for (const n of row) { state.doc.layout.nodes[n.id] = {x, y}; x += widthOf(n) + 60; tallest = Math.max(tallest, box(n.id).h); } y += tallest + 90; });
     nodes().forEach(n => placeNode(n.id)); drawEdges(); markDirty(); fit();
   }
   function fit() {
@@ -283,7 +289,7 @@
     state.pan = {x: mx - (mx - state.pan.x) * (zoom / state.zoom), y: my - (my - state.pan.y) * (zoom / state.zoom)}; state.zoom = zoom; applyViewport();
   }, {passive: false});
   $('nodes').addEventListener('input', event => {
-    const area = event.target.closest('textarea'); if (!area) return; const node = nodeById(area.closest('.node').dataset.id); cellOf(node).source = area.value; updateNode(node.id); markDirty();
+    const area = event.target.closest('textarea'); if (!area) return; const node = nodeById(area.closest('.node').dataset.id); cellOf(node).source = area.value; autosize(area); updateNode(node.id); drawEdges(); layoutNotebook(); markDirty();
   });
   $('nodes').addEventListener('click', event => {
     const button = event.target.closest('.node-run, .node-toggle'); if (!button) return; const id = button.closest('.node').dataset.id; const act = button.dataset.act;
@@ -312,20 +318,24 @@
     drawEdges();
   }
   $('view-graph').addEventListener('click', () => setView('graph')); $('view-notebook').addEventListener('click', () => setView('notebook'));
+  const exportPy = document.createElement('button'); exportPy.id = 'export-py'; exportPy.hidden = true; document.body.append(exportPy);
   $('export-py').addEventListener('click', () => {
     // Export Python: cells reachable from Start, in trigger order. Branches are flattened serially — the same order the Lab runs them.
     const lines = ['# Exported from MainAIger Lab — cells in trigger order (serial).', '# Notes become comments; outputs are not included.', ''];
     const reach = new Set(); const stack = [nodes().find(n => n.kind === 'start').id]; while (stack.length) { const c = stack.pop(); if (reach.has(c)) continue; reach.add(c); edges().filter(e => e.kind === 'control' && e.source === c).forEach(e => stack.push(e.target)); }
     for (const id of state.order) { const n = nodeById(id); if (!n || !reach.has(id)) continue; if (n.kind === 'code') lines.push(`# ---- ${titleOf(n)} (${id}) ----`, sourceOf(cellOf(n)).replace(/\s+$/, ''), ''); else if (n.kind === 'markdown') lines.push(...sourceOf(cellOf(n)).split('\n').map(l => '# ' + l), ''); }
     const skipped = nodes().filter(n => n.kind === 'code' && !reach.has(n.id)); if (skipped.length) lines.push('# Not reachable from Start (not exported): ' + skipped.map(titleOf).join(', '));
-    const blob = new Blob([lines.join('\n') + '\n'], {type: 'text/x-python'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'graph.py'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const blob = new Blob([lines.join('\n') + '\n'], {type: 'text/x-python'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fileStem() + '.py'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
   $('clear-outputs').addEventListener('click', () => { for (const c of cells()) if (c.cell_type === 'code') { c.outputs = []; c.execution_count = null; delete meta(c).last_run; } state.run = null; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector(); markDirty(); });
   $('delete').addEventListener('click', deleteSelected); $('arrange').addEventListener('click', arrange); $('fit').addEventListener('click', fit);
   $('show-data').addEventListener('change', drawEdges);
   $('node-title').addEventListener('input', () => { const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return; meta(cellOf(sel)).title = $('node-title').value; updateNode(sel.id); markDirty(); });
   $('apply-override').addEventListener('click', () => { const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return; const own = meta(cellOf(sel)); const parse = v => v.split(',').map(s => s.trim()).filter(Boolean); const i = parse($('override-inputs').value), o = parse($('override-outputs').value); if (i.length) own.inputs = i; else delete own.inputs; if (o.length) own.outputs = o; else delete own.outputs; markDirty(); save(); });
-  $('download').addEventListener('click', () => { const blob = new Blob([JSON.stringify(state.doc, null, 2) + '\n'], {type: 'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'graph.ipymb'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
+  function downloadBlob(text, type, filename) { const blob = new Blob([text], {type}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  const fileStem = () => (docName() || 'graph').replace(/[^A-Za-z0-9 _-]/g, '').trim() || 'graph';
+  $('export-menu').addEventListener('change', () => { const kind = $('export-menu').value; $('export-menu').value = ''; if (kind === 'ipymb') downloadBlob(JSON.stringify(state.doc, null, 2) + '\n', 'application/json', fileStem() + '.ipymb'); else if (kind === 'ipynb') $('export-ipynb').click(); else if (kind === 'py') $('export-py').click(); });
+  $('help-toggle').addEventListener('click', () => { const open = $('help-hint').hidden; $('help-hint').hidden = !open; $('help-toggle').setAttribute('aria-expanded', String(open)); });
   $('open-file').addEventListener('click', () => $('file-input').click());
   $('file-input').addEventListener('change', async () => {
     const file = $('file-input').files[0]; $('file-input').value = ''; if (!file) return;
@@ -340,7 +350,8 @@
   });
   async function openDocument(doc, label) {
     const view = await api('/api/graph', {document: doc}); applyView(view); state.run = null; state.dirty = false; $('save-state').textContent = 'Saved'; $('save-state').dataset.state = '';
-    const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x || 40, y: vp.y || 30}; state.zoom = vp.zoom || 1; buildNodes(); select(null); applyViewport(); if (!Object.keys(state.doc.layout.nodes).length) arrange(); layoutNotebook(); renderInspector(); toast('Opened ' + label);
+    const fresh = !Object.keys(state.doc.layout.nodes || {}).length;  // examples and imports carry no positions
+    const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x || 40, y: vp.y || 30}; state.zoom = vp.zoom || 1; buildNodes(); select(null); applyViewport(); if (fresh) arrange(); else fit(); layoutNotebook(); renderInspector(); toast('Opened ' + label);
   }
   function showImportReport(name, report) {
     $('import-summary').textContent = `${name}: ${report.code_cells} code cell${report.code_cells === 1 ? '' : 's'}, ${report.notes} note${report.notes === 1 ? '' : 's'}` + (report.dropped ? `, ${report.dropped} unreadable cell(s) dropped` : '') + '.';
@@ -384,9 +395,10 @@
     const name = $('open-example').value; $('open-example').value = ''; if (!name) return;
     try { const data = await api('/examples/' + encodeURIComponent(name)); await openDocument(data.document, name); } catch (error) { toast(error.message); }
   });
+  const exportIpynb = document.createElement('button'); exportIpynb.id = 'export-ipynb'; exportIpynb.hidden = true; document.body.append(exportIpynb);
   $('export-ipynb').addEventListener('click', async () => {
     if (state.dirty) { clearTimeout(state.saveTimer); await save(); }
-    try { const data = await api('/api/graph/export'); const blob = new Blob([JSON.stringify(data.notebook, null, 1) + '\n'], {type: 'application/x-ipynb+json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'graph.ipynb'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast(data.note); } catch (error) { toast(error.message); }
+    try { const data = await api('/api/graph/export'); const blob = new Blob([JSON.stringify(data.notebook, null, 1) + '\n'], {type: 'application/x-ipynb+json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fileStem() + '.ipynb'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast(data.note); } catch (error) { toast(error.message); }
   });
   function fromNotebook(nb) {
     if (!nb || nb.nbformat !== 4 || !Array.isArray(nb.cells)) throw new Error('Choose a .ipymb graph or an nbformat 4 .ipynb notebook.');
@@ -455,6 +467,8 @@
     try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
-  window.addEventListener('resize', drawEdges);
+  window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });
+  // Keep the session pill truthful when the session is started or stopped from another tab or page.
+  setInterval(async () => { if (document.hidden || (state.run && (state.run.state === 'running' || state.run.state === 'pending'))) return; try { const s = await api('/api/kernel'); const was = state.session.alive; state.session = s; if (was !== s.alive) { renderInspector(); if (s.alive) refreshVariables(); } else renderInspector(); } catch {} }, 5000);
   boot();
 })();

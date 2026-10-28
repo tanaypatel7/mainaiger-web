@@ -64,8 +64,14 @@
     state('setup-pull-state', data.image_ready ? 'Image present' : 'Waiting', data.image_ready ? 'success' : '');
     $('setup-pull-output').textContent = data.image_ready ? 'Python image is present. Download again only if needed.' : 'The image has not been found locally.';
     controls();
+    const complete = !!(data.docker_ready && data.image_ready);
+    $('setup-summary').hidden = !complete;
+    if (complete) { $('setup-summary-text').textContent = `Docker engine ready · ${data.image} present · ${data.device}.`; if (!stepsShown) $('setup-steps').hidden = true; }
+    else { $('setup-steps').hidden = false; }
     window.dispatchEvent(new CustomEvent('mainaiger:refresh-state'));
   }
+  let stepsShown = false;
+  $('setup-toggle').addEventListener('click', () => { stepsShown = !stepsShown; $('setup-steps').hidden = !stepsShown; $('setup-toggle').textContent = stepsShown ? 'Hide steps' : 'Show steps'; });
   async function post(path) {
     const state = await json('/api/state');
     return json(path, {method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrf}, body:JSON.stringify({confirm:true})});

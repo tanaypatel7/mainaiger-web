@@ -21,7 +21,7 @@
     $('ollama-open-installer').disabled = busy || !l || l.installed || !l.installer.staged;
     $('ollama-open-app').disabled = busy || !l || !l.installed || l.running;
     $('ollama-recheck').disabled = busy;
-    document.querySelectorAll('#catalog button').forEach(b => { b.disabled = busy || !l || !l.running; });
+    document.querySelectorAll('#catalog button').forEach(b => { b.disabled = busy || !l || !l.running || b.dataset.nodisk === '1'; });
     $('chat-send').disabled = busy || !l || !l.running || !l.models.length;
   }
   function renderDevice(d) {
@@ -62,7 +62,7 @@
   async function refresh() {
     const l = await api('/api/models'); latest = l; csrf = l.csrf;
     renderDevice(l.device); renderOllama(l); renderCatalog(l); renderChat(l); controls();
-    if (l.job && l.job.running) renderJob(l.job);
+    if (l.job && l.job.running && String(l.job.action || '').startsWith('ollama')) renderJob(l.job);
     return l;
   }
   async function check() { if (busy) return; busy = true; controls(); try { await refresh(); } catch (e) { $('ollama-output').textContent = e.message; } finally { busy = false; controls(); } }
@@ -127,5 +127,5 @@
     finally { busy = false; controls(); }
   });
   window.addEventListener('pagehide', () => { clearTimeout(watchTimer); clearTimeout(pollTimer); });
-  (async () => { try { const l = await refresh(); $('models-main').hidden = false; if (l.job && l.job.running) { busy = true; controls(); pollJob((l.job.action || '').startsWith('ollama-pull') ? 'pull' : (l.job.action || '').endsWith('open') ? 'open' : 'download'); } } catch (e) { if ($('locked').hidden) $('ollama-output').textContent = e.message; } })();
+  (async () => { try { const l = await refresh(); $('models-main').hidden = false; if (l.job && l.job.running && String(l.job.action || '').startsWith('ollama')) { busy = true; controls(); pollJob((l.job.action || '').startsWith('ollama-pull') ? 'pull' : (l.job.action || '').endsWith('open') ? 'open' : 'download'); } } catch (e) { if ($('locked').hidden) $('ollama-output').textContent = e.message; } })();
 })();

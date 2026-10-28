@@ -57,7 +57,7 @@
     try {
       const state = await json('/api/state'); csrf = state.csrf;
       update(await json('/api/kernel/start', {confirm: true, revision: state.revision}));
-      note('Session started.'); busy = false; render(); await refreshVariables();
+      note('Session started. Next: open the Graph tab to build connected cells.'); busy = false; render(); await refreshVariables();
     } catch (error) { note(error.message); busy = false; render(); }
     window.dispatchEvent(new CustomEvent('mainaiger:refresh-state'));
   });
