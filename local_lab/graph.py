@@ -27,6 +27,7 @@ SCHEMA_VERSION = 2
 NODE_KINDS = {'start', 'finish', 'code', 'markdown'}
 EDGE_KINDS = {'control', 'data'}
 MAX_NODES, MAX_EDGES, MAX_SOURCE = 200, 1000, 100000
+SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}$')
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
 
@@ -111,6 +112,12 @@ def validate(document):
                          'Cell %d declared %s must be a list of Python names' % (i, key))
         if 'title' in own:
             _require(isinstance(own['title'], str) and len(own['title']) <= 120, 'Cell %d title too long' % i)
+        if 'session' in own:
+            # The label of the session this cell runs on; absent means "the active session".
+            if own['session'] in (None, ''):
+                del own['session']
+            else:
+                _require(isinstance(own['session'], str) and SESSION_LABEL.match(own['session']), 'Cell %d "run on" must be a session label' % i)
         if not isinstance(cell.get('outputs'), list):
             cell['outputs'] = []
         if cell['cell_type'] == 'code' and not isinstance(cell.get('execution_count'), (int, type(None))):
@@ -365,6 +372,29 @@ def plan(doc, mode, selected=()):
 def disconnected(doc):
     start = next(n['id'] for n in doc['graph']['nodes'] if n['kind'] == 'start')
     return [ident for ident in code_nodes(doc) if ident not in reachable(doc, [start])]
+
+
+def session_of(doc, node_id):
+    """The session label a code node names, or None for the active session."""
+    node = node_by_id(doc, node_id)
+    if not node or node['kind'] != 'code':
+        return None
+    own = doc['notebook']['cells'][node['cell_index']].get('metadata', {}).get('mainaiger', {})
+    return own.get('session') or None
+
+
+def cross_session(doc, plan_ids):
+    """Data edges inside the plan whose producer and consumer run in different sessions.
+    Sessions are separate processes: the variable will not be there. Advisory, like data edges."""
+    chosen = set(plan_ids)
+    out = []
+    for edge in data_edges(doc):
+        if edge['source'] in chosen and edge['target'] in chosen:
+            a, b = session_of(doc, edge['source']), session_of(doc, edge['target'])
+            if a != b:
+                out.append({'name': edge['name'], 'producer': edge['source'], 'consumer': edge['target'],
+                            'producer_session': a, 'consumer_session': b})
+    return out
 
 
 def data_edges(doc):

@@ -17,10 +17,15 @@ from . import graph as graph_module
 
 
 class GraphRun:
-    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None):
+    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None):
         self.id = 'run-' + secrets.token_hex(4)
         self.document, self.plan, self.kernel, self.mode = document, list(plan_ids), kernel, mode
         self.on_result = on_result
+        # kernel_for(label) returns the session a cell named (metadata.mainaiger.session), or the
+        # active one for None; it raises KernelError when that session is missing or dead.
+        self.kernel_for = kernel_for
+        self.on_finish = on_finish
+        self.current_kernel = None
         self.state = 'pending'
         self.current = None
         self.nodes = {ident: {'status': 'pending'} for ident in self.plan}
@@ -43,7 +48,9 @@ class GraphRun:
         """Stop after the current cell: interrupt it and skip the rest."""
         self.cancel_requested = True
         if self.state == 'running':
-            self.kernel.interrupt()
+            kernel = self.current_kernel or self.kernel
+            if kernel is not None:
+                kernel.interrupt()
         return True
 
     def wait(self, timeout=None):
@@ -70,15 +77,22 @@ class GraphRun:
                 with self.lock:
                     self.nodes[ident] = {'status': 'running', 'started_at': time.time()}
                 source = self._source(ident)
+                label = graph_module.session_of(self.document, ident)
                 if not source.strip():
                     result = {'status': 'ok', 'count': None, 'output': '', 'truncated': False, 'error': None, 'elapsed_ms': 0,
                               'note': 'Empty cell; nothing to run.'}
                 else:
                     try:
-                        result = self.kernel.execute(source)
+                        kernel = self.kernel_for(label) if self.kernel_for else self.kernel
+                        self.current_kernel = kernel
+                        result = self.kernel.execute(source) if kernel is None else kernel.execute(source)
                     except KernelError as error:
                         result = {'status': 'killed', 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': 0,
                                   'error': {'ename': 'KernelError', 'evalue': str(error), 'traceback': []}}
+                    finally:
+                        self.current_kernel = None
+                if label:
+                    result['session'] = label
                 with self.lock:
                     self.nodes[ident] = dict(result, status=result['status'])
                 if self.on_result:
@@ -97,6 +111,11 @@ class GraphRun:
         finally:
             self.current = None
             self.finished_at = time.time()
+            if self.on_finish:
+                try:
+                    self.on_finish(self)
+                except Exception:  # reporting must never break the run
+                    pass
 
     def _skip_from(self, index, status):
         with self.lock:

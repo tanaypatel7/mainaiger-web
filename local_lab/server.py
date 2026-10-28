@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
-from .runner import execute, preview, validate_settings, session_preview, session_command, session_control, resolve_docker, stage_kernel
+from .runner import execute, preview, validate_settings, session_preview, session_command, session_control, resolve_docker, stage_kernel, CPUS, MEMORY
 from .kernel_session import KernelSession, KernelError, KernelBusy
 from . import setup as lab_setup
 from . import graph as graph_module
@@ -20,6 +20,9 @@ from . import models as lab_models
 from . import mainbooks as lab_mainbooks
 from . import library as lab_library
 from . import environment as lab_environment
+from . import files as lab_files
+from .journal import Journal
+from .sessions import SessionRegistry
 from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
@@ -75,11 +78,17 @@ class LabServer(ThreadingHTTPServer):
         self.setup_job={'running':False,'action':None,'phase':'idle','bytes':0,'total':None,'result':None}
         # One persistent kernel at a time. The factory builds a KernelSession for the
         # given settings; the default runs the kernel inside a Docker container.
-        self.kernel=None;self.kernel_factory=kernel_factory or docker_kernel;self.kernel_lock=threading.Lock()
+        self.kernel_factory=kernel_factory or docker_kernel;self.kernel_lock=threading.Lock()
+        self.journal=Journal(state)
+        self.kernels=SessionRegistry(self.kernel_factory,state,self.journal)
         # One graph document in memory (the browser opens/downloads .ipymb files) and at most one run.
         self.graph_doc=graph_module.new_document();self.graph_revision=0;self.graph_run=None;self.graph_lock=threading.RLock()
         self.env_build=None;self.image_ready=lab_environment.image_ready
         super().__init__(address,LabHandler)
+    @property
+    def kernel(self):
+        """The active session's kernel (or None). Routes that predate multiple sessions use this."""
+        return self.kernels.active_kernel()
     def graph_view(self):
         with self.graph_lock:
             doc=graph_module.validate(self.graph_doc)
@@ -119,6 +128,10 @@ class LabServer(ThreadingHTTPServer):
                 plan=[i for i in graph_module.order(doc) if i in set(plan)|set(check['prerequisites'])]
                 check=graph_module.preflight(doc,plan,present)
             check['mode']=mode;check['session_alive']=bool(kernel is not None and kernel.alive)
+            # Cells may name the session they run on; data cannot cross sessions, and a named session must be running.
+            check['sessions']={i:graph_module.session_of(doc,i) for i in plan if graph_module.session_of(doc,i)}
+            check['cross_session']=graph_module.cross_session(doc,plan)
+            check['missing_sessions']=sorted({l for l in check['sessions'].values() if not (self.kernels.by_label(l) and self.kernels.by_label(l)['kernel'].alive)})
             return plan,check
     def start_graph_run(self,mode,nodes,include_prerequisites):
         kernel=self.kernel
@@ -129,10 +142,18 @@ class LabServer(ThreadingHTTPServer):
             plan,check=self.graph_plan(mode,nodes,include_prerequisites)
             if not plan:raise graph_module.GraphError('Nothing to run: no code nodes are reachable in this plan')
             doc=self.graph_doc
+            if check['missing_sessions']:raise KernelError('These cells name sessions that are not running: %s'%', '.join(check['missing_sessions']))
             def record(ident,result):
                 with self.graph_lock:
                     graph_module.record_result(doc,ident,result)
-            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record).start()
+                node=graph_module.node_by_id(doc,ident);title=(doc['notebook']['cells'][node['cell_index']].get('metadata',{}).get('mainaiger',{}).get('title') or ident) if node else ident
+                self.journal.write('cell.'+result['status'],'%s: %s%s'%(title,result['status'],(' in %d ms'%result['elapsed_ms']) if result.get('elapsed_ms') is not None else ''),
+                                   {'node':ident,'status':result['status'],'elapsed_ms':result.get('elapsed_ms'),'session':result.get('session'),'error':(result.get('error') or {}).get('evalue')})
+            def finished(run):
+                ok=sum(1 for n in run.nodes.values() if n.get('status')=='ok')
+                self.journal.write('run.'+run.state,'Run %s %s: %d/%d ok%s'%(run.mode,run.state,ok,len(run.plan),(' · '+run.error) if run.error else ''),{'run':run.id,'mode':run.mode,'state':run.state,'ok':ok,'total':len(run.plan)})
+            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished).start()
+            self.journal.write('run.start','Run %s approved: %d cell%s'%(mode,len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan})
             return self.graph_run.snapshot()
     def kernel_status(self):
         kernel=self.kernel
@@ -155,25 +176,21 @@ class LabServer(ThreadingHTTPServer):
         info['build']=build.snapshot() if build else None
         if build and build.state=='done' and build.image==info['image']:info['ready']=True
         return info
-    def start_kernel(self,settings):
+    def start_kernel(self,settings,label=None):
+        """Start one more session. The first session (or the first alive one) becomes the active session."""
         with self.kernel_lock:
-            if self.kernel is not None and self.kernel.alive: raise KernelError('A session is already running')
             env=self.environment_status()
+            image=None
             if env['derived']:
                 if not env['ready']:raise KernelError('This Mainbook declares packages (%s) whose image %s is not built yet. Build the environment first.'%(', '.join(env['packages']),env['image']))
-                settings=dict(settings,image=env['image'])
-            kernel=self.kernel_factory(settings,self.state_dir)
-            kernel.start()
-            self.kernel=kernel
-            return kernel.status()
-    def stop_kernel(self):
+                image=env['image']
+            return self.kernels.start(settings,label=label,image=image)
+    def stop_kernel(self,ident=None):
         with self.kernel_lock:
-            kernel=self.kernel
-            if kernel is None: return self.kernel_status()
-            kernel.stop()
-            return kernel.status()
+            status=self.kernels.stop(ident)
+            return status if status is not None else self.kernel_status()
     def server_close(self):
-        try: self.stop_kernel()
+        try: self.kernels.stop_all()
         finally: super().server_close()
     def start_setup_job(self, action, runner=None):
         """Run one long setup operation in the background; `runner(progress)` returns {'ok','output'}."""
@@ -275,6 +292,33 @@ class LabHandler(BaseHTTPRequestHandler):
             name=__import__('urllib.parse').parse.unquote(path[len('/api/mainbooks/'):])
             try:return self.out(200,{'document':lab_mainbooks.load(self.server.state_dir,name),'name':name})
             except lab_mainbooks.MainbookError as e:return self.out(404,{'error':str(e)})
+        if path=='/api/sessions':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            with self.server.lock: settings=dict(self.server.settings);revision=self.server.revision
+            env=self.server.environment_status()
+            return self.out(200,{'sessions':self.server.kernels.list(),'active':self.server.kernels.active_id,'max':__import__('local_lab.sessions',fromlist=['MAX_SESSIONS']).MAX_SESSIONS,
+                                 'defaults':{'cpus':settings['cpus'],'memory':settings['memory'],'workspace':settings['workspace']},'revision':revision,
+                                 'environment':{'image':env['image'],'derived':env['derived'],'ready':env['ready']},'options':{'cpus':sorted(CPUS,key=float),'memory':sorted(MEMORY,key=lambda m:int(m[:-1])*(1024 if m.endswith('g') else 1))}})
+        if path=='/api/journal':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            q=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query)
+            try:after=int(q.get('after',['0'])[0]);limit=int(q.get('limit',['200'])[0])
+            except ValueError:return self.out(400,{'error':'after and limit must be integers'})
+            return self.out(200,{'entries':self.server.journal.tail(after,limit),'seq':self.server.journal.seq})
+        if path in ('/api/files','/api/files/read'):
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            q=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query)
+            with self.server.lock: settings=dict(self.server.settings)
+            roots=lab_files.roots(settings,self.server.state_dir)
+            root=q.get('root',[''])[0];rel=q.get('path',[''])[0]
+            if path=='/api/files' and not root:return self.out(200,{'roots':roots})
+            if root not in roots:return self.out(404,{'error':'Unknown folder'})
+            try:
+                if path=='/api/files':data=lab_files.listing(roots[root],rel)
+                else:data=lab_files.read(roots[root],rel)
+            except lab_files.FilesError as e:return self.out(400,{'error':str(e)})
+            data['root']=root;data['roots']=roots
+            return self.out(200,data)
         if path=='/api/environment':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             return self.out(200,self.server.environment_status())
@@ -381,7 +425,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 return self.out(202,{'ok':True})
             if path=='/api/settings':
                 settings=validate_settings(data,self.server.state_dir)
-                if self.server.kernel_status()['alive']:return self.out(409,{'error':'Stop the running session before changing the folder or limits; a session keeps the settings it started with.'})
+                if self.server.kernels.any_alive():return self.out(409,{'error':'Stop the running sessions before changing the folder or limits; a session keeps the settings it started with.'})
                 with self.server.lock:self.server.settings=settings;self.server.revision+=1
                 return self.out(200,{'ok':True})
             if path=='/api/kernel/start':
@@ -389,10 +433,34 @@ class LabHandler(BaseHTTPRequestHandler):
                 with self.server.lock:
                     if data['revision']!=self.server.revision:return self.out(409,{'error':'Settings changed after review. Review the current settings again.'})
                     settings=dict(self.server.settings)
+                if self.server.kernel_status()['alive']:return self.out(409,{'error':'A session is already running; start additional sessions from Resources on the graph page'})
                 try:return self.out(200,self.server.start_kernel(settings))
                 except KernelError as e:return self.out(409,{'error':str(e)})
             if path=='/api/kernel/stop':
                 return self.out(200,self.server.stop_kernel())
+            if path=='/api/sessions/start':
+                if set(data)-{'confirm','revision','label','cpus','memory'} or data.get('confirm') is not True or type(data.get('revision')) is not int:raise ValueError('Explicit confirmation is required')
+                with self.server.lock:
+                    if data['revision']!=self.server.revision:return self.out(409,{'error':'Settings changed after review. Review the current settings again.'})
+                    settings=dict(self.server.settings)
+                if 'cpus' in data:
+                    if data['cpus'] not in CPUS:raise ValueError('Choose one of the supported CPU limits')
+                    settings['cpus']=data['cpus']
+                if 'memory' in data:
+                    if data['memory'] not in MEMORY:raise ValueError('Choose one of the supported memory limits')
+                    settings['memory']=data['memory']
+                label=data.get('label')
+                if label is not None and not isinstance(label,str):raise ValueError('label must be text')
+                try:return self.out(200,self.server.start_kernel(settings,label=label or None))
+                except KernelError as e:return self.out(409,{'error':str(e)})
+            if path in ('/api/sessions/stop','/api/sessions/interrupt','/api/sessions/select','/api/sessions/forget'):
+                if set(data)!={'id'} or not isinstance(data['id'],str):raise ValueError('Send {id}')
+                try:
+                    if path.endswith('/stop'):status=self.server.stop_kernel(data['id']);return self.out(200,{'session':status})
+                    if path.endswith('/interrupt'):ok,status=self.server.kernels.interrupt(data['id']);return self.out(200,{'ok':ok,'session':status})
+                    if path.endswith('/select'):return self.out(200,{'session':self.server.kernels.select(data['id'])})
+                    self.server.kernels.forget(data['id']);return self.out(200,{'ok':True})
+                except KernelError as e:return self.out(409,{'error':str(e)})
             if path=='/api/kernel/interrupt':
                 kernel=self.server.kernel
                 if kernel is None or not kernel.alive:return self.out(409,{'error':'No running session'})
@@ -423,6 +491,7 @@ class LabHandler(BaseHTTPRequestHandler):
                     except lab_mainbooks.MainbookError as e:return self.out(409 if 'already exists' in str(e) else 400,{'error':str(e)})
                     except OSError as e:return self.out(400,{'error':'The Mainbook could not be written: %s'%e})
                     self.server.graph_doc=result['document']
+                self.server.journal.write('mainbook.save','Saved Mainbook "%s"'%result['name'],{'name':result['name'],'bytes':result['bytes']})
                 return self.out(200,{'name':result['name'],'path':result['path'],'bytes':result['bytes']})
             if path=='/api/environment/build':
                 # Fixed, reviewed step: the packages come from the validated document, never from the request.
@@ -437,6 +506,7 @@ class LabHandler(BaseHTTPRequestHandler):
                     try:build.start()
                     except lab_environment.EnvironmentSpecError as e:return self.out(400,{'error':str(e)})
                     self.server.env_build=build
+                self.server.journal.write('env.build.start','Environment build approved: %s'%env['image'],{'image':env['image'],'packages':env['packages']})
                 return self.out(200,self.server.environment_status())
             if path=='/api/library/folder':
                 if set(data)!={'folder','confirm'} or data['confirm'] is not True:raise ValueError('Confirm the folder choice')
@@ -462,6 +532,7 @@ class LabHandler(BaseHTTPRequestHandler):
                     except lab_library.LibraryError as e:return self.out(409 if 'already exists' in str(e) else 400,{'error':str(e)})
                     except OSError as e:return self.out(400,{'error':'The library cell could not be written: %s'%e})
                     view=self.server.graph_view()
+                self.server.journal.write('library.save','Saved library cell %s v%d'%(result['record']['name'],result['record']['version']),{'name':result['record']['name'],'version':result['record']['version']})
                 return self.out(200,{'name':result['record']['name'],'version':result['record']['version'],'path':result['path'],'view':view})
             if path=='/api/library/insert':
                 if set(data)-{'name','position','after'} or not {'name','position'}<=set(data):raise ValueError('Send {name, position, after}')
@@ -473,6 +544,7 @@ class LabHandler(BaseHTTPRequestHandler):
                     except (lab_library.LibraryError,graph_module.GraphError) as e:return self.out(400,{'error':str(e)})
                     self.server.graph_doc=doc;self.server.graph_revision+=1
                     view=self.server.graph_view()
+                self.server.journal.write('library.insert','Inserted %s v%d from the Library as %s'%(record['name'],record['version'],node_id),{'name':record['name'],'version':record['version'],'node':node_id})
                 return self.out(200,{'node':node_id,'view':view})
             if path=='/api/library/pull':
                 if set(data)!={'node'}:raise ValueError('Send {node}')
