@@ -867,6 +867,43 @@ syntax errors on a synthetic folder, and the routes are tested
 (`tests/test_codemap.py`); the page is tested in headless Chromium
 (`MapPageTests`).
 
+## Memory: notes and chats in a folder you approve (`local_lab/memory.py`, `/memory`, `/api/memory/*`)
+
+The first piece of `docs/MEMORY_PLAN.md`. **Memory** is an Obsidian-compatible
+vault: Markdown files with a small front matter (`id`, `title`, `kind`,
+`status`, `tags`, `sources`, `visibility`, `created`, `updated`) and
+`[[links]]` in the body, in one folder you approve once (full path shown,
+never your home folder, never the private state; default
+`~/Documents/MainAIger Lab/Memory`). It has two tiers:
+
+- `notes/` — **persistent memory**: what you or the Lab keep. Kinds: `idea`,
+  `fact`, `procedure`, `snippet`, `answer`, `rule`, `mainbook` (a note that
+  names a saved Mainbook to run). Status grows `draft → growing → stable`:
+  "Add a dated section" appends a heading with the date and turns a draft
+  into *growing*; **Mark stable** is your confirmation. `visibility: private`
+  is the default and is meant as the line a future cloud model never crosses.
+- `chats/` — **chat memory**: imported conversations (the importer comes
+  next), one note per chat, never edited by the Lab or the page.
+
+The Memory page lists either tier with kind and status filters, searches
+(SQLite FTS5 with stemming, an index in the private state folder rebuilt
+from file times; a plain scan when FTS5 is missing), opens a note in the
+inspector (title, kind, status, tags, visibility, body; links are clickable;
+sources are shown), creates notes, deletes them with a confirm, and draws
+the **link graph** (notes in columns by kind, `[[link]]` arrows, click to
+open). The Files panel on the Graph page can browse the vault read-only.
+Writes are atomic, a note is only overwritten when it still hashes to what
+the editor read, and every change is a Log line (`memory.folder`,
+`memory.create`, `memory.update`, `memory.append`, `memory.delete`).
+
+**Status:** the format (front matter round trip, links), folder approval
+rules, create/read/update/append/delete, the chat tier's read-only rule, path
+safety, the link graph (title or id, case-insensitive, unresolved listed),
+the index following file changes and the scan fallback are tested
+(`tests/test_memory.py`), the routes too; the page is tested in headless
+Chromium (`MemoryPageTests`). Next: ideas (M2), chat import (M4), the ask
+box with cost estimates (M3).
+
 ## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it

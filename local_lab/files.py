@@ -33,6 +33,10 @@ def roots(settings, state_dir):
     lib = library.folder(state_dir)
     if lib:
         out['library'] = lib
+    from . import memory
+    mem = memory.folder(state_dir)
+    if mem:
+        out['memory'] = mem
     return out
 
 

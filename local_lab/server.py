@@ -25,6 +25,7 @@ from . import decide as lab_decide
 from . import network as lab_network
 from . import codemap as lab_codemap
 from . import events as lab_events
+from . import memory as lab_memory
 from .journal import Journal
 from .sessions import SessionRegistry
 from .devices import DeviceManager, DeviceError
@@ -312,7 +313,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
-        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8'),'/map':('map.html','text/html; charset=utf-8'),'/map.js':('map.js','text/javascript; charset=utf-8'),'/map.css':('map.css','text/css; charset=utf-8')}
+        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8'),'/map':('map.html','text/html; charset=utf-8'),'/map.js':('map.js','text/javascript; charset=utf-8'),'/map.css':('map.css','text/css; charset=utf-8'),'/memory':('memory.html','text/html; charset=utf-8'),'/memory.js':('memory.js','text/javascript; charset=utf-8'),'/memory.css':('memory.css','text/css; charset=utf-8')}
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
         if path=='/api/state':
@@ -354,6 +355,19 @@ class LabHandler(BaseHTTPRequestHandler):
             return self.out(200,{'sessions':self.server.kernels.list(),'active':self.server.kernels.active_id,'max':__import__('local_lab.sessions',fromlist=['MAX_SESSIONS']).MAX_SESSIONS,
                                  'defaults':{'cpus':settings['cpus'],'memory':settings['memory'],'workspace':settings['workspace']},'revision':revision,
                                  'environment':{'image':env['image'],'derived':env['derived'],'ready':env['ready']},'options':{'cpus':sorted(CPUS,key=float),'memory':sorted(MEMORY,key=lambda m:int(m[:-1])*(1024 if m.endswith('g') else 1))}})
+        if path=='/api/memory' or path.startswith('/api/memory/'):
+            # Memory: an approved folder of Markdown notes (notes/ curated, chats/ imported), searched with SQLite FTS5.
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            q=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query);one=lambda k,d=None:q.get(k,[d])[0]
+            try:
+                if path=='/api/memory':return self.out(200,lab_memory.status(self.server.state_dir))
+                if path=='/api/memory/notes':return self.out(200,{'notes':lab_memory.listing(self.server.state_dir,tier=one('tier'),kind=one('kind'),status_=one('status'),tag=one('tag'))})
+                if path=='/api/memory/note':return self.out(200,{'note':lab_memory.read(self.server.state_dir,one('path',''))})
+                if path=='/api/memory/graph':return self.out(200,lab_memory.graph(self.server.state_dir,tier=one('tier')))
+                if path=='/api/memory/search':return self.out(200,{'hits':lab_memory.search(self.server.state_dir,one('q',''),tier=one('tier'))})
+            except lab_memory.MemoryError as e:return self.out(409 if 'Choose a Memory folder' in str(e) else 400,{'error':str(e)})
+            except OSError as e:return self.out(500,{'error':'The Memory folder could not be read: %s'%e})
+            return self.out(404,{'error':'Unknown memory route'})
         if path=='/api/graph/inbox':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             with self.server.graph_lock:return self.out(200,{'cells':list(self.server.cell_inbox)})
@@ -751,6 +765,33 @@ class LabHandler(BaseHTTPRequestHandler):
                 run=self.server.graph_run
                 if run is None or not self.server.graph_running():return self.out(409,{'error':'No graph run is in progress'})
                 run.cancel();return self.out(200,{'run':run.snapshot()})
+            if path.startswith('/api/memory/'):
+                # Writes into the approved Memory folder; the folder approval is the permission, every change is a Log line.
+                try:
+                    if path=='/api/memory/folder':
+                        if set(data)!={'folder','confirm'} or data['confirm'] is not True:raise ValueError('Confirm the folder')
+                        st=lab_memory.configure(self.server.state_dir,data['folder']);self.server.journal.write('memory.folder','Memory folder: %s'%st['folder'],{'folder':st['folder']});return self.out(200,st)
+                    if path=='/api/memory/note':
+                        if set(data)-{'title','body','kind','tags','sources','status','visibility','mainbook'} or not isinstance(data.get('title'),str):raise ValueError('Send {title, body, kind, tags, sources, status, visibility}')
+                        extra={'mainbook':data['mainbook']} if isinstance(data.get('mainbook'),str) and data['mainbook'] else None
+                        row=lab_memory.create(self.server.state_dir,data['title'],data.get('body',''),kind=data.get('kind','fact'),tags=data.get('tags',[]),sources=data.get('sources',[]),status_=data.get('status','draft'),visibility=data.get('visibility','private'),extra=extra)
+                        self.server.journal.write('memory.create','Note "%s" (%s) created'%(row['title'],row['kind']),{'path':row['path'],'kind':row['kind'],'id':row['id']});return self.out(200,{'note':row})
+                    if path=='/api/memory/note/update':
+                        if set(data)-{'path','body','front','expected_hash'} or not isinstance(data.get('path'),str):raise ValueError('Send {path, body?, front?, expected_hash}')
+                        if 'front' in data and not isinstance(data['front'],dict):raise ValueError('front must be an object')
+                        note=lab_memory.update(self.server.state_dir,data['path'],body=data.get('body'),front_changes=data.get('front'),expected_hash=data.get('expected_hash'))
+                        self.server.journal.write('memory.update','Note "%s" updated'%note['title'],{'path':note['path'],'status':note['status']});return self.out(200,{'note':note})
+                    if path=='/api/memory/note/append':
+                        if set(data)!={'path','heading','text'} or not all(isinstance(data[k],str) for k in ('path','heading','text')):raise ValueError('Send {path, heading, text}')
+                        note=lab_memory.append(self.server.state_dir,data['path'],data['heading'],data['text'])
+                        self.server.journal.write('memory.append','Note "%s" grew: %s'%(note['title'],data['heading'][:80]),{'path':note['path'],'status':note['status']});return self.out(200,{'note':note})
+                    if path=='/api/memory/note/delete':
+                        if set(data)!={'path','confirm'} or data['confirm'] is not True or not isinstance(data['path'],str):raise ValueError('Confirm the deletion')
+                        lab_memory.delete(self.server.state_dir,data['path']);self.server.journal.write('memory.delete','Note %s deleted'%data['path'],{'path':data['path']});return self.out(200,{'ok':True})
+                    if path=='/api/memory/reindex':return self.out(200,lab_memory.reindex(self.server.state_dir))
+                except lab_memory.MemoryError as e:return self.out(409 if ('changed since' in str(e) or 'Choose a Memory folder' in str(e)) else 400,{'error':str(e)})
+                except OSError as e:return self.out(500,{'error':'The Memory folder could not be written: %s'%e})
+                return self.out(404,{'error':'Unknown memory route'})
             if path=='/api/codemap/cell':
                 # A function on the Map becomes a cell: a form for its parameters in front of a call. Queued for the Graph page.
                 if set(data)!={'root','id'} or not isinstance(data['root'],str) or not isinstance(data['id'],str):raise ValueError('Send {root, id}')

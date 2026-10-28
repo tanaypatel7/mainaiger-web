@@ -39,7 +39,7 @@ file transfer between devices, GPU choice, copying MainAIger onto a device
 (C1). How useful today: as useful as "run this cell on the big machine, see
 its output here" — real, but the Lab must already be installed there.
 
-## 1. The memory store (M1) — **next build**
+## 1. The memory store (M1) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Memory"
 
 **What:** a folder you approve once (like Mainbooks and Library), holding an
 Obsidian-compatible vault: Markdown notes with YAML front matter and

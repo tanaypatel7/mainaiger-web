@@ -504,6 +504,39 @@ class NestedMainbookPanelTests(RealServerCase):
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class MemoryPageTests(RealServerCase):
+    """The Memory page: approve a folder, write notes that link, search, grow a note, mark it stable, see the link graph."""
+    def test_folder_notes_links_search_grow_and_graph(self):
+        p = self.page
+        p.goto(self.origin + '/memory'); p.wait_for_selector('#memory-main:not([hidden])'); p.wait_for_function("() => document.getElementById('memory-stats').textContent.includes('No Memory folder')")
+        self.assertTrue(p.locator('#note-new').is_disabled())
+        p.click('#memory-choose'); p.wait_for_selector('#folder-dialog[open]'); self.assertTrue(p.input_value('#folder-input').endswith('MainAIger Lab/Memory')); p.click('#folder-confirm')
+        p.wait_for_function("() => document.getElementById('memory-stats').textContent.startsWith('0 notes')"); self.assertTrue((self.root / 'Documents' / 'MainAIger Lab' / 'Memory' / 'notes').is_dir())
+        # Two notes that link to each other.
+        p.click('#note-new'); p.wait_for_selector('#new-dialog[open]'); p.fill('#new-title', 'Quantum kernels'); p.select_option('#new-kind', 'fact'); p.fill('#new-tags', 'quantum, ml'); p.fill('#new-body', 'Kernel methods map features into Hilbert space. Used by [[Fraud idea]].'); p.click('#new-confirm')
+        p.wait_for_function("() => document.getElementById('note-meta').textContent.includes('notes/quantum-kernels.md')"); self.assertEqual(p.input_value('#note-title'), 'Quantum kernels')
+        p.click('#note-new'); p.wait_for_selector('#new-dialog[open]'); p.fill('#new-title', 'Fraud idea'); p.select_option('#new-kind', 'idea'); p.fill('#new-body', 'Try [[Quantum kernels]] on the fraud data.'); p.click('#new-confirm')
+        p.wait_for_function("() => document.getElementById('note-meta').textContent.includes('notes/fraud-idea.md')")
+        p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 2"); self.assertIn('2 notes', p.inner_text('#memory-stats'))
+        # Links open the other note; search finds by words; a dated section grows a draft into growing; mark stable.
+        p.locator('#note-links a[data-link="Quantum kernels"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Quantum kernels'")
+        p.fill('#memory-search', 'hilbert'); p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 1 && document.querySelector('#note-list li mark')")
+        self.assertIn('Hilbert', p.inner_text('#note-list li .snippet')); p.fill('#memory-search', ''); p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 2")
+        p.locator('#note-list li[data-path="notes/fraud-idea.md"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Fraud idea'")
+        self.assertEqual(p.input_value('#note-status'), 'draft')
+        p.click('text=Add a dated section'); p.fill('#note-add-heading', 'Asked again'); p.fill('#note-add-text', 'Also try amplitude encoding.'); p.click('#note-add')
+        p.wait_for_function("() => document.getElementById('note-status').value === 'growing'"); self.assertIn('## Asked again', p.input_value('#note-body'))
+        p.click('#note-stable'); p.wait_for_function("() => document.getElementById('note-status').value === 'stable' && document.getElementById('note-result').textContent === 'Saved.'")
+        self.assertIn('status: stable', (self.root / 'Documents' / 'MainAIger Lab' / 'Memory' / 'notes' / 'fraud-idea.md').read_text())
+        p.select_option('#filter-status', 'stable'); p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 1"); p.select_option('#filter-status', '')
+        # The graph view draws both notes with their links; chats tier is empty.
+        p.click('#view-graph'); p.wait_for_function("() => document.querySelectorAll('.mnode').length === 2 && document.querySelectorAll('#edge-layer path').length === 2")
+        p.locator('.mnode[data-path="notes/quantum-kernels.md"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Quantum kernels'")
+        p.click('#view-list'); p.click('#tier-chats'); p.wait_for_function("() => document.getElementById('list-note').textContent.includes('No chats')")
+        kinds = [e['kind'] for e in self.server.journal.tail(0, 200)]; self.assertIn('memory.create', kinds); self.assertIn('memory.folder', kinds); self.assertIn('memory.append', kinds)
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
 class FormCellPanelTests(RealServerCase):
     """A form on a card: define fields in the inspector, fill them on the card, run with those values."""
     @classmethod
