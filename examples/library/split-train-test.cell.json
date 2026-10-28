@@ -1,0 +1,24 @@
+{
+ "format": "mainaiger-cell",
+ "schema_version": 1,
+ "name": "split-train-test",
+ "title": "Split train/test",
+ "cell_type": "code",
+ "source": "import random\nrng = random.Random(42)\norder = list(range(len(X)))\nrng.shuffle(order)\ncut = int(len(order) * 0.75)\nX_train = [X[i] for i in order[:cut]]; y_train = [y[i] for i in order[:cut]]\nX_test = [X[i] for i in order[cut:]]; y_test = [y[i] for i in order[cut:]]\nprint(f\"train {len(X_train)} / test {len(X_test)}\")\n",
+ "inputs": [
+  "X",
+  "y"
+ ],
+ "outputs": [
+  "X_train",
+  "y_train",
+  "X_test",
+  "y_test"
+ ],
+ "tags": [
+  "ml",
+  "split"
+ ],
+ "description": "Shuffles with a fixed seed and holds out 25% for testing. Defines X_train, y_train, X_test, y_test.",
+ "version": 1
+}

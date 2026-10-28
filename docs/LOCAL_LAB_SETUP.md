@@ -166,6 +166,61 @@ process (`tests/test_graph.py`) and the canvas was exercised end to end in a
 headless browser. Running the graph inside Docker on a Mac is the same
 unverified step as the session itself.
 
+### Cell library (`local_lab/library.py`, `/api/library/*`)
+
+One global folder of reusable cells that any Mainbook can use. Feature → file:
+
+- **Folder** — `<parent of the Mainbooks folder>/Library`, so
+  `~/Documents/MainAIger Lab/Library` by default. It is a second write location,
+  so the owner approves it once (`POST /api/library/folder {folder, confirm}`);
+  the choice is remembered in the private state as `library.json`. Same rules as
+  Mainbooks: absolute plain directory, not `/`, not home, not the private state,
+  not the Mainbooks folder itself; never mounted into a container.
+- **One file per cell** — `<name>.cell.json` (`library.validate_record`):
+  `name`, `title`, `source`, declared `inputs`/`outputs`, `tags`, `description`,
+  `cell_type`, and an integer `version` that goes up by one on every save of the
+  same name (the stored version wins; callers cannot set it). Names are letters,
+  digits, dashes and underscores; symlinks are refused; writes are atomic.
+- **Browse / search** — `GET /api/library?q=words` (`library.listing`): every
+  word must appear in the name, title, tags, description, inputs or outputs.
+  The Library section of the inspector shows the list with a search box.
+- **Insert** — `POST /api/library/insert {name, position, after}`
+  (`library.insert`): adds a cell from the library at a canvas position; with
+  `after` it is chained behind that node the way the + button works (between the
+  node and Finish when the node pointed at Finish). In the UI: **Insert** on a
+  list row (chains after the selected Start or code cell) or drag a row onto the
+  canvas (placed where dropped, not chained).
+- **Link** — an inserted or saved cell carries
+  `metadata.mainaiger.library = {name, version, source_hash}`. Every graph view
+  includes `library: {node_id: {name, version, latest, state}}` where state is
+  `current`, `behind` (the library has a newer version), `modified` (edited here
+  since it was inserted) or `missing`. The SELECTED NODE panel shows this.
+- **Save / push** — `POST /api/library/save {node, name, tags, description,
+  overwrite}` (`library.record_from_cell` + `library.save`): saves one code cell
+  of the current graph with its title and declared-or-analysed names. A new name
+  becomes v1; an existing name needs `overwrite` and becomes the next version.
+  The cell is then linked to that version. **Push new version** in the UI is this
+  call with the linked name.
+- **Pull** — `POST /api/library/pull {node}` (`library.pull`): replaces a linked
+  cell's code, title and declarations with the latest library version and clears
+  its outputs. **Update from Library** in the UI, offered when the state is
+  `behind`.
+- **Starter cells** — `examples/library/*.cell.json`, copied into the folder by
+  `POST /api/library/seed {confirm}` (**Add starter cells…**, existing names are
+  skipped): load data → extract features → split train/test → train classifier →
+  evaluate → report. They use only the Python standard library (a logistic
+  regression by gradient descent on a synthetic two-blob dataset), so they run in
+  the session container as it is today; the data edges between them are derived
+  from the code. Replace the body of *load data* with a real loader and keep
+  `rows = [(features, label), ...]`.
+
+**Status:** folder rules, records, versions, search, insert/pull/link state and
+the HTTP routes are tested (`tests/test_library.py`, 13 tests), and the panel is
+exercised end to end in headless Chromium against the real local service
+(`tests/test_canvas_ui.py`). The starter flow runs end to end in plain Python
+(tested) and inside the Docker session only as far as the kernel tests cover
+(unverified on a Mac).
+
 ### Canvas performance (`local_lab/ui/graph.js`)
 
 How the canvas stays smooth, and where to look if it does not:

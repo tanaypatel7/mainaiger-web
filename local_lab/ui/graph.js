@@ -220,6 +220,7 @@
     if (view.document) { state.doc = view.document; reindex(); }
     state.analysis = view.analysis || {}; state.dataEdges = view.data_edges || []; state.order = view.order || []; state.disconnected = view.disconnected || []; state.revision = view.revision;
     if (view.session) state.session = view.session; if (view.csrf) state.csrf = view.csrf; if ('run' in view && view.run) state.run = view.run;
+    if (view.library) state.libraryLinks = view.library;
   }
   function markDirty() { state.dirty = true; $('save-state').textContent = 'Unsaved'; $('save-state').dataset.state = 'dirty'; clearTimeout(state.saveTimer); state.saveTimer = setTimeout(save, 600); }
   async function save() {
@@ -247,6 +248,7 @@
       $('node-links').textContent = `Triggered by: ${by.length ? by.join(', ') : '— (not connected)'} · Triggers: ${to.length ? to.join(', ') : '—'}`;
       $('node-analysis-note').textContent = info.error ? 'Analysis unavailable: ' + info.error : (info.declared ? 'Declared by you (overrides the automatic reading).' : 'Read automatically from the code; edit below to override.');
       const own = meta(cell); if (document.activeElement !== $('override-inputs')) $('override-inputs').value = (own.inputs || []).join(', '); if (document.activeElement !== $('override-outputs')) $('override-outputs').value = (own.outputs || []).join(', ');
+      renderLibraryLink(sel.id);
       const r = state.run && state.run.nodes[sel.id]; const last = r || own.last_run;
       $('node-result').textContent = last && last.status ? `${last.status}${last.elapsed_ms != null ? ' · ' + last.elapsed_ms + ' ms' : ''}${r && r.error ? ' · ' + r.error.ename + (r.error.evalue ? ': ' + r.error.evalue : '') : ''}` : 'Not run.';
     }
@@ -265,18 +267,23 @@
   }
 
   // ---------------------------------------------------------------- editing
+  function freeSpot(sel) {
+    // Where a new card goes: below the selected card, or in the upper middle of the view; slid
+    // down until it does not overlap an existing card in that column.
+    const vp = $('viewport').getBoundingClientRect();
+    const base = sel ? position(sel.id) : {x: (vp.width / 2 - state.pan.x) / state.zoom - NODE_W / 2, y: (vp.height / 3 - state.pan.y) / state.zoom};
+    const spot = sel ? {x: base.x, y: base.y + box(sel.id).h + 80} : {...base};
+    const overlaps = () => nodes().some(n => state.doc.layout.nodes[n.id] && Math.abs(state.doc.layout.nodes[n.id].x - spot.x) < NODE_W && spot.y < state.doc.layout.nodes[n.id].y + box(n.id).h + 20 && spot.y + 160 > state.doc.layout.nodes[n.id].y);
+    for (let i = 0; i < 40 && overlaps(); i++) spot.y += 60;
+    return {x: Math.round(spot.x), y: Math.round(spot.y)};
+  }
   function addNode(kind) {
     const id = freshId(kind === 'code' ? 'cell-' : 'note-');
     const number = nodes().filter(n => n.kind === 'code').length + 1;
-    cells().push({id, cell_type: kind, metadata: {mainaiger: {title: kind === 'code' ? 'Cell ' + number : 'Note'}}, source: '', ...(kind === 'code' ? {execution_count: null, outputs: []} : {})});
-    nodes().push({id, kind, cell_index: cells().length - 1});
     const sel = state.selected && state.selected.type === 'node' ? nodeById(state.selected.id) : null;
-    const vp = $('viewport').getBoundingClientRect();
-    const base = sel ? position(sel.id) : {x: (vp.width / 2 - state.pan.x) / state.zoom - NODE_W / 2, y: (vp.height / 3 - state.pan.y) / state.zoom};
-    const spot = sel ? {x: base.x, y: base.y + box(sel.id).h + 80} : base;
-    // Slide down until the new card does not overlap an existing one in this column.
-    const overlaps = () => nodes().some(n => n.id !== id && state.doc.layout.nodes[n.id] && Math.abs(state.doc.layout.nodes[n.id].x - spot.x) < NODE_W && spot.y < state.doc.layout.nodes[n.id].y + box(n.id).h + 20 && spot.y + 160 > state.doc.layout.nodes[n.id].y);
-    for (let i = 0; i < 40 && overlaps(); i++) spot.y += 60;
+    const spot = freeSpot(sel);
+    cells().push({id, cell_type: kind, metadata: {mainaiger: {title: kind === 'code' ? 'Cell ' + number : 'Note'}}, source: '', ...(kind === 'code' ? {execution_count: null, outputs: []} : {})});
+    nodes().push({id, kind, cell_index: cells().length - 1}); reindex();
     state.doc.layout.nodes[id] = spot;
     if (kind === 'code' && sel && sel.kind !== 'finish' && sel.kind !== 'markdown') {
       // Insert the new cell into the chain: S -> new, and if S pointed at Finish, new -> Finish instead.
@@ -334,7 +341,7 @@
     if (event.button !== 0) return;
     if (event.target.closest('button')) return;  // header buttons keep their click; no drag, no capture
     if (state.view === 'notebook') { if (nodeEl) select('node', nodeEl.dataset.id); else if (!edgeEl) select(null); return; }  // notebook view: no dragging or linking
-    if (portOut) { const id = nodeEl.dataset.id; state.linking = {source: id}; viewport.classList.add('linking'); viewport.setPointerCapture(event.pointerId); const p = worldPoint(event); $('pending-edge').style.display = ''; $('pending-edge').setAttribute('d', curve({x: box(id).x + box(id).w / 2, y: box(id).y + box(id).h}, p)); event.preventDefault(); return; }
+    if (portOut) { const id = nodeEl.dataset.id; state.linking = {source: id}; viewport.classList.add('linking'); viewport.setPointerCapture(event.pointerId); const p = worldPoint(event); $('pending-edge').classList.add('active'); $('pending-edge').setAttribute('d', curve({x: box(id).x + box(id).w / 2, y: box(id).y + box(id).h}, p)); event.preventDefault(); return; }
     if (head) { const id = nodeEl.dataset.id; select('node', id); const p = worldPoint(event), pos = position(id); state.dragging = {id, dx: p.x - pos.x, dy: p.y - pos.y}; viewport.setPointerCapture(event.pointerId); event.preventDefault(); return; }
     if (nodeEl) { select('node', nodeEl.dataset.id); return; }  // clicks inside textarea/output keep their default behavior
     if (edgeEl) { select('edge', edgeEl.dataset.id); return; }
@@ -353,7 +360,7 @@
   });
   function endPointer(event) {
     if (state.dragging) { const id = state.dragging.id; state.dragging = null; placeNode(id); updateEdgesFor([id]); markDirty(); }
-    if (state.linking) { const under = document.elementFromPoint(event.clientX, event.clientY); const target = under && under.closest('.node'); $('pending-edge').style.display = 'none'; $('pending-edge').setAttribute('d', ''); frame.link = null; document.querySelectorAll('.port.target').forEach(x => x.classList.remove('target')); if (target) addControlEdge(state.linking.source, target.dataset.id); state.linking = null; viewport.classList.remove('linking'); }
+    if (state.linking) { const under = document.elementFromPoint(event.clientX, event.clientY); const target = under && under.closest('.node'); $('pending-edge').classList.remove('active'); $('pending-edge').setAttribute('d', ''); frame.link = null; document.querySelectorAll('.port.target').forEach(x => x.classList.remove('target')); if (target) addControlEdge(state.linking.source, target.dataset.id); state.linking = null; viewport.classList.remove('linking'); }
     if (state.panning) { state.panning = null; viewport.classList.remove('panning'); applyViewport(); markDirty(); }
   }
   viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', endPointer);
@@ -493,6 +500,119 @@
     return {format: 'mainaiger', schema_version: 2, notebook: {...nb, cells: cellsOut}, graph: {nodes: nodeList, edges: edgeList}, layout: {nodes: {}, viewport: {x: 40, y: 30, zoom: 1}}};
   }
 
+  // ---------------------------------------------------------------- cell library
+  // One global folder of reusable cells (local_lab/library.py). The server owns the files; the
+  // browser lists, searches, inserts, saves and pulls through /api/library/*. A cell inserted from
+  // the library carries metadata.mainaiger.library = {name, version, source_hash}; every graph view
+  // reports, per node, whether it is current, behind, modified locally, or missing from the library.
+  let library = {configured: false, folder: null, default: '', cells: [], starters: []};
+  state.libraryLinks = {};
+  async function refreshLibrary() {
+    try { library = await api('/api/library' + ($('library-search').value.trim() ? '?q=' + encodeURIComponent($('library-search').value.trim()) : '')); } catch (error) { $('library-note').textContent = error.message; return; }
+    renderLibrary();
+  }
+  function renderLibrary() {
+    const list = $('library-list'); list.textContent = '';
+    $('library-folder').hidden = library.configured; $('library-seed').hidden = !library.configured || !library.starters.length;
+    if (!library.configured) $('library-note').textContent = 'Reusable cells shared by every Mainbook. Approve a Library folder to start.';
+    else if (!library.cells.length) $('library-note').textContent = library.query ? 'No cells match.' : `Library folder: ${library.folder} (empty). Save a cell from a graph or add the starter cells.`;
+    else $('library-note').textContent = `${library.count} cell${library.count === 1 ? '' : 's'} in ${library.folder}. Drag onto the canvas or press Insert.`;
+    for (const c of library.cells) {
+      const li = document.createElement('li'); li.dataset.name = c.name; li.draggable = !c.unreadable;
+      const head = document.createElement('div'); head.className = 'lib-title'; const b = document.createElement('b'); b.textContent = c.title; b.title = c.name; head.append(b);
+      if (!c.unreadable) head.append(button('quiet small lib-insert', 'insert', 'Insert this cell after the selected cell (or into the view)', 'Insert'));
+      li.append(head);
+      const meta = document.createElement('div'); meta.className = 'lib-meta'; meta.textContent = `${c.name} v${c.version ?? '?'}` + (c.tags.length ? ' · ' + c.tags.join(', ') : '') + (c.inputs.length || c.outputs.length ? ` · ${c.inputs.join(', ') || '—'} → ${c.outputs.join(', ') || '—'}` : ''); li.append(meta);
+      if (c.description) { const d = document.createElement('div'); d.className = 'lib-desc'; d.textContent = c.description; li.append(d); }
+      list.append(li);
+    }
+  }
+  function renderLibraryLink(id) {
+    const link = state.libraryLinks[id]; const el = $('node-library'); el.dataset.state = link ? link.state : '';
+    $('lib-pull').hidden = !link || link.state !== 'behind'; $('lib-push').hidden = !link || link.state !== 'modified';
+    $('lib-save').textContent = link ? 'Save as new library cell…' : 'Save to Library…';
+    if (!link) { el.textContent = 'Not from the library.'; return; }
+    const text = {current: `${link.name} v${link.version} · up to date`, behind: `${link.name} v${link.version} · the library has v${link.latest}`, modified: `${link.name} v${link.version} · edited here since it was inserted`, missing: `${link.name} v${link.version} · no longer in the library`};
+    el.textContent = text[link.state] || `${link.name} v${link.version}`;
+  }
+  async function afterLibraryChange(view, selectId) {
+    const run = state.run; applyView(view); state.run = run; state.dirty = false; $('save-state').textContent = 'Saved'; $('save-state').dataset.state = '';
+    buildNodes(); if (selectId) select('node', selectId); else renderInspector(); layoutNotebook();
+  }
+  async function insertFromLibrary(name, position, after) {
+    if (state.dirty) { clearTimeout(state.saveTimer); await save(); if (state.dirty) return; }
+    try { const data = await api('/api/library/insert', {name, position, after: after || null}); await afterLibraryChange(data.view, data.node); toast(`Inserted ${name} from the Library.`); }
+    catch (error) { toast(error.message); }
+  }
+  function insertSelectedLibraryCell(name) {
+    const sel = state.selected && state.selected.type === 'node' ? nodeById(state.selected.id) : null;
+    const chain = sel && (sel.kind === 'start' || sel.kind === 'code');
+    insertFromLibrary(name, freeSpot(chain ? sel : null), chain ? sel.id : null);
+  }
+  $('library-list').addEventListener('click', event => { const b = event.target.closest('.lib-insert'); if (!b) return; insertSelectedLibraryCell(b.closest('li').dataset.name); });
+  $('library-list').addEventListener('dragstart', event => { const li = event.target.closest('li[draggable="true"]'); if (!li) return; event.dataTransfer.setData('text/x-mainaiger-cell', li.dataset.name); event.dataTransfer.effectAllowed = 'copy'; li.classList.add('dragging'); });
+  $('library-list').addEventListener('dragend', event => { const li = event.target.closest('li'); if (li) li.classList.remove('dragging'); });
+  viewport.addEventListener('dragover', event => { if (![...event.dataTransfer.types].includes('text/x-mainaiger-cell') || state.view === 'notebook') return; event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; viewport.classList.add('drop-target'); });
+  viewport.addEventListener('dragleave', () => viewport.classList.remove('drop-target'));
+  viewport.addEventListener('drop', event => {
+    viewport.classList.remove('drop-target'); const name = event.dataTransfer.getData('text/x-mainaiger-cell'); if (!name || state.view === 'notebook') return; event.preventDefault();
+    const p = worldPoint(event); insertFromLibrary(name, {x: Math.round(p.x - NODE_W / 2), y: Math.round(p.y - 20)}, null);
+  });
+  let searchTimer = null; $('library-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(refreshLibrary, 250); });
+  $('library-refresh').addEventListener('click', refreshLibrary);
+  // Folder approval (once).
+  function openLibraryFolderDialog(then) {
+    $('library-folder-input').value = library.folder || library.default || ''; $('library-folder-note').textContent = 'Default shown; you can change it. The folder is created if it does not exist.';
+    state.afterLibraryFolder = then || null; $('library-folder-dialog').showModal(); $('library-folder-input').focus();
+  }
+  $('library-folder').addEventListener('click', () => openLibraryFolderDialog(null));
+  $('library-folder-cancel').addEventListener('click', () => $('library-folder-dialog').close());
+  $('library-folder-confirm').addEventListener('click', async () => {
+    try { library = await api('/api/library/folder', {folder: $('library-folder-input').value, confirm: true}); $('library-folder-dialog').close(); await refreshLibrary(); const then = state.afterLibraryFolder; state.afterLibraryFolder = null; if (then) then(); }
+    catch (error) { $('library-folder-note').textContent = error.message; }
+  });
+  // Starter cells.
+  $('library-seed').addEventListener('click', () => { $('library-seed-dialog').showModal(); $('library-seed-cancel').focus(); });
+  $('library-seed-cancel').addEventListener('click', () => $('library-seed-dialog').close());
+  $('library-seed-confirm').addEventListener('click', async () => {
+    $('library-seed-dialog').close();
+    try { const r = await api('/api/library/seed', {confirm: true}); toast(r.added.length ? `Added ${r.added.length} starter cells.` : 'The starter cells were already in your Library.'); refreshLibrary(); } catch (error) { toast(error.message); }
+  });
+  // Save / push a cell of this graph.
+  function openLibrarySaveDialog(push) {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    if (!library.configured) { openLibraryFolderDialog(() => openLibrarySaveDialog(push)); return; }
+    const link = state.libraryLinks[sel.id]; const own = meta(cellOf(sel));
+    state.librarySave = {node: sel.id, push: !!push && !!link};
+    $('library-save-intro').textContent = push && link ? `Saves the edited code of "${titleOf(sel)}" as ${link.name} v${link.latest + 1}. Other Mainbooks that use it will show "the library has v${link.latest + 1}".` : `Saves "${titleOf(sel)}" (code, title, inputs → outputs) as a new library cell.`;
+    $('library-name').value = push && link ? link.name : (own.title || sel.id).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); $('library-name').readOnly = !!(push && link);
+    const existing = link && library.cells.find(c => c.name === link.name);
+    $('library-tags').value = existing ? existing.tags.join(', ') : ''; $('library-description').value = existing ? existing.description : '';
+    $('library-save-note').textContent = 'Letters, digits, dashes and underscores. The file becomes name.cell.json.';
+    $('library-save-dialog').showModal(); (push && link ? $('library-description') : $('library-name')).focus();
+  }
+  $('lib-save').addEventListener('click', () => openLibrarySaveDialog(false));
+  $('lib-push').addEventListener('click', () => openLibrarySaveDialog(true));
+  $('library-save-cancel').addEventListener('click', () => $('library-save-dialog').close());
+  $('library-save-confirm').addEventListener('click', async () => {
+    const job = state.librarySave; if (!job) return;
+    const name = $('library-name').value.trim(); if (!name) { $('library-save-note').textContent = 'Enter a name.'; return; }
+    const tags = $('library-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+    if (state.dirty) { clearTimeout(state.saveTimer); await save(); if (state.dirty) return; }
+    try {
+      let result;
+      try { result = await api('/api/library/save', {node: job.node, name, tags, description: $('library-description').value, overwrite: job.push}); }
+      catch (error) { if (error.status === 409 && window.confirm(`A library cell named "${name}" exists. Save this as its next version?`)) result = await api('/api/library/save', {node: job.node, name, tags, description: $('library-description').value, overwrite: true}); else throw error; }
+      $('library-save-dialog').close(); await afterLibraryChange(result.view, job.node); toast(`Saved ${result.name} v${result.version} to the Library.`); refreshLibrary();
+    } catch (error) { $('library-save-note').textContent = error.message; }
+  });
+  $('lib-pull').addEventListener('click', async () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel) return; const link = state.libraryLinks[sel.id]; if (!link) return;
+    if (!window.confirm(`Replace the code of "${titleOf(sel)}" with ${link.name} v${link.latest} from the Library? Outputs are cleared.`)) return;
+    if (state.dirty) { clearTimeout(state.saveTimer); await save(); if (state.dirty) return; }
+    try { const data = await api('/api/library/pull', {node: sel.id}); await afterLibraryChange(data.view, sel.id); toast(`Updated to ${link.name} v${link.latest}.`); } catch (error) { toast(error.message); }
+  });
+
   // ---------------------------------------------------------------- session
   $('session-start').addEventListener('click', () => { $('session-dialog').showModal(); $('session-cancel').focus(); });
   $('session-cancel').addEventListener('click', () => $('session-dialog').close());
@@ -560,7 +680,7 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });

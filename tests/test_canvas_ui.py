@@ -29,7 +29,7 @@ class CanvasTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close(); cls.pw.stop(); cls.server.terminate()
+        cls.browser.close(); cls.pw.stop(); cls.server.terminate(); cls.server.wait(timeout=10)
 
     def setUp(self):
         self.page = self.browser.new_page(viewport={'width': 1400, 'height': 900})
@@ -103,3 +103,87 @@ class CanvasTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class LibraryPanelTests(unittest.TestCase):
+    """The Library panel against the real local service (in-process), signed in with the owner key."""
+    @classmethod
+    def setUpClass(cls):
+        import tempfile, threading
+        from pathlib import Path
+        from unittest.mock import patch
+        from local_lab.server import LabServer, initialize_state
+        cls.tmp = tempfile.TemporaryDirectory(); cls.root = Path(cls.tmp.name).resolve()
+        state, key = initialize_state(cls.root / 'private'); cls.key = key
+        cls.home = patch.object(Path, 'home', return_value=cls.root); cls.home.start()
+        cls.server = LabServer(('127.0.0.1', 0), state, key)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True); cls.thread.start()
+        cls.origin = f'http://127.0.0.1:{cls.server.server_port}'
+        cls.pw = sync_playwright().start(); cls.browser = cls.pw.chromium.launch()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close(); cls.pw.stop(); cls.server.shutdown(); cls.server.server_close(); cls.thread.join(); cls.home.stop(); cls.tmp.cleanup()
+
+    def setUp(self):
+        self.page = self.browser.new_page(viewport={'width': 1400, 'height': 900})
+        self.page.goto(self.origin + '/graph')
+        # Sign in from inside the page (same-origin, so the cookie and CSRF flow are the real ones), then reload the canvas.
+        self.page.evaluate("key => fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({key})}).then(r => r.json())", self.key)
+        self.page.goto(self.origin + '/graph'); self.page.wait_for_selector('.node.code'); self.page.wait_for_timeout(300)
+
+    def tearDown(self):
+        self.page.close()
+
+    def test_approve_folder_seed_insert_edit_push_pull(self):
+        p = self.page
+        # 1. Not configured: the panel offers to choose a folder; approving uses the default next to Mainbooks.
+        self.assertFalse(p.locator('#library-folder').is_hidden()); self.assertTrue(p.locator('#library-seed').is_hidden())
+        p.click('#library-folder'); p.wait_for_selector('#library-folder-dialog[open]')
+        self.assertTrue(p.input_value('#library-folder-input').endswith('Library'))
+        p.click('#library-folder-confirm'); p.wait_for_selector('#library-seed:not([hidden])')
+        self.assertIn('(empty)', p.inner_text('#library-note'))
+        # 2. Starter cells need an explicit approval, then appear in the list.
+        p.click('#library-seed'); p.wait_for_selector('#library-seed-dialog[open]'); p.click('#library-seed-confirm')
+        p.wait_for_function("() => document.querySelectorAll('#library-list li').length === 6", timeout=10000)
+        p.fill('#library-search', 'logistic'); p.wait_for_function("() => document.querySelectorAll('#library-list li').length === 1")
+        self.assertEqual(p.inner_text('#library-list li b'), 'Train classifier')
+        p.fill('#library-search', ''); p.wait_for_function("() => document.querySelectorAll('#library-list li').length === 6")
+        # 3. Insert after the selected cell: new node between cell-1 and Finish, linked and current.
+        p.locator('.node[data-id="cell-1"] .node-foot').click()
+        p.locator('#library-list li[data-name="load-data"] .lib-insert').click()
+        p.wait_for_selector('.node[data-id="load-data"]')
+        self.assertEqual(p.inner_text('.node[data-id="load-data"] .node-head b'), 'Load data')
+        self.assertEqual(p.inner_text('#node-library'), 'load-data v1 · up to date')
+        pairs = p.evaluate("() => [...document.querySelectorAll('#edge-layer path.control')].map(x => x.dataset.id)")
+        self.assertTrue(any('cell-1' in e and 'load-data' in e or e.startswith('e') for e in pairs))
+        self.assertTrue(p.locator('#lib-pull').is_hidden()); self.assertTrue(p.locator('#lib-push').is_hidden())
+        # 4. Edit the inserted cell: the link reports "edited here" and offers Push.
+        area = p.locator('.node[data-id="load-data"] textarea'); area.click(); area.press('End'); area.type('\nprint("edited")')
+        p.wait_for_function("() => document.getElementById('node-library').dataset.state === 'modified'", timeout=5000)
+        self.assertFalse(p.locator('#lib-push').is_hidden())
+        p.click('#lib-push'); p.wait_for_selector('#library-save-dialog[open]')
+        self.assertEqual(p.input_value('#library-name'), 'load-data'); self.assertIn('v2', p.inner_text('#library-save-intro'))
+        p.fill('#library-description', 'edited in a test'); p.click('#library-save-confirm')
+        p.wait_for_function("() => document.getElementById('node-library').textContent.includes('v2 · up to date')")
+        p.wait_for_function("() => [...document.querySelectorAll('#library-list li')].some(li => li.textContent.includes('load-data v2'))")
+        # 5. Another graph with v1 is "behind": simulate by inserting from the list after dropping the link to v1 on the server copy.
+        self.server.graph_doc['notebook']['cells'][-1]['metadata']['mainaiger']['library']['version'] = 1
+        self.server.graph_doc['notebook']['cells'][-1]['metadata']['mainaiger']['library']['source_hash'] = 'ffffffff'
+        self.server.graph_doc['notebook']['cells'][-1]['source'] = 'x'  # matches nothing, so it would be "modified"; set hash to match instead
+        import local_lab.graph as g
+        self.server.graph_doc['notebook']['cells'][-1]['metadata']['mainaiger']['library']['source_hash'] = g.source_hash('x')
+        p.reload(); p.wait_for_selector('.node[data-id="load-data"]'); p.locator('.node[data-id="load-data"] .node-foot').click()
+        p.wait_for_function("() => document.getElementById('node-library').dataset.state === 'behind'")
+        self.assertFalse(p.locator('#lib-pull').is_hidden())
+        p.once('dialog', lambda d: d.accept()); p.click('#lib-pull')
+        p.wait_for_function("() => document.getElementById('node-library').textContent.includes('v2 · up to date')")
+        self.assertIn('print("edited")', p.input_value('.node[data-id="load-data"] textarea'))
+        # 6. Drag a library cell onto the canvas: a new unchained node appears where it was dropped.
+        before = p.evaluate("() => document.querySelectorAll('.node').length")
+        src = p.locator('#library-list li[data-name="report"]'); src.drag_to(p.locator('#viewport'), target_position={'x': 700, 'y': 500})
+        p.wait_for_function("n => document.querySelectorAll('.node').length === n + 1", arg=before)
+        self.assertIsNotNone(p.query_selector('.node[data-id="report"]'))
+        rect = p.evaluate("() => { const r = document.querySelector('.node[data-id=\"report\"]').getBoundingClientRect(); const v = document.getElementById('viewport').getBoundingClientRect(); return {x: r.left - v.left, y: r.top - v.top}; }")
+        self.assertLess(abs(rect['x'] + 160 - 700), 60); self.assertLess(abs(rect['y'] + 20 - 500), 60)

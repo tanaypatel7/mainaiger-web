@@ -1,0 +1,22 @@
+{
+ "format": "mainaiger-cell",
+ "schema_version": 1,
+ "name": "evaluate",
+ "title": "Evaluate",
+ "cell_type": "code",
+ "source": "pred = [model[\"predict\"](x) for x in X_test]\ntp = sum(1 for p, t in zip(pred, y_test) if p == 1 and t == 1)\ntn = sum(1 for p, t in zip(pred, y_test) if p == 0 and t == 0)\nfp = sum(1 for p, t in zip(pred, y_test) if p == 1 and t == 0)\nfn = sum(1 for p, t in zip(pred, y_test) if p == 0 and t == 1)\nprecision = tp / (tp + fp) if tp + fp else 0.0\nrecall = tp / (tp + fn) if tp + fn else 0.0\nmetrics = {\"accuracy\": (tp + tn) / len(y_test), \"precision\": precision, \"recall\": recall,\n           \"f1\": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,\n           \"confusion\": {\"tp\": tp, \"tn\": tn, \"fp\": fp, \"fn\": fn}}\nprint({k: (round(v, 3) if isinstance(v, float) else v) for k, v in metrics.items()})\n",
+ "inputs": [
+  "model",
+  "X_test",
+  "y_test"
+ ],
+ "outputs": [
+  "metrics"
+ ],
+ "tags": [
+  "ml",
+  "metrics"
+ ],
+ "description": "Accuracy, precision, recall and F1 on the held-out set. Defines `metrics`.",
+ "version": 1
+}

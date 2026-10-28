@@ -1,0 +1,19 @@
+{
+ "format": "mainaiger-cell",
+ "schema_version": 1,
+ "name": "report",
+ "title": "Report",
+ "cell_type": "code",
+ "source": "print(\"=\" * 40)\nprint(\"Classification report\")\nprint(\"=\" * 40)\nfor key in (\"accuracy\", \"precision\", \"recall\", \"f1\"):\n    print(f\"{key:>10}: {metrics[key]:.3f}\")\nc = metrics[\"confusion\"]\nprint(f\"confusion: tp={c['tp']} fp={c['fp']} fn={c['fn']} tn={c['tn']}\")\nprint(\"weights:\", [round(w, 3) for w in model[\"weights\"]], \"bias:\", round(model[\"bias\"], 3))\n",
+ "inputs": [
+  "metrics",
+  "model"
+ ],
+ "outputs": [],
+ "tags": [
+  "ml",
+  "report"
+ ],
+ "description": "Prints a short text report from `metrics` and `model`. Reads only; defines nothing new.",
+ "version": 1
+}

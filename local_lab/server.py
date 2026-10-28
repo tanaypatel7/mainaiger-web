@@ -18,6 +18,7 @@ from . import setup as lab_setup
 from . import graph as graph_module
 from . import models as lab_models
 from . import mainbooks as lab_mainbooks
+from . import library as lab_library
 from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
@@ -81,7 +82,19 @@ class LabServer(ThreadingHTTPServer):
         with self.graph_lock:
             doc=graph_module.validate(self.graph_doc)
             return {'document':doc,'revision':self.graph_revision,'analysis':graph_module.analysis(doc),'data_edges':graph_module.data_edges(doc),
-                    'order':graph_module.order(doc),'disconnected':graph_module.disconnected(doc),'run':self.graph_run.snapshot() if self.graph_run else None}
+                    'order':graph_module.order(doc),'disconnected':graph_module.disconnected(doc),'run':self.graph_run.snapshot() if self.graph_run else None,
+                    'library':self.library_links(doc)}
+    def library_links(self,doc):
+        # node id -> link info for cells that came from (or were saved to) the library: {name, version, state}
+        # where state is current | behind | modified | missing (see library.link_state).
+        try:by_name={r['name']:r for r in lab_library.listing(self.state_dir)}
+        except OSError:by_name={}
+        out={}
+        for node in doc['graph']['nodes']:
+            if node['kind'] not in ('code','markdown'):continue
+            cell=doc['notebook']['cells'][node['cell_index']];link=lab_library.link_of(cell)
+            if link:out[node['id']]={'name':link['name'],'version':link['version'],'state':lab_library.link_state(cell,by_name),'latest':by_name[link['name']]['version'] if link['name'] in by_name else None}
+        return out
     def graph_running(self):
         return self.graph_run is not None and self.graph_run.state in ('pending','running')
     def set_graph(self,document):
@@ -238,6 +251,16 @@ class LabHandler(BaseHTTPRequestHandler):
             name=__import__('urllib.parse').parse.unquote(path[len('/api/mainbooks/'):])
             try:return self.out(200,{'document':lab_mainbooks.load(self.server.state_dir,name),'name':name})
             except lab_mainbooks.MainbookError as e:return self.out(404,{'error':str(e)})
+        if path=='/api/library':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            query=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query).get('q',[''])[0][:200]
+            data=lab_library.status(self.server.state_dir);data['cells']=lab_library.listing(self.server.state_dir,query);data['query']=query
+            return self.out(200,data)
+        if path.startswith('/api/library/'):
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            name=__import__('urllib.parse').parse.unquote(path[len('/api/library/'):])
+            try:return self.out(200,{'cell':lab_library.load(self.server.state_dir,name)})
+            except lab_library.LibraryError as e:return self.out(404,{'error':str(e)})
         if path=='/api/examples':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             items=[]
@@ -374,6 +397,54 @@ class LabHandler(BaseHTTPRequestHandler):
                     except OSError as e:return self.out(400,{'error':'The Mainbook could not be written: %s'%e})
                     self.server.graph_doc=result['document']
                 return self.out(200,{'name':result['name'],'path':result['path'],'bytes':result['bytes']})
+            if path=='/api/library/folder':
+                if set(data)!={'folder','confirm'} or data['confirm'] is not True:raise ValueError('Confirm the folder choice')
+                try:return self.out(200,lab_library.configure(self.server.state_dir,data['folder']))
+                except lab_library.LibraryError as e:return self.out(400,{'error':str(e)})
+                except OSError as e:return self.out(400,{'error':'The folder could not be created: %s'%e})
+            if path=='/api/library/seed':
+                if set(data)!={'confirm'} or data['confirm'] is not True:raise ValueError('Confirm adding the starter cells')
+                try:return self.out(200,lab_library.seed(self.server.state_dir))
+                except lab_library.LibraryError as e:return self.out(400,{'error':str(e)})
+                except OSError as e:return self.out(400,{'error':'The starter cells could not be written: %s'%e})
+            if path=='/api/library/save':
+                # Save one code cell of the current graph as a library cell (new name: version 1; existing name + overwrite: next version).
+                if set(data)-{'node','name','tags','description','overwrite'} or not {'node','name'}<=set(data) or not isinstance(data.get('overwrite',False),bool):raise ValueError('Send {node, name, tags, description, overwrite}')
+                with self.server.graph_lock:
+                    try:
+                        record=lab_library.record_from_cell(self.server.graph_doc,data['node'],data['name'],data.get('tags'),data.get('description',''))
+                        result=lab_library.save(self.server.state_dir,record,bool(data.get('overwrite',False)))
+                        # The saved cell now carries a link to the version it became.
+                        node=graph_module.node_by_id(self.server.graph_doc,data['node']);cell=self.server.graph_doc['notebook']['cells'][node['cell_index']]
+                        cell.setdefault('metadata',{}).setdefault('mainaiger',{})['library']={'name':result['record']['name'],'version':result['record']['version'],'source_hash':result['record']['source_hash']}
+                        self.server.graph_revision+=1
+                    except lab_library.LibraryError as e:return self.out(409 if 'already exists' in str(e) else 400,{'error':str(e)})
+                    except OSError as e:return self.out(400,{'error':'The library cell could not be written: %s'%e})
+                    view=self.server.graph_view()
+                return self.out(200,{'name':result['record']['name'],'version':result['record']['version'],'path':result['path'],'view':view})
+            if path=='/api/library/insert':
+                if set(data)-{'name','position','after'} or not {'name','position'}<=set(data):raise ValueError('Send {name, position, after}')
+                with self.server.graph_lock:
+                    if self.server.graph_running():return self.out(409,{'error':'A graph run is in progress; cancel it before editing'})
+                    try:
+                        record=lab_library.load(self.server.state_dir,data['name'])
+                        doc,node_id=lab_library.insert(self.server.graph_doc,record,data['position'],data.get('after'))
+                    except (lab_library.LibraryError,graph_module.GraphError) as e:return self.out(400,{'error':str(e)})
+                    self.server.graph_doc=doc;self.server.graph_revision+=1
+                    view=self.server.graph_view()
+                return self.out(200,{'node':node_id,'view':view})
+            if path=='/api/library/pull':
+                if set(data)!={'node'}:raise ValueError('Send {node}')
+                with self.server.graph_lock:
+                    if self.server.graph_running():return self.out(409,{'error':'A graph run is in progress; cancel it before editing'})
+                    try:
+                        node=graph_module.node_by_id(self.server.graph_doc,data['node']);link=node and lab_library.link_of(self.server.graph_doc['notebook']['cells'][node['cell_index']])
+                        if not link:return self.out(400,{'error':'That cell is not linked to a library cell'})
+                        doc=lab_library.pull(self.server.graph_doc,data['node'],lab_library.load(self.server.state_dir,link['name']))
+                    except (lab_library.LibraryError,graph_module.GraphError) as e:return self.out(400,{'error':str(e)})
+                    self.server.graph_doc=doc;self.server.graph_revision+=1
+                    view=self.server.graph_view()
+                return self.out(200,{'view':view})
             if path=='/api/graph/import':
                 if set(data)!={'notebook'}:raise ValueError('Send {notebook}')
                 try:document,report=graph_module.from_notebook(data['notebook'])

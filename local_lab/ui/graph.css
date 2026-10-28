@@ -20,7 +20,7 @@ button.small{padding:6px 12px;font-size:13px}
 .edge.control{stroke:var(--muted);stroke-width:2;marker-end:url(#arrow)}.edge.control.selected{stroke:var(--purple);stroke-width:3}
 .edge.data{stroke:var(--data);stroke-width:1.5;stroke-dasharray:5 4;opacity:.75}
 .edge.fired{stroke:var(--ok);stroke-width:3;marker-end:url(#arrow-fired);stroke-dasharray:10 6;animation:flow 1.2s linear infinite}
-.edge.pending{stroke:var(--purple);stroke-width:2;stroke-dasharray:6 4;pointer-events:none}
+.edge.pending{stroke:var(--purple);stroke-width:2;stroke-dasharray:6 4;pointer-events:none;display:none}.edge.pending.active{display:inline}
 #arrow path{fill:var(--muted)}#arrow-fired path{fill:var(--ok)}
 .edge-label{font-size:11px;fill:var(--data);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;paint-order:stroke;stroke:var(--soft);stroke-width:4px;stroke-linejoin:round}
 @keyframes flow{to{stroke-dashoffset:-32}}
@@ -81,3 +81,15 @@ body[data-view="notebook"] .viewport{background-image:none;cursor:default}body[d
 
 #help-toggle{width:30px;padding:6px 0;text-align:center;font-weight:700}#help-toggle[aria-expanded="true"]{background:var(--purple);color:var(--bg)}
 @media(max-width:900px){.toolbar{gap:8px 12px}.group-label{display:none}}
+
+/* Library panel */
+.lib-toolbar{display:flex;gap:6px;margin:6px 0}.lib-toolbar input{flex:1;padding:7px 9px;font-size:13px}
+.library-list{list-style:none;margin:0;padding:0;max-height:40vh;overflow:auto}
+.library-list li{border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:6px 0;cursor:grab;background:var(--bg)}
+.library-list li:active{cursor:grabbing}.library-list li.dragging{opacity:.5}
+.library-list .lib-title{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:13px}.library-list .lib-title b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.library-list .lib-meta{font-size:11px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;margin-top:3px;word-break:break-word}
+.library-list .lib-desc{font-size:12px;color:var(--muted);margin-top:3px}
+.lib-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.viewport.drop-target{outline:2px dashed var(--purple);outline-offset:-4px}
+#node-library[data-state="behind"]{color:var(--warn)}#node-library[data-state="modified"]{color:var(--purple)}#node-library[data-state="missing"]{color:var(--err)}

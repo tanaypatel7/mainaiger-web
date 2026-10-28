@@ -1,0 +1,22 @@
+{
+ "format": "mainaiger-cell",
+ "schema_version": 1,
+ "name": "extract-features",
+ "title": "Extract features",
+ "cell_type": "code",
+ "source": "# From rows -> X (list of feature lists) and y (labels). Adds x1*x2 and standardises columns.\nraw = [feat + [feat[0] * feat[1]] for feat, _ in rows]\ny = [label for _, label in rows]\ncols = list(zip(*raw))\nmeans = [sum(c) / len(c) for c in cols]\nstds = [max(1e-9, (sum((v - m) ** 2 for v in c) / len(c)) ** 0.5) for c, m in zip(cols, means)]\nX = [[(v - m) / s for v, m, s in zip(r, means, stds)] for r in raw]\nfeature_names = [\"x1\", \"x2\", \"x1*x2\"]\nprint(f\"{len(X)} samples x {len(feature_names)} features: {feature_names}\")\n",
+ "inputs": [
+  "rows"
+ ],
+ "outputs": [
+  "X",
+  "y",
+  "feature_names"
+ ],
+ "tags": [
+  "ml",
+  "features"
+ ],
+ "description": "Turns `rows` into a feature matrix `X` and labels `y`, adding one derived feature (the product of the two inputs) and standardising each column.",
+ "version": 1
+}
