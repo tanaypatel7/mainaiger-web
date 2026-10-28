@@ -88,8 +88,9 @@ most 100); the canvas draws it around the right side with a `↻ n/max` label.
 `MAX_STEPS` (500) per run is the hard cap. The review dialog lists loops and
 conditions; the journal records every decision; cells behind an untaken
 branch are `idle`. See `docs/LOCAL_LAB_SETUP.md` "Loop arrows and
-conditions". Still future: a self-loop on one cell, nested graphs ("a cell
-whose code is another Mainbook").
+conditions". Nested graphs ("a cell whose code is another Mainbook") were
+built the same day ("Nested Mainbooks" in the same guide). Still future: a
+self-loop on one cell.
 
 *Why expression-on-edge rather than a flag variable:* the edge then shows its own
 reason on the canvas ("retrain while `metrics['accuracy'] < 0.9`"), which is the

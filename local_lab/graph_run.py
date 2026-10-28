@@ -31,7 +31,8 @@ import time
 from .kernel_session import KernelError
 from . import graph as graph_module
 
-MAX_STEPS = 500  # cell executions per run, counting every loop pass: the stop under any budget mistake
+MAX_STEPS = 500  # cell executions per run, counting every loop pass and every nested Mainbook: the stop under any budget mistake
+MAX_DEPTH = 3    # nested Mainbooks: a cell runs a Mainbook whose cell runs a Mainbook, and no deeper
 SETTLED = ('fired', 'not_fired', 'idle', 'blocked', 'exhausted', 'error')
 
 
@@ -44,10 +45,16 @@ class ConditionError(Exception):
 
 
 class GraphRun:
-    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None, on_edge=None, bindings=None, reason=None):
+    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None, on_edge=None, bindings=None, reason=None,
+                 load_mainbook=None, on_inner=None, depth=0, ancestry=(), budget=None):
         self.id = 'run-' + secrets.token_hex(4)
         self.document, self.plan, self.kernel, self.mode = document, list(plan_ids), kernel, mode
         self.on_result = on_result
+        # Nested Mainbooks: load_mainbook(name) returns a validated document; on_inner(parent_ident, name, ident, result)
+        # hears every inner cell result (for the journal). The step budget is shared down the nesting.
+        self.load_mainbook, self.on_inner, self.depth, self.ancestry = load_mainbook, on_inner, depth, tuple(ancestry)
+        self.budget = budget if budget is not None else {'steps': 0}
+        self.inner = None
         # bindings: variables an event binds in the active session before the first cell (local_lab/events.py);
         # reason: why this run started ("fired by timer"), shown in the snapshot and the journal.
         self.bindings = dict(bindings) if bindings else None
@@ -100,13 +107,22 @@ class GraphRun:
         return self
 
     def cancel(self):
-        """Stop after the current cell: interrupt it and skip the rest."""
+        """Stop after the current cell: interrupt it and skip the rest (a nested Mainbook is cancelled too)."""
         self.cancel_requested = True
+        inner = self.inner
+        if inner is not None:
+            inner.cancel()
         if self.state == 'running':
             kernel = self.current_kernel or self.kernel
             if kernel is not None:
                 kernel.interrupt()
         return True
+
+    def run_inline(self):
+        """Run on the calling thread (a nested Mainbook runs inside its parent's cell)."""
+        self.state, self.started_at = 'running', time.time()
+        self._run()
+        return self.state
 
     def wait(self, timeout=None):
         if self.thread is not None:
@@ -212,16 +228,67 @@ class GraphRun:
                 'elapsed_ms': int((time.time() - started) * 1000), 'model': answer.get('model', cfg['model']), 'attempts': answer.get('attempts'),
                 'note': 'Bound to %s in the session (model %s%s).' % (cfg['output'], answer.get('model', cfg['model']), ', schema-checked' if cfg.get('schema') else '')}
 
+    def _mainbook_cell(self, ident, book):
+        """Run a saved Mainbook, whole, inside this cell: same sessions, shared step budget, its own loops and arrows."""
+        started = time.time()
+        name = book['name']
+        def failed(message, kind='MainbookError', status='error'):
+            return {'status': status, 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': int((time.time() - started) * 1000),
+                    'error': {'ename': kind, 'evalue': message, 'traceback': []}, 'mainbook': name}
+        if self.load_mainbook is None:
+            return failed('This Lab cannot load Mainbooks here')
+        if name in self.ancestry:
+            return failed('Mainbook "%s" would run itself (%s); a Mainbook cannot include itself' % (name, ' → '.join(self.ancestry + (name,))))
+        if self.depth + 1 >= MAX_DEPTH:
+            return failed('Mainbooks nest at most %d deep' % MAX_DEPTH)
+        try:
+            inner_doc = self.load_mainbook(name)
+            plan = graph_module.plan(inner_doc, 'all')
+        except Exception as error:
+            return failed('Mainbook "%s" could not be loaded: %s' % (name, error))
+        if not plan:
+            return failed('Mainbook "%s" has no code cells reachable from Start' % name)
+        inner = GraphRun(inner_doc, plan, self.kernel, mode='all', kernel_for=self.kernel_for, ask_model=self.ask_model, on_edge=self.on_edge,
+                         on_result=(lambda i, r: self.on_inner(ident, name, i, r)) if self.on_inner else None,
+                         load_mainbook=self.load_mainbook, on_inner=self.on_inner, depth=self.depth + 1, ancestry=self.ancestry + (name,), budget=self.budget)
+        self.inner = inner
+        try:
+            inner.run_inline()
+        finally:
+            self.inner = None
+        snap = inner.snapshot()
+        lines = []
+        for inner_ident in inner.plan:
+            entry = snap['nodes'].get(inner_ident) or {}
+            first = (entry.get('output') or '').strip().splitlines()
+            lines.append('%s: %s%s%s' % (inner._title(inner_ident), entry.get('status', 'pending'), (' · %d ms' % entry['elapsed_ms']) if entry.get('elapsed_ms') is not None else '', (' · ' + first[0][:120]) if first else ''))
+        ok = sum(1 for n in snap['nodes'].values() if n.get('status') == 'ok')
+        summary = 'Mainbook "%s": %s · %d/%d ok · %d step%s%s' % (name, snap['state'], ok, len(inner.plan), snap['steps'], '' if snap['steps'] == 1 else 's', (' · ' + snap['error']) if snap.get('error') else '')
+        output = summary + '\n' + '\n'.join(lines) + '\n'
+        compact = {'name': name, 'state': snap['state'], 'steps': snap['steps'], 'error': snap.get('error'), 'edges': snap['edges'], 'fired': snap['fired'],
+                   'nodes': {i: {k: (v[:300] if k == 'output' and isinstance(v, str) else v) for k, v in n.items() if k in ('status', 'elapsed_ms', 'output', 'passes')} for i, n in snap['nodes'].items()}}
+        if snap['state'] == 'finished':
+            return {'status': 'ok', 'count': None, 'output': output, 'truncated': False, 'error': None, 'elapsed_ms': int((time.time() - started) * 1000), 'mainbook': name, 'sub': compact,
+                    'note': 'Ran Mainbook "%s" in this session (%d cells).' % (name, len(inner.plan))}
+        status = 'interrupted' if snap['state'] == 'cancelled' else 'error'
+        result = failed(snap.get('error') or 'Mainbook "%s" %s' % (name, snap['state']), status=status)
+        result['output'] = output
+        result['sub'] = compact
+        return result
+
     def _execute(self, ident):
-        """Run one cell (code, form or model) in its session; returns the result dict."""
+        """Run one cell (code, form, model or nested Mainbook) in its session; returns the result dict."""
         source = self._source(ident)
         label = graph_module.session_of(self.document, ident)
         cfg = graph_module.model_config(self._cell(ident))
         form = graph_module.form_config(self._cell(ident))
+        book = graph_module.mainbook_config(self._cell(ident))
         if form:
             # Bind the form's values first; the cell's own code (if any) runs after them in the same request.
             source = graph_module.form_prelude(form) + source
-        if cfg:
+        if book:
+            result = self._mainbook_cell(ident, book)
+        elif cfg:
             result = self._model_cell(ident, cfg, source, label)
         elif not source.strip():
             result = {'status': 'ok', 'count': None, 'output': '', 'truncated': False, 'error': None, 'elapsed_ms': 0,
@@ -363,12 +430,13 @@ class GraphRun:
                     self._settle_idle(ident)
                     continue
                 self.seeds.discard(ident)
-                if self.steps >= MAX_STEPS:
+                if self.budget['steps'] >= MAX_STEPS:
                     self._skip_pending('skipped')
                     self.state = 'failed'
                     self.error = 'The run stopped after %d cell executions (the limit); check the loop budgets.' % MAX_STEPS
                     return
                 self.steps += 1
+                self.budget['steps'] += 1
                 self.current = ident
                 with self.lock:
                     passes = self.nodes[ident].get('passes', 0)
@@ -384,9 +452,11 @@ class GraphRun:
                     except Exception:  # recording must never break the run
                         pass
                 if result['status'] != 'ok':
-                    self._skip_pending('skipped')
-                    self.state = 'cancelled' if result['status'] == 'interrupted' and self.cancel_requested else 'failed'
-                    self.error = '%s stopped the run (%s).' % (self._title(ident), result['status'])
+                    cancelled = result['status'] == 'interrupted' and self.cancel_requested
+                    self._skip_pending('cancelled' if cancelled else 'skipped')
+                    self.state = 'cancelled' if cancelled else 'failed'
+                    why = (result.get('error') or {}).get('evalue') or ''
+                    self.error = '%s stopped the run (%s)%s' % (self._title(ident), result['status'], (': ' + why[:300]) if why and not cancelled else '.')
                     return
                 self._fire_from(ident)
             self.state = 'finished'

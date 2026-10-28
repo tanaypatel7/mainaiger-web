@@ -31,6 +31,7 @@ SCHEMA_VERSION = 2
 NODE_KINDS = {'start', 'finish', 'code', 'markdown'}
 EDGE_KINDS = {'control', 'data'}
 MAX_CONDITION = 300         # characters of a trigger condition (one Python expression)
+MAX_NESTING = 3             # a Mainbook inside a Mainbook inside a Mainbook, and no deeper
 LOOP_DEFAULT_FIRES = 3      # a loop arrow drawn without a budget runs back this many times at most
 LOOP_MAX_FIRES = 100
 MAX_NODES, MAX_EDGES, MAX_SOURCE = 200, 1000, 100000
@@ -80,6 +81,7 @@ def form_prelude(form):
 MODEL_NAME = re.compile(r'^[a-z0-9][a-z0-9._/-]{0,80}(:[a-z0-9][a-z0-9._-]{0,40})?$')
 PLACEHOLDER = re.compile(r'\{\{\s*(var|output)\s*:\s*([^{}\n]+?)\s*\}\}')  # {{output:Cell title with spaces}} / {{var:name}}
 SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}(/[A-Za-z0-9][A-Za-z0-9 _-]{0,30})?$')  # "label" or "device/label"
+MAINBOOK_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,80}$')  # a saved Mainbook a cell may run (local_lab/mainbooks.py NAME)
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
 
@@ -223,6 +225,16 @@ def validate(document):
                         _require(_form_value_ok(f['type'], values[f['name']], f.get('options')), 'Cell %d: value of "%s" does not fit its type' % (i, f['name']))
                         clean_values[f['name']] = values[f['name']]
                 own['form'] = {'fields': fields, 'values': clean_values}
+        if 'mainbook' in own:
+            # A nested Mainbook: the cell runs a saved Mainbook (all of it) in the same session; its code is ignored.
+            book = own['mainbook']
+            if book in (None, False, {}, ''):
+                del own['mainbook']
+            else:
+                _require(isinstance(book, dict) and set(book) == {'name'} and isinstance(book['name'], str) and MAINBOOK_NAME.match(book['name']) and book['name'].strip() == book['name'],
+                         'Cell %d mainbook must be {name: <a saved Mainbook>}' % i)
+                _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can run a Mainbook' % i)
+                _require('model' not in own and 'form' not in own, 'Cell %d: a cell runs a Mainbook, asks a model or carries a form, not several' % i)
         if 'session' in own:
             # The label of the session this cell runs on; absent means "the active session".
             if own['session'] in (None, ''):
@@ -432,11 +444,53 @@ def prompt_placeholders(text):
     return list(dict.fromkeys((m.group(1), m.group(2)) for m in PLACEHOLDER.finditer(text or '')))
 
 
-def declared(doc, node_id):
-    """Inputs/outputs for a code node: the cell's declaration if set, else the analysis."""
+def mainbook_config(cell):
+    own = cell.get('metadata', {}).get('mainaiger', {}) or {}
+    book = own.get('mainbook')
+    return book if isinstance(book, dict) and book.get('name') else None
+
+
+def _inner_names(inner, resolve, depth):
+    """What a whole Mainbook reads from the session and defines in it, from its own analysis."""
+    info = analysis(inner, resolve, depth + 1)
+    produced, needed = set(), []
+    for ident in order(inner):
+        if ident not in info:
+            continue
+        for name in info[ident]['inputs']:
+            if name not in produced and name not in needed:
+                needed.append(name)
+        produced.update(info[ident]['outputs'])
+    return needed, sorted(produced)
+
+
+def declared(doc, node_id, resolve=None, depth=0):
+    """Inputs/outputs for a code node: the cell's declaration if set, else the analysis.
+    ``resolve(name)`` loads a saved Mainbook (or returns None) so a nested-Mainbook cell reads as its contents."""
     node = node_by_id(doc, node_id)
     cell = doc['notebook']['cells'][node['cell_index']]
     own = cell.get('metadata', {}).get('mainaiger', {})
+    book = mainbook_config(cell)
+    if book:
+        result = {'inputs': [], 'outputs': [], 'error': None, 'mainbook': book['name'], 'declared': False, 'resolved': False}
+        inner = None
+        if resolve is not None and depth < MAX_NESTING:
+            try:
+                inner = resolve(book['name'])
+            except Exception as error:  # a missing or broken Mainbook is reported on the card, not raised
+                result['error'] = 'Mainbook "%s": %s' % (book['name'], error)
+        if inner is not None:
+            result['inputs'], result['outputs'] = _inner_names(inner, resolve, depth)
+            result['resolved'] = True
+            result['cells'] = len(code_nodes(inner))
+        elif result['error'] is None:
+            result['error'] = None if resolve is None else 'Mainbook "%s" was not found' % book['name']
+        if 'inputs' in own:
+            result['inputs'] = list(own['inputs'])
+        if 'outputs' in own:
+            result['outputs'] = list(own['outputs'])
+        result['declared'] = 'inputs' in own or 'outputs' in own
+        return result
     cfg = model_config(cell)
     if cfg:
         # The source is a prompt: it reads the variables it mentions and defines the output name.
@@ -460,8 +514,19 @@ def declared(doc, node_id):
     return result
 
 
-def analysis(doc):
-    return {node['id']: declared(doc, node['id']) for node in doc['graph']['nodes'] if node['kind'] == 'code'}
+def analysis(doc, resolve=None, depth=0):
+    return {node['id']: declared(doc, node['id'], resolve, depth) for node in doc['graph']['nodes'] if node['kind'] == 'code'}
+
+
+def mainbook_cells(doc):
+    """[(node id, Mainbook name)] for the cells that run another Mainbook."""
+    out = []
+    for node in doc['graph']['nodes']:
+        if node['kind'] == 'code':
+            book = mainbook_config(doc['notebook']['cells'][node['cell_index']])
+            if book:
+                out.append((node['id'], book['name']))
+    return out
 
 
 # ---------------------------------------------------------------- scheduling
@@ -595,9 +660,9 @@ def cross_session(doc, plan_ids):
     return out
 
 
-def data_edges(doc):
+def data_edges(doc, resolve=None):
     """Derived data edges: nearest upstream producer for each input of each code node."""
-    info = analysis(doc)
+    info = analysis(doc, resolve)
     topo = [ident for ident in order(doc) if ident in info]
     edges = []
     for index, consumer in enumerate(topo):
@@ -619,9 +684,9 @@ def data_edges(doc):
     return edges
 
 
-def preflight(doc, plan_ids, present_names=()):
+def preflight(doc, plan_ids, present_names=(), resolve=None):
     """Which declared inputs would be missing if plan_ids ran now, and who could produce them."""
-    info = analysis(doc)
+    info = analysis(doc, resolve)
     produced, missing, from_session = set(), [], []
     present = set(present_names)
     topo = [ident for ident in order(doc) if ident in info]

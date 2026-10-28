@@ -101,10 +101,14 @@ class LabServer(ThreadingHTTPServer):
     def kernel(self):
         """The active session's kernel (or None). Routes that predate multiple sessions use this."""
         return self.kernels.active_kernel()
+    def resolve_mainbook(self,name):
+        """A saved Mainbook for the analysis of a cell that runs it (None when missing or unreadable)."""
+        try:return lab_mainbooks.load(self.state_dir,name)
+        except lab_mainbooks.MainbookError:return None
     def graph_view(self):
         with self.graph_lock:
             doc=graph_module.validate(self.graph_doc)
-            return {'document':doc,'revision':self.graph_revision,'analysis':graph_module.analysis(doc),'data_edges':graph_module.data_edges(doc),
+            return {'document':doc,'revision':self.graph_revision,'analysis':graph_module.analysis(doc,self.resolve_mainbook),'data_edges':graph_module.data_edges(doc,self.resolve_mainbook),
                     'order':graph_module.order(doc),'disconnected':graph_module.disconnected(doc),'run':self.graph_run.snapshot() if self.graph_run else None,
                     'library':self.library_links(doc)}
     def library_links(self,doc):
@@ -137,11 +141,17 @@ class LabServer(ThreadingHTTPServer):
             if kernel is not None and kernel.alive and not kernel.executing:
                 try:present=[v['name'] for v in kernel.variables()]
                 except KernelError:present=[]
-            check=graph_module.preflight(doc,plan,present)
+            check=graph_module.preflight(doc,plan,present,self.resolve_mainbook)
             if include_prerequisites and check['prerequisites']:
                 plan=[i for i in graph_module.order(doc) if i in set(plan)|set(check['prerequisites'])]
-                check=graph_module.preflight(doc,plan,present)
+                check=graph_module.preflight(doc,plan,present,self.resolve_mainbook)
             check['mode']=mode
+            # Cells that run another Mainbook: named in the review; a missing one refuses the run.
+            books=[]
+            for ident,name in graph_module.mainbook_cells(doc):
+                if ident in set(plan):
+                    inner=self.resolve_mainbook(name);books.append({'node':ident,'name':name,'found':inner is not None,'cells':len(graph_module.code_nodes(inner)) if inner else 0,'self':name==(doc['notebook'].get('metadata',{}).get('mainaiger',{}).get('name') or '')})
+            check['mainbooks']=books;check['missing_mainbooks']=[b['name'] for b in books if not b['found']]
             # Cells may name the session they run on; data cannot cross sessions, and a named session must be running.
             check['sessions']={i:graph_module.session_of(doc,i) for i in plan if graph_module.session_of(doc,i)}
             check['cross_session']=graph_module.cross_session(doc,plan)
@@ -165,6 +175,7 @@ class LabServer(ThreadingHTTPServer):
             if not plan:raise graph_module.GraphError('Nothing to run: no code nodes are reachable in this plan')
             doc=self.graph_doc
             if check['missing_sessions']:raise KernelError('These cells name sessions that are not running: %s'%', '.join(check['missing_sessions']))
+            if check.get('missing_mainbooks'):raise graph_module.GraphError('These Mainbooks are not in the Mainbooks folder: %s'%', '.join(check['missing_mainbooks']))
             def record(ident,result):
                 with self.graph_lock:
                     graph_module.record_result(doc,ident,result)
@@ -181,7 +192,11 @@ class LabServer(ThreadingHTTPServer):
                 elif edge.get('loop'):text='Loop %s %s (%d/%d)%s'%(who,{'fired':'fired: running the body again','not_fired':'not taken','exhausted':'budget spent','blocked':'leads outside this run'}.get(state,state),info.get('fires',0),info.get('max_fires',0),(' · when %s → %s'%(edge['when'],info.get('value'))) if edge.get('when') else '')
                 else:text='Arrow %s %s · when %s → %s'%(who,'fired' if state=='fired' else 'not fired',edge.get('when'),info.get('value'))
                 self.journal.write('arrow.'+(state or 'decided'),text,{'edge':edge['id'],'source':edge['source'],'target':edge['target'],'state':state,'fires':info.get('fires'),'max_fires':info.get('max_fires'),'when':edge.get('when'),'value':info.get('value')})
-            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model,on_edge=arrow,bindings=bindings,reason=reason).start()
+            def inner(parent,name,ident,result):
+                # A cell inside a nested Mainbook finished: one Log line, prefixed with the Mainbook's name; the outer cell keeps the summary.
+                self.journal.write('cell.'+result['status'],'%s / %s: %s%s'%(name,ident,result['status'],(' in %d ms'%result['elapsed_ms']) if result.get('elapsed_ms') is not None else ''),{'mainbook':name,'parent':parent,'node':ident,'status':result['status'],'elapsed_ms':result.get('elapsed_ms'),'error':(result.get('error') or {}).get('evalue')})
+            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model,on_edge=arrow,bindings=bindings,reason=reason,
+                                    load_mainbook=lambda name:lab_mainbooks.load(self.state_dir,name),on_inner=inner).start()
             self.journal.write('run.start','Run %s %s: %d cell%s'%(mode,reason or 'approved',len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan,'reason':reason})
             return self.graph_run.snapshot()
     def ask_model(self,cfg,prompt):

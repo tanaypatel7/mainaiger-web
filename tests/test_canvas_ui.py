@@ -460,6 +460,50 @@ class StartEventsPanelTests(RealServerCase):
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class NestedMainbookPanelTests(RealServerCase):
+    """A cell is turned into "runs a saved Mainbook" from the inspector; the run shows the inner summary on the card."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sys
+        from local_lab import graph as g, mainbooks
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+        mainbooks.configure(cls.server.state_dir, str(cls.root / 'books'))
+        inner = g.new_document(); inner['notebook']['cells'][0]['source'] = 'total = base * 2\nprint("inner", total)'; inner['notebook']['metadata']['mainaiger'] = {'name': 'double'}
+        mainbooks.save(cls.server.state_dir, 'double', g.validate(inner))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+
+    def test_cell_runs_a_saved_mainbook(self):
+        p = self.page
+        p.locator('.node[data-id="cell-1"] textarea').fill('base = 21'); p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
+        p.click('#add-cell'); p.wait_for_selector('.node[data-id="cell-2"]'); p.wait_for_function("() => document.querySelector('.node.selected') && document.querySelector('.node.selected').dataset.id === 'cell-2'")
+        p.check('#book-enabled'); p.wait_for_selector('#book-fields:not([hidden])'); p.wait_for_function("() => [...document.querySelectorAll('#book-name option')].some(o => o.value === 'double')")
+        p.select_option('#book-name', 'double'); p.click('#book-apply')
+        p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-2\"] .node-model').textContent.includes('Mainbook: double')")
+        p.wait_for_function("() => document.getElementById('book-note').textContent.includes('Runs \"double\" (1 cells)')")
+        self.assertIn('reads base and defines total', p.inner_text('#book-note')); self.assertEqual(p.inner_text('.node[data-id="cell-2"] .node-head b'), 'double')
+        self.assertTrue(p.locator('.node[data-id="cell-2"] textarea').is_hidden(), 'the code box is hidden: the Mainbook is the code')
+        p.click('#add-cell'); p.wait_for_selector('.node[data-id="cell-3"]'); p.locator('.node[data-id="cell-3"] textarea').fill('print("outer", total + 1)')
+        p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        self.assertTrue(p.evaluate("() => [...document.querySelectorAll('#edge-layer .edge-label')].some(t => t.textContent === 'total')"), 'a data edge flows out of the nested Mainbook')
+        if not p.locator('#session-start').is_disabled(): p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm')
+        p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]'); self.assertIn('runs the Mainbook "double" (1 cell, in this session)', p.inner_text('#run-dialog-arrows-list')); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => /finished|failed/.test(document.getElementById('run-summary').textContent)", timeout=30000)
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('.node.code .status')].map(s => s.textContent)"), ['ok', 'ok', 'ok'])
+        out = p.inner_text('.node[data-id="cell-2"] .node-output'); self.assertIn('Mainbook "double": finished · 1/1 ok', out); self.assertIn('inner 42', out)
+        self.assertEqual(p.inner_text('.node[data-id="cell-3"] .node-output').strip(), 'outer 43')
+        kinds = p.evaluate("() => [...document.querySelectorAll('#log-list li')].map(li => li.textContent)"); self.assertTrue(any('double / cell-1: ok' in k for k in kinds), 'inner cells are in the Log under the Mainbook name')
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
 class FormCellPanelTests(RealServerCase):
     """A form on a card: define fields in the inspector, fill them on the card, run with those values."""
     @classmethod

@@ -175,7 +175,7 @@ class ExecutionTests(unittest.TestCase):
         time.sleep(0.2); run.cancel()
         self.assertEqual(run.wait(15), 'cancelled')
         statuses = {k: v['status'] for k, v in run.snapshot()['nodes'].items()}
-        self.assertEqual(statuses, {'load': 'ok', 'normalize': 'interrupted', 'train': 'skipped', 'inspect': 'skipped'})
+        self.assertEqual(statuses, {'load': 'ok', 'normalize': 'interrupted', 'train': 'cancelled', 'inspect': 'cancelled'})
         self.assertTrue(self.kernel.alive)
     def test_run_one_without_inputs_fails_honestly(self):
         run = GraphRun(self.doc, ['train'], self.kernel).start()
@@ -249,7 +249,7 @@ class GraphHttpTests(unittest.TestCase):
             if data['run']['state'] not in ('pending', 'running'): break
             time.sleep(0.1)
         self.assertEqual(data['run']['state'], 'cancelled')
-        self.assertEqual(data['run']['nodes']['train']['status'], 'skipped')
+        self.assertEqual(data['run']['nodes']['train']['status'], 'cancelled')
 
 
 if __name__ == '__main__':

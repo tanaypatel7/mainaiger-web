@@ -533,6 +533,36 @@ failure path are tested on a real kernel with a fake model
 headless Chromium (`ModelCellPanelTests`). A real Ollama answer is unverified
 here; on your Mac, install a model on the Models page first.
 
+### Nested Mainbooks (`graph.py` `mainbook_config`, `graph_run.py` `_mainbook_cell`)
+
+A code cell can **run a saved Mainbook** instead of its own code: tick "This
+cell runs a saved Mainbook" in the SELECTED NODE panel and choose one from the
+Mainbooks folder. When the cell runs, the whole inner Mainbook runs inside it
+— in the same sessions (each inner cell's own "run on" applies), with its own
+arrows, conditions and loops — and its variables stay in the session for the
+cells after. The card shows `▣ Mainbook: name` and, after a run, a summary
+(`Mainbook "x": finished · 3/3 ok · 5 steps` plus one line per inner cell);
+the inspector says what the inner Mainbook reads and defines, read from its
+own analysis, so data edges flow through the cell (`analysis(doc, resolve)`
+loads the inner document on the server). The run review names every nested
+Mainbook with its cell count and refuses the run when one is missing from the
+folder. Every inner cell is a Log line prefixed with the Mainbook's name.
+
+Rules: Mainbooks nest at most three deep; a Mainbook never includes itself
+(`a → b → a` is refused with the chain in the message); the step budget
+(`MAX_STEPS`) is shared across the nesting; cancelling the outer run cancels
+the inner one; an inner failure stops the outer run with the inner cell's
+reason carried up ("B stopped the run (error): inner boom"). A cell runs a
+Mainbook, asks a model or carries a form — one of the three.
+
+**Status:** validation, analysis through the inner document, data edges,
+same-session variables, inner failure, missing/self/too-deep refusals, the
+shared budget and cancel are tested on a real kernel (`tests/test_nested.py`),
+the review and the Log over HTTP too; the panel, the card and a run are
+tested in headless Chromium (`NestedMainbookPanelTests`). Future: a nested
+Mainbook on another device as one unit; passing explicit inputs instead of
+sharing the session.
+
 ### Thin-slice decisions (`local_lab/decide.py`, `POST /api/models/decide`)
 
 The pattern every AI-made decision in MainAIger follows: the harness asks the

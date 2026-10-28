@@ -125,7 +125,7 @@
     el.querySelector('.count').textContent = 'In [' + (cell.execution_count == null ? ' ' : cell.execution_count) + ']';
     el.querySelector('.stale').hidden = !(last && last.source_hash && last.source_hash !== fnv(sourceOf(cell)) && !(runNode && runNode.status === 'running'));
     el.querySelector('.node-session').textContent = own.session ? 'on ' + own.session : '';
-    el.querySelector('.node-model').textContent = own.model ? 'model ' + own.model.model + ' → ' + own.model.output : ''; el.classList.toggle('model', !!own.model);
+    el.querySelector('.node-model').textContent = own.model ? 'model ' + own.model.model + ' → ' + own.model.output : own.mainbook ? '\u25a3 Mainbook: ' + own.mainbook.name : ''; el.classList.toggle('model', !!own.model); el.classList.toggle('book', !!own.mainbook);
     renderForm(el, id, own.form || null);
     const ta = el.querySelector('textarea'); if (ta) ta.placeholder = own.model ? 'Prompt — use {{output:Cell title}} and {{var:name}}' : '# Python — Shift+Enter runs this cell';
     const needs = missingFor(id), needsEl = el.querySelector('.node-needs'); needsEl.hidden = !needs.length; needsEl.textContent = needs.length ? 'needs: ' + needs.join(', ') : '';
@@ -333,6 +333,7 @@
       const own = meta(cell); if (document.activeElement !== $('override-inputs')) $('override-inputs').value = (own.inputs || []).join(', '); if (document.activeElement !== $('override-outputs')) $('override-outputs').value = (own.outputs || []).join(', ');
       renderFormChoice(sel.id);
       renderModelChoice(sel.id);
+      renderBookChoice(sel.id);
       renderSessionChoice(sel.id);
       renderLibraryLink(sel.id);
       const r = state.run && state.run.nodes[sel.id]; const last = r || own.last_run;
@@ -814,6 +815,29 @@
   });
   let installedModels = [];
   async function refreshModels() { try { const data = await api('/api/models'); installedModels = (data.models || []).map(m => m.name); const dl = $('model-names'); dl.textContent = ''; for (const n of installedModels) { const o = document.createElement('option'); o.value = n; dl.append(o); } } catch {} }
+  function renderBookChoice(id) {
+    const own = meta(cellOf(nodeById(id))); const book = own.mainbook || null;
+    $('book-enabled').checked = !!book; $('book-fields').hidden = !book;
+    const select = $('book-name'); const current = book ? book.name : select.value; select.textContent = '';
+    const names = (books && books.mainbooks ? books.mainbooks.map(m => m.name) : []).filter(n => n !== docName());
+    if (!names.length) { const o = document.createElement('option'); o.value = ''; o.textContent = books && books.configured ? 'No other saved Mainbooks' : 'Save a Mainbook first (choose a folder)'; select.append(o); }
+    for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n; o.selected = n === current; select.append(o); }
+    if (book && !names.includes(book.name)) { const o = document.createElement('option'); o.value = book.name; o.textContent = book.name + ' (not in the folder)'; o.selected = true; select.append(o); }
+    const info = state.analysis[id] || {};
+    $('book-note').textContent = book ? (info.resolved ? `Runs "${book.name}" (${info.cells} cells) in this session; it reads ${info.inputs.length ? info.inputs.join(', ') : 'nothing'} and defines ${info.outputs.length ? info.outputs.join(', ') : 'nothing'}.` : (info.error || `"${book.name}" is not in the Mainbooks folder.`)) : '';
+  }
+  $('book-enabled').addEventListener('change', () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    if ($('book-enabled').checked) { renderBookChoice(sel.id); $('book-enabled').checked = true; $('book-fields').hidden = false; $('book-name').focus(); }
+    else { delete meta(cellOf(sel)).mainbook; updateNode(sel.id); markDirty(); renderBookChoice(sel.id); save(); }
+  });
+  $('book-apply').addEventListener('click', async () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    const name = $('book-name').value; if (!name) { toast('Save the Mainbook to run first, then choose it here.'); return; }
+    const own = meta(cellOf(sel)); if (own.model || own.form) { toast('A cell runs a Mainbook, asks a model or carries a form, not several. Turn the others off first.'); return; }
+    own.mainbook = {name}; if (!own.title || /^Cell \d+$/.test(own.title)) { own.title = name; $('node-title').value = name; }
+    updateNode(sel.id); markDirty(); await save(); renderBookChoice(sel.id); renderInspector();
+  });
   function renderModelChoice(id) {
     const own = meta(cellOf(nodeById(id))); const cfg = own.model || null;
     $('model-enabled').checked = !!cfg; $('model-fields').hidden = !cfg;
@@ -1008,11 +1032,13 @@
     sessBox.hidden = !sessLines.length; for (const line of sessLines) { const li = document.createElement('li'); li.textContent = line; sessList.append(li); }
     const arrowsBox = $('run-dialog-arrows'), arrowsList = $('run-dialog-arrows-list'); arrowsList.textContent = '';
     const arrowLines = [];
+    for (const b of check.mainbooks || []) arrowLines.push(`${titleOf(nodeById(b.node) || {id: b.node, kind: 'code'})} runs the Mainbook "${b.name}"${b.found ? ` (${b.cells} cell${b.cells === 1 ? '' : 's'}, in this session)` : ' \u2014 not in the Mainbooks folder'}`);
     for (const l of check.loops || []) arrowLines.push(`Loop ${l.source_title} \u2192 ${l.target_title}: runs the body again at most ${l.max_fires} time${l.max_fires === 1 ? '' : 's'}${l.when ? ` when ${l.when}` : ''}${l.inside ? '' : ' \u2014 leads outside this run, so it will not fire'}`);
     for (const c of check.conditions || []) arrowLines.push(`${c.source_title} \u2192 ${c.target_title} fires only when ${c.when}`);
     arrowsBox.hidden = !arrowLines.length; for (const line of arrowLines) { const li = document.createElement('li'); li.textContent = line; arrowsList.append(li); }
     const notes = []; if ((check.missing_sessions || []).length) notes.push('Start the named sessions in Resources first.'); if (check.from_session.length) notes.push('Already in the session: ' + [...new Set(check.from_session.map(x => x.name))].join(', ') + '.'); if (check.unresolvable.length) notes.push('Inputs nobody produces will fail at run time unless they already exist in the session.'); if (!check.session_alive) notes.push('No session is running — start one first.');
-    $('run-dialog-note').textContent = notes.join(' '); $('run-dialog-confirm').disabled = !check.session_alive || !check.plan.length || (check.missing_sessions || []).length > 0;
+    if ((check.missing_mainbooks || []).length) notes.push('Save the missing Mainbook(s) into the Mainbooks folder first.');
+    $('run-dialog-note').textContent = notes.join(' '); $('run-dialog-confirm').disabled = !check.session_alive || !check.plan.length || (check.missing_sessions || []).length > 0 || (check.missing_mainbooks || []).length > 0;
     $('run-dialog').showModal(); $('run-dialog-cancel').focus();
   }
   $('run-all').addEventListener('click', () => reviewRun('all', []));
