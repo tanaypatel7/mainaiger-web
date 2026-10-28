@@ -347,3 +347,46 @@ class ModelCellPanelTests(RealServerCase):
         # Turning the model off makes it a plain code cell again.
         p.click('#arrange'); p.wait_for_timeout(150); p.locator('.node[data-id="cell-2"] .node-foot').click(); p.wait_for_function("() => document.querySelector('.node.selected') && document.querySelector('.node.selected').dataset.id === 'cell-2'")
         p.uncheck('#model-enabled'); p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-2\"] .node-model').textContent === ''")
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class FormCellPanelTests(RealServerCase):
+    """A form on a card: define fields in the inspector, fill them on the card, run with those values."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sys
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+
+    def test_define_fill_and_run_form(self):
+        p = self.page
+        p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
+        p.locator('.node[data-id="cell-1"] textarea').fill('print("hello", name, times * 2, speed, loud)')
+        p.check('#form-enabled'); p.wait_for_selector('#form-fields:not([hidden])')
+        p.fill('#form-spec', 'bad line here'); p.click('#form-apply'); p.wait_for_function("() => document.getElementById('form-note').textContent.includes('Cannot read')")
+        p.fill('#form-spec', 'name: text = world\ntimes: integer = 2\nspeed: choice = fast | slow\nloud: flag'); p.click('#form-apply')
+        p.wait_for_function("() => document.getElementById('form-note').textContent.includes('4 fields')")
+        self.assertFalse(p.locator('.node[data-id="cell-1"] .node-form').is_hidden())
+        self.assertEqual(p.input_value('#form-cell-1-name'), 'world'); self.assertEqual(p.input_value('#form-cell-1-times'), '2')
+        # Fill the card: a new name, a choice and the flag; values are saved in the Mainbook.
+        p.fill('#form-cell-1-name', 'Tanay'); p.select_option('#form-cell-1-speed', 'slow'); p.check('#form-cell-1-loud'); p.fill('#form-cell-1-times', '5'); p.press('#form-cell-1-times', 'Tab')
+        import time as _t
+        for _ in range(100):
+            if self.server.graph_doc['notebook']['cells'][0]['metadata']['mainaiger'].get('form', {}).get('values', {}).get('times') == 5: break
+            _t.sleep(0.05)
+        self.assertEqual(self.server.graph_doc['notebook']['cells'][0]['metadata']['mainaiger']['form']['values'], {'name': 'Tanay', 'speed': 'slow', 'loud': True, 'times': 5})
+        self.assertEqual(p.inner_text('#node-outputs'), 'loud\nname\nspeed\ntimes', 'the inspector lists the fields as outputs')
+        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm'); p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.locator('.node[data-id="cell-1"] .form-run').click(); p.wait_for_selector('#run-dialog[open]'); self.assertIn('selected cell and everything it triggers', p.inner_text('#run-dialog-intro')); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => /finished|failed/.test(document.getElementById('run-summary').textContent)", timeout=30000)
+        out = p.inner_text('.node[data-id="cell-1"] .node-output'); self.assertEqual(out.splitlines()[0], 'hello Tanay 10 slow True'); self.assertIn('Form values bound', out)
+        # Reload: the values persist on the card.
+        p.reload(); p.wait_for_selector('.node[data-id="cell-1"] .node-form:not([hidden])'); self.assertEqual(p.input_value('#form-cell-1-name'), 'Tanay'); self.assertTrue(p.is_checked('#form-cell-1-loud'))

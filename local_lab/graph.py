@@ -27,6 +27,49 @@ SCHEMA_VERSION = 2
 NODE_KINDS = {'start', 'finish', 'code', 'markdown'}
 EDGE_KINDS = {'control', 'data'}
 MAX_NODES, MAX_EDGES, MAX_SOURCE = 200, 1000, 100000
+FORM_TYPES = ('text', 'number', 'integer', 'flag', 'choice')
+
+
+def _form_value_ok(kind, value, options=None):
+    if kind == 'text':
+        return isinstance(value, str) and len(value) <= 4000
+    if kind == 'number':
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) < 1e300
+    if kind == 'integer':
+        return isinstance(value, int) and not isinstance(value, bool) and abs(value) < 10 ** 15
+    if kind == 'flag':
+        return isinstance(value, bool)
+    if kind == 'choice':
+        return isinstance(value, str) and value in (options or [])
+    return False
+
+
+def form_config(cell):
+    own = cell.get('metadata', {}).get('mainaiger', {}) if isinstance(cell.get('metadata'), dict) else {}
+    form = own.get('form')
+    return form if isinstance(form, dict) and isinstance(form.get('fields'), list) and form['fields'] else None
+
+
+def form_bindings(form):
+    """{name: value} the form binds when its cell runs: the saved value, else the default, else a type-appropriate empty value."""
+    out = {}
+    values = form.get('values') or {}
+    for f in form['fields']:
+        if f['name'] in values:
+            out[f['name']] = values[f['name']]
+        elif 'default' in f:
+            out[f['name']] = f['default']
+        else:
+            out[f['name']] = {'text': '', 'number': 0.0, 'integer': 0, 'flag': False, 'choice': (f.get('options') or [''])[0]}[f['type']]
+    return out
+
+
+def form_prelude(form):
+    """The assignment lines that bind a form's values, as Python; a JSON literal per value keeps it exact."""
+    import json as _json
+    return ''.join('%s = __import__("json").loads(%r)\n' % (name, _json.dumps(value)) for name, value in form_bindings(form).items())
+
+
 MODEL_NAME = re.compile(r'^[a-z0-9][a-z0-9._/-]{0,80}(:[a-z0-9][a-z0-9._-]{0,40})?$')
 PLACEHOLDER = re.compile(r'\{\{\s*(var|output)\s*:\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}')
 SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}$')
@@ -135,6 +178,44 @@ def validate(document):
                 if 'attempts' in cfg:
                     _require(isinstance(cfg['attempts'], int) and not isinstance(cfg['attempts'], bool) and 1 <= cfg['attempts'] <= 3, 'Cell %d model attempts must be 1-3' % i)
                 _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can ask a model' % i)
+        if 'form' in own:
+            # A form cell: fields the owner fills in on the card; their values are bound as variables
+            # when the cell runs, before its own code (if any). See docs/LOCAL_LAB_SETUP.md "Form cells".
+            form = own['form']
+            if form in (None, False, {}):
+                del own['form']
+            else:
+                _require(isinstance(form, dict) and set(form) <= {'fields', 'values'} and isinstance(form.get('fields'), list) and 0 < len(form['fields']) <= 12,
+                         'Cell %d form must be {fields: [1..12 fields], values?}' % i)
+                _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can carry a form' % i)
+                seen = set()
+                fields = []
+                for f in form['fields']:
+                    _require(isinstance(f, dict) and set(f) <= {'name', 'type', 'label', 'options', 'default'} and isinstance(f.get('name'), str) and NAME.match(f['name']) and f['name'] not in seen,
+                             'Cell %d: each field needs a unique Python name' % i)
+                    seen.add(f['name'])
+                    kind = f.get('type', 'text')
+                    _require(kind in FORM_TYPES, 'Cell %d: field "%s" type must be one of %s' % (i, f['name'], ', '.join(FORM_TYPES)))
+                    clean = {'name': f['name'], 'type': kind}
+                    if 'label' in f:
+                        _require(isinstance(f['label'], str) and len(f['label']) <= 80, 'Cell %d: field label too long' % i)
+                        clean['label'] = f['label']
+                    if kind == 'choice':
+                        opts = f.get('options')
+                        _require(isinstance(opts, list) and 0 < len(opts) <= 20 and all(isinstance(o, str) and 0 < len(o) <= 60 for o in opts), 'Cell %d: choice field "%s" needs 1-20 text options' % (i, f['name']))
+                        clean['options'] = list(opts)
+                    if 'default' in f and f['default'] is not None:
+                        _require(_form_value_ok(kind, f['default'], clean.get('options')), 'Cell %d: default of "%s" does not fit its type' % (i, f['name']))
+                        clean['default'] = f['default']
+                    fields.append(clean)
+                values = form.get('values') or {}
+                _require(isinstance(values, dict), 'Cell %d form values must be an object' % i)
+                clean_values = {}
+                for f in fields:
+                    if f['name'] in values and values[f['name']] is not None:
+                        _require(_form_value_ok(f['type'], values[f['name']], f.get('options')), 'Cell %d: value of "%s" does not fit its type' % (i, f['name']))
+                        clean_values[f['name']] = values[f['name']]
+                own['form'] = {'fields': fields, 'values': clean_values}
         if 'session' in own:
             # The label of the session this cell runs on; absent means "the active session".
             if own['session'] in (None, ''):
@@ -320,6 +401,12 @@ def declared(doc, node_id):
         result['declared'] = True
         return result
     result = analyze(source_text(cell))
+    form = form_config(cell)
+    if form:
+        names = [f['name'] for f in form['fields']]
+        result['inputs'] = [n for n in result['inputs'] if n not in names]
+        result['outputs'] = sorted(set(result['outputs']) | set(names))
+        result['form'] = True
     if 'inputs' in own:
         result['inputs'] = list(own['inputs'])
     if 'outputs' in own:
@@ -621,6 +708,10 @@ def to_notebook(document):
         node = node_by_id(doc, ident)
         if node['kind'] in ('code', 'markdown'):
             cell = copy.deepcopy(doc['notebook']['cells'][node['cell_index']])
+            form = form_config(cell)
+            if form:
+                cell['source'] = '# MainAIger form values\n' + form_prelude(form) + source_text(cell)
+                cell.get('metadata', {}).get('mainaiger', {}).pop('form', None)
             cfg = model_config(cell)
             if cfg:
                 # A prompt is not Python: export it as a raw cell that says what it was.

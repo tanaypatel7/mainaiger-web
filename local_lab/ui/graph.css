@@ -109,3 +109,8 @@ body[data-view="notebook"] .viewport{background-image:none;cursor:default}body[d
 .node-model{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--warn);padding-left:6px}.node.code.model{border-style:dashed}
 #model-schema{width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;padding:7px 9px;resize:vertical;margin-top:4px}
 .term-row{display:flex;gap:6px;align-items:center;margin-top:4px}.term-row input{flex:1;padding:7px 9px;font-size:12.5px}.term-prompt{color:var(--muted)}.term-output{max-height:28vh;font-size:12px}
+.node-form{display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--soft);font-size:12.5px}
+.node-form label{margin:0;font-size:12px;color:var(--muted);white-space:nowrap}.node-form input[type="text"],.node-form input[type="number"],.node-form select{width:100%;padding:4px 6px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.node-form .form-run{grid-column:1 / -1;justify-self:end}
+#form-spec{width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;padding:7px 9px;resize:vertical;margin-top:4px}
+.node.code.form .node-head b::before{content:'⌨ ';opacity:.6}

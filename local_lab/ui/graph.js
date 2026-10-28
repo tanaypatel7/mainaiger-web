@@ -84,7 +84,7 @@
         head.append(button('node-run', 'add', 'Add a cell triggered by this one', '+'));
       }
       el.append(head);
-      if (node.kind === 'code') { const needs = document.createElement('div'); needs.className = 'node-needs'; needs.hidden = true; el.append(needs); }
+      if (node.kind === 'code') { const needs = document.createElement('div'); needs.className = 'node-needs'; needs.hidden = true; el.append(needs); const form = document.createElement('div'); form.className = 'node-form'; form.hidden = true; el.append(form); }
       if (node.kind === 'code' || node.kind === 'markdown') {
         const area = document.createElement('textarea'); area.spellcheck = false; area.value = sourceOf(cellOf(node)); area.placeholder = node.kind === 'code' ? '# Python — Shift+Enter runs this cell' : 'Write a note…'; area.setAttribute('aria-label', node.kind === 'code' ? 'Python code' : 'Note'); el.append(area); if (node.kind === 'markdown') requestAnimationFrame(() => autosize(area));
         if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); const sess = document.createElement('span'); sess.className = 'node-session'; sess.title = 'Session this cell runs on'; foot.append(sess); const mdl = document.createElement('span'); mdl.className = 'node-model'; mdl.title = 'This cell asks a model; its text is the prompt'; foot.append(mdl); el.append(foot); }
@@ -115,6 +115,7 @@
     el.querySelector('.stale').hidden = !(last && last.source_hash && last.source_hash !== fnv(sourceOf(cell)) && !(runNode && runNode.status === 'running'));
     el.querySelector('.node-session').textContent = own.session ? 'on ' + own.session : '';
     el.querySelector('.node-model').textContent = own.model ? 'model ' + own.model.model + ' → ' + own.model.output : ''; el.classList.toggle('model', !!own.model);
+    renderForm(el, id, own.form || null);
     const ta = el.querySelector('textarea'); if (ta) ta.placeholder = own.model ? 'Prompt — use {{output:Cell title}} and {{var:name}}' : '# Python — Shift+Enter runs this cell';
     const needs = missingFor(id), needsEl = el.querySelector('.node-needs'); needsEl.hidden = !needs.length; needsEl.textContent = needs.length ? 'needs: ' + needs.join(', ') : '';
     const out = el.querySelector('.node-output'); let text = '', hasError = false;
@@ -128,6 +129,47 @@
     const area = el.querySelector('textarea'); if (area && document.activeElement !== area && area.value !== sourceOf(cell)) area.value = sourceOf(cell);
     if (area && !area.hidden) autosize(area);
   }
+  function renderForm(el, id, form) {
+    // The card's form: one control per field; editing stores the value in the Mainbook (metadata.mainaiger.form.values).
+    const box = el.querySelector('.node-form'); if (!box) return;
+    el.classList.toggle('form', !!form);
+    if (!form) { box.hidden = true; box.textContent = ''; return; }
+    const key = JSON.stringify(form.fields); if (box.dataset.key === key && !box.hidden) { syncFormValues(box, form); return; }
+    box.hidden = false; box.textContent = ''; box.dataset.key = key;
+    const values = form.values || {};
+    for (const f of form.fields) {
+      const label = document.createElement('label'); label.textContent = f.label || f.name; label.htmlFor = `form-${id}-${f.name}`; box.append(label);
+      let input;
+      if (f.type === 'choice') { input = document.createElement('select'); for (const o of f.options) { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; input.append(opt); } }
+      else if (f.type === 'flag') { input = document.createElement('input'); input.type = 'checkbox'; }
+      else { input = document.createElement('input'); input.type = f.type === 'text' ? 'text' : 'number'; if (f.type === 'number') input.step = 'any'; if (f.type === 'integer') input.step = '1'; }
+      input.id = `form-${id}-${f.name}`; input.dataset.field = f.name; input.dataset.type = f.type; box.append(input);
+    }
+    const run = button('node-run form-run', 'from', 'Run from this cell with these values (Ctrl+Enter)', '▶▶ Run with these values'); box.append(run);
+    syncFormValues(box, form);
+  }
+  function syncFormValues(box, form) {
+    const values = form.values || {};
+    for (const input of box.querySelectorAll('[data-field]')) {
+      if (document.activeElement === input) continue;
+      const f = form.fields.find(x => x.name === input.dataset.field); const v = values[f.name] !== undefined ? values[f.name] : (f.default !== undefined ? f.default : null);
+      if (f.type === 'flag') input.checked = !!v; else if (v !== null) input.value = String(v); else input.value = '';
+    }
+  }
+  function readFormValue(input) {
+    const t = input.dataset.type;
+    if (t === 'flag') return input.checked;
+    if (t === 'choice' || t === 'text') return input.value;
+    if (input.value.trim() === '') return undefined;
+    const n = Number(input.value); if (!Number.isFinite(n)) return undefined;
+    return t === 'integer' ? Math.trunc(n) : n;
+  }
+  $('nodes').addEventListener('change', event => {
+    const input = event.target.closest('.node-form [data-field]'); if (!input) return;
+    const id = input.closest('.node').dataset.id; const own = meta(cellOf(nodeById(id))); if (!own.form) return;
+    const v = readFormValue(input); own.form.values = own.form.values || {}; if (v === undefined) delete own.form.values[input.dataset.field]; else own.form.values[input.dataset.field] = v;
+    markDirty();
+  });
   function notebookPositions() {
     // Notebook view: the same cells, stacked in trigger order. Positions are computed, never saved.
     const out = {}; let y = 30; const x = 40;
@@ -251,6 +293,7 @@
       $('node-links').textContent = `Triggered by: ${by.length ? by.join(', ') : '— (not connected)'} · Triggers: ${to.length ? to.join(', ') : '—'}`;
       $('node-analysis-note').textContent = info.error ? 'Analysis unavailable: ' + info.error : (info.declared ? 'Declared by you (overrides the automatic reading).' : 'Read automatically from the code; edit below to override.');
       const own = meta(cell); if (document.activeElement !== $('override-inputs')) $('override-inputs').value = (own.inputs || []).join(', '); if (document.activeElement !== $('override-outputs')) $('override-outputs').value = (own.outputs || []).join(', ');
+      renderFormChoice(sel.id);
       renderModelChoice(sel.id);
       renderSessionChoice(sel.id);
       renderLibraryLink(sel.id);
@@ -668,6 +711,44 @@
       const row = await api('/api/sessions/start', body); $('session-new-dialog').close(); toast(`Session "${row.label}" started.`);
       await refreshSessions(); state.session = await api('/api/kernel'); renderInspector(); refreshJournal(); if (row.active) refreshVariables();
     } catch (error) { $('session-new-note').textContent = error.message; }
+  });
+  function formSpecText(form) { return form.fields.map(f => `${f.name}: ${f.type}` + (f.type === 'choice' ? ' = ' + f.options.join(' | ') : (f.default !== undefined ? ' = ' + (f.type === 'text' ? f.default : JSON.stringify(f.default)) : ''))).join('\n'); }
+  function parseFormSpec(text) {
+    const fields = [];
+    for (const raw of text.split('\n')) {
+      const line = raw.trim(); if (!line) continue;
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(text|number|integer|flag|choice)\s*(?:=\s*(.*))?$/);
+      if (!m) throw new Error(`Cannot read "${line}". Use name: type = default`);
+      const f = {name: m[1], type: m[2]}; const rest = (m[3] || '').trim();
+      if (f.type === 'choice') { f.options = rest.split('|').map(x => x.trim()).filter(Boolean); if (!f.options.length) throw new Error(`"${f.name}": list the choices after =, separated by |`); }
+      else if (rest) {
+        if (f.type === 'text') f.default = rest;
+        else if (f.type === 'flag') { if (!/^(true|false|yes|no)$/i.test(rest)) throw new Error(`"${f.name}": a flag default is true or false`); f.default = /^(true|yes)$/i.test(rest); }
+        else { const n = Number(rest); if (!Number.isFinite(n)) throw new Error(`"${f.name}": the default must be a number`); f.default = f.type === 'integer' ? Math.trunc(n) : n; }
+      }
+      fields.push(f);
+    }
+    if (!fields.length) throw new Error('Add at least one field.');
+    return fields;
+  }
+  function renderFormChoice(id) {
+    const own = meta(cellOf(nodeById(id))); const form = own.form || null;
+    $('form-enabled').checked = !!form; $('form-fields').hidden = !form;
+    if (document.activeElement !== $('form-spec')) $('form-spec').value = form ? formSpecText(form) : '';
+    $('form-note').textContent = form ? `${form.fields.length} field${form.fields.length === 1 ? '' : 's'} on the card; values are saved in this Mainbook.` : '';
+  }
+  $('form-enabled').addEventListener('change', () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    if ($('form-enabled').checked) { $('form-fields').hidden = false; if (!$('form-spec').value) $('form-spec').value = 'n: integer = 10'; $('form-spec').focus(); }
+    else { delete meta(cellOf(sel)).form; updateNode(sel.id); markDirty(); renderFormChoice(sel.id); }
+  });
+  $('form-apply').addEventListener('click', async () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    let fields; try { fields = parseFormSpec($('form-spec').value); } catch (error) { $('form-note').textContent = error.message; return; }
+    const own = meta(cellOf(sel)); const keep = (own.form && own.form.values) || {}; own.form = {fields, values: Object.fromEntries(Object.entries(keep).filter(([k]) => fields.some(f => f.name === k)))};
+    updateNode(sel.id); markDirty(); clearTimeout(state.saveTimer); await save();
+    if (state.dirty) { $('form-note').textContent = $('save-state').textContent; return; }
+    renderFormChoice(sel.id); toast('Form applied; fill it in on the card.');
   });
   let installedModels = [];
   async function refreshModels() { try { const data = await api('/api/models'); installedModels = (data.models || []).map(m => m.name); const dl = $('model-names'); dl.textContent = ''; for (const n of installedModels) { const o = document.createElement('option'); o.value = n; dl.append(o); } } catch {} }

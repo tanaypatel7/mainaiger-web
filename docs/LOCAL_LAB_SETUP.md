@@ -390,6 +390,26 @@ fit rules, the routes and the page are tested against a fake Ollama server
 download and its signature/notarization checks run in the macOS acceptance
 workflow; installing and running Ollama, and model downloads, need a real Mac.
 
+### Form cells (`graph.py` `form_config`, `form_prelude`)
+
+The first GUI element tied to code. Tick "This cell has a form" on a code
+cell and list fields in the inspector, one per line (`n: integer = 10`,
+`mode: choice = fast | slow`, `verbose: flag`, `note: text`). The card then
+shows those controls; what you type is saved in the Mainbook
+(`metadata.mainaiger.form.values`). When the cell runs, each field is bound as
+a variable first (`form_prelude`: one exact JSON-literal assignment per field),
+then the cell's own code runs, so the next cells use the values like any
+variable; the analysis lists the fields as the cell's outputs, so data edges
+connect them. "▶▶ Run with these values" runs from that cell onward through the
+normal review. Exports to `.ipynb` prepend the assignments so Jupyter can run
+the cell. Types: text, number, integer, flag, choice; at most 12 fields; values
+are type-checked on save and unknown ones dropped.
+
+**Status:** validation, declared names, binding on a real kernel, data edges
+and export are tested (`tests/test_sessions.py` `FormCellTests`); the
+inspector editor, the card controls, a run from the card and persistence
+across reload are tested in headless Chromium (`FormCellPanelTests`).
+
 ### Model cells (`graph.py` `model_config`, `graph_run.py` `_model_cell`)
 
 A code cell can **ask a model instead of running Python**: tick "This cell

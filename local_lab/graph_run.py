@@ -165,6 +165,10 @@ class GraphRun:
                 source = self._source(ident)
                 label = graph_module.session_of(self.document, ident)
                 cfg = graph_module.model_config(self._cell(ident))
+                form = graph_module.form_config(self._cell(ident))
+                if form:
+                    # Bind the form's values first; the cell's own code (if any) runs after them in the same request.
+                    source = graph_module.form_prelude(form) + source
                 if cfg:
                     result = self._model_cell(ident, cfg, source, label)
                 elif not source.strip():
@@ -182,6 +186,9 @@ class GraphRun:
                         self.current_kernel = None
                 if label:
                     result['session'] = label
+                if form and result.get('status') == 'ok':
+                    bound = graph_module.form_bindings(form)
+                    result['note'] = ((result.get('note') + ' ') if result.get('note') else '') + 'Form values bound: ' + ', '.join('%s=%s' % (k, json.dumps(v)) for k, v in bound.items())
                 with self.lock:
                     self.nodes[ident] = dict(result, status=result['status'])
                 if self.on_result:

@@ -272,3 +272,42 @@ class TerminalHttpTests(SessionsHttpTests):
         self.assertEqual(self.req('/api/sessions/command', {'command': 'ls'}, auth)[0], 400, 'confirm required')
         status, data, _ = self.req('/api/sessions/command', {'id': s1['id'], 'command': 'printf hi', 'confirm': True}, auth)
         self.assertEqual((status, data['result']['output']), (200, 'hi\n[exit 0]\n'))
+
+
+class FormCellTests(unittest.TestCase):
+    """Form cells: fields become variables when the cell runs."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name).resolve()
+        state, key = initialize_state(self.root / 'private'); self.key = key
+        self.server = LabServer(('127.0.0.1', 0), state, key, executor=lambda c, s: self.fail('one-shot'), kernel_factory=local_factory)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
+        self.port = self.server.server_port; self.origin = f'http://127.0.0.1:{self.port}'
+    def tearDown(self):
+        self.server.shutdown(); self.server.server_close(); self.thread.join(); self.tmp.cleanup()
+    req = SessionsHttpTests.req; login = SessionsHttpTests.login; wait_run = SessionsHttpTests.wait_run
+    def test_validation_declared_names_and_export(self):
+        doc = g.new_document(); c = doc['notebook']['cells'][0]; c['source'] = 'total = n * price\nprint(total, mode, flag)\n'
+        c['metadata']['mainaiger']['form'] = {'fields': [{'name': 'n', 'type': 'integer', 'default': 2}, {'name': 'mode', 'type': 'choice', 'options': ['a', 'b']}, {'name': 'flag', 'type': 'flag'}], 'values': {'n': 3, 'flag': True}}
+        v = g.validate(doc)
+        self.assertEqual(g.declared(v, 'cell-1'), {'inputs': ['price'], 'outputs': ['flag', 'mode', 'n', 'total'], 'error': None, 'form': True, 'declared': False})
+        self.assertEqual(g.form_bindings(g.form_config(v['notebook']['cells'][0])), {'n': 3, 'mode': 'a', 'flag': True})
+        exported = g.to_notebook(v)[0]['cells'][0]; self.assertTrue(exported['source'].startswith('# MainAIger form values\nn = ')); self.assertNotIn('form', exported['metadata']['mainaiger'])
+        for bad in ({'fields': []}, {'fields': [{'name': '1x', 'type': 'text'}]}, {'fields': [{'name': 'a', 'type': 'blob'}]}, {'fields': [{'name': 'a', 'type': 'choice'}]}, {'fields': [{'name': 'a', 'type': 'integer', 'default': 'x'}]},
+                    {'fields': [{'name': 'a', 'type': 'flag'}], 'values': {'a': 'yes'}}, {'fields': [{'name': 'a', 'type': 'choice', 'options': ['x']}], 'values': {'a': 'y'}}, {'fields': [{'name': 'a', 'type': 'text'}, {'name': 'a', 'type': 'text'}]}, {'fields': [{'name': 'f%d' % i, 'type': 'text'} for i in range(13)]}):
+            with self.subTest(bad=bad):
+                doc2 = g.new_document(); doc2['notebook']['cells'][0]['metadata']['mainaiger']['form'] = bad
+                with self.assertRaises(g.GraphError): g.validate(doc2)
+        doc3 = g.new_document(); doc3['notebook']['cells'][0]['metadata']['mainaiger']['form'] = {'fields': [{'name': 'a', 'type': 'text'}], 'values': {'a': 'x', 'ghost': 1}}
+        self.assertEqual(g.validate(doc3)['notebook']['cells'][0]['metadata']['mainaiger']['form']['values'], {'a': 'x'}, 'values for unknown fields are dropped')
+    def test_values_are_bound_before_the_code_runs(self):
+        auth = self.login(); cookie = {'Cookie': auth['Cookie']}
+        doc = g.new_document(); c = doc['notebook']['cells'][0]; c['source'] = 'print("form:", n, mode, flag, repr(note))\n'
+        c['metadata']['mainaiger']['form'] = {'fields': [{'name': 'n', 'type': 'number', 'default': 1.5}, {'name': 'mode', 'type': 'choice', 'options': ['fast', 'slow']}, {'name': 'flag', 'type': 'flag', 'default': True}, {'name': 'note', 'type': 'text'}], 'values': {'mode': 'slow', 'note': 'he said "hi"'}}
+        doc['notebook']['cells'].append({'id': 'use', 'cell_type': 'code', 'metadata': {'mainaiger': {'title': 'Use'}}, 'source': 'print(n * 2, mode.upper())\n', 'execution_count': None, 'outputs': []})
+        doc['graph']['nodes'].insert(2, {'id': 'use', 'kind': 'code', 'cell_index': 1}); doc['graph']['edges'] = [{'id': 'e1', 'kind': 'control', 'source': 'start', 'target': 'cell-1'}, {'id': 'e2', 'kind': 'control', 'source': 'cell-1', 'target': 'use'}, {'id': 'e3', 'kind': 'control', 'source': 'use', 'target': 'finish'}]
+        status, view, _ = self.req('/api/graph', {'document': doc}, auth); self.assertEqual(status, 200)
+        self.assertIn({'source': 'cell-1', 'target': 'use', 'name': 'n'}, [{k: e[k] for k in ('source', 'target', 'name')} for e in view['data_edges']], 'form fields feed data edges')
+        rev = self.req('/api/sessions', headers=cookie)[1]['revision']; self.req('/api/sessions/start', {'confirm': True, 'revision': rev, 'label': 'main'}, auth)
+        self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth); run = self.wait_run(cookie)
+        self.assertEqual(run['nodes']['cell-1']['output'], 'form: 1.5 slow True \'he said "hi"\'\n'); self.assertIn('Form values bound', run['nodes']['cell-1']['note'])
+        self.assertEqual(run['nodes']['use']['output'], '3.0 SLOW\n')
