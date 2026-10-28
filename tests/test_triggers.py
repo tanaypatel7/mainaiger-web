@@ -115,10 +115,11 @@ class EngineTests(unittest.TestCase):
     def test_cancel_inside_a_loop_marks_the_rest_cancelled(self):
         doc = counter(when='n < 100', max_fires=50, after='import time\nif n == 2: time.sleep(20)\nprint("after", n)')
         plan = g.plan(doc, 'all'); run = GraphRun(doc, plan, self.kernel).start()
-        for _ in range(400):
-            if run.snapshot()['steps'] >= 5 and run.current == 'after': break
+        for _ in range(600):  # wait until the slow cell is really executing (slow CI machines open a gap before the kernel starts it)
+            if run.snapshot()['steps'] >= 5 and run.current == 'after' and self.kernel.executing: break
             time.sleep(0.05)
-        run.cancel(); self.assertEqual(run.wait(30), 'cancelled')
+        time.sleep(0.3)
+        run.cancel(); self.assertEqual(run.wait(40), 'cancelled')
         snap = run.snapshot(); self.assertEqual(snap['nodes']['after']['status'], 'interrupted'); self.assertEqual(snap['nodes']['bump']['status'], 'ok')
 
     def test_step_cap_is_the_last_line_of_defence(self):

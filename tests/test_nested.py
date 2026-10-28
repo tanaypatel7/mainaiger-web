@@ -118,10 +118,11 @@ class EngineTests(unittest.TestCase):
         self.books['slow'] = chain([('a', 'import time\ntime.sleep(20)\nprint("slept")'), ('b', 'print("b")')], name='slow')
         outer = with_book(chain([('run', ''), ('after', 'print("after")')]), 'run', 'slow')
         run = GraphRun(outer, g.plan(outer, 'all'), self.kernel, load_mainbook=self.load).start()
-        for _ in range(200):
-            if run.inner is not None and run.inner.current == 'a': break
+        for _ in range(600):  # wait until the inner cell is really executing (slow CI machines open a gap before the kernel starts it)
+            if run.inner is not None and run.inner.current == 'a' and self.kernel.executing: break
             time.sleep(0.05)
-        run.cancel(); self.assertEqual(run.wait(30), 'cancelled')
+        time.sleep(0.3)
+        run.cancel(); self.assertEqual(run.wait(40), 'cancelled')
         snap = run.snapshot(); self.assertEqual(snap['nodes']['run']['status'], 'interrupted'); self.assertEqual(snap['nodes']['run']['sub']['nodes']['a']['status'], 'interrupted'); self.assertEqual(snap['nodes']['after']['status'], 'cancelled')
 
 
