@@ -28,6 +28,8 @@ from . import events as lab_events
 from . import memory as lab_memory
 from . import ideas as lab_ideas
 from . import memory_import as lab_import
+from . import ask as lab_ask
+from . import costs as lab_costs
 from .journal import Journal
 from .sessions import SessionRegistry
 from .devices import DeviceManager, DeviceError
@@ -202,12 +204,21 @@ class LabServer(ThreadingHTTPServer):
                                     load_mainbook=lambda name:lab_mainbooks.load(self.state_dir,name),on_inner=inner).start()
             self.journal.write('run.start','Run %s %s: %d cell%s'%(mode,reason or 'approved',len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan,'reason':reason})
             return self.graph_run.snapshot()
+    def chat(self,model,messages,timeout=300,format=None):
+        """models.chat with the measured tokens and seconds folded into this device's cost stats (local_lab/costs.py).
+        Same signature as models.chat so decide.ask sees that structured output is supported."""
+        r=lab_models.chat(model,messages,timeout=timeout,format=format)
+        try:lab_costs.record(self.state_dir,r)
+        except OSError:pass
+        return r
+    def decide(self,*args,**kwargs):
+        return lab_decide.ask(*args,chat=self.chat,**kwargs)
     def ask_model(self,cfg,prompt):
         """How a model cell asks the local model: schema -> one checked decision (decide.ask); no schema -> plain chat."""
         if cfg.get('schema'):
-            r=lab_decide.ask(cfg['model'],prompt,'',cfg['schema'],attempts=cfg.get('attempts',2))
+            r=self.decide(cfg['model'],prompt,'',cfg['schema'],attempts=cfg.get('attempts',2))
             return {'ok':bool(r.get('ok')),'value':r.get('decision'),'raw':r.get('raw'),'error':r.get('error'),'elapsed_ms':r.get('elapsed_ms'),'attempts':r.get('attempts'),'model':r.get('model',cfg['model'])}
-        r=lab_models.chat(cfg['model'],[{'role':'user','content':prompt[:50000]}])
+        r=self.chat(cfg['model'],[{'role':'user','content':prompt[:50000]}])
         return {'ok':bool(r.get('ok')),'value':r.get('reply'),'raw':r.get('reply'),'error':None if r.get('ok') else r.get('output'),'elapsed_ms':r.get('elapsed_ms'),'attempts':1,'model':r.get('model',cfg['model'])}
     def kernel_status(self):
         row=self.kernels.active()
@@ -368,6 +379,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 if path=='/api/memory/graph':return self.out(200,lab_memory.graph(self.server.state_dir,tier=one('tier')))
                 if path=='/api/memory/search':return self.out(200,{'hits':lab_memory.search(self.server.state_dir,one('q',''),tier=one('tier'))})
                 if path=='/api/memory/review':return self.out(200,lab_import.review_status(self.server.state_dir))
+                if path=='/api/memory/costs':return self.out(200,lab_costs.summary(self.server.state_dir))
             except lab_memory.MemoryError as e:return self.out(409 if 'Choose a Memory folder' in str(e) else 400,{'error':str(e)})
             except OSError as e:return self.out(500,{'error':'The Memory folder could not be read: %s'%e})
             return self.out(404,{'error':'Unknown memory route'})
@@ -530,7 +542,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 return self.out(202,{'ok':True,'model':model})
             if path=='/api/models/chat':
                 if set(data)!={'model','messages'}:raise ValueError('Send {model, messages}')
-                result=lab_models.chat(data['model'],data['messages'])
+                result=self.server.chat(data['model'],data['messages'])
                 # An armed Mainbook with a chat source is fired by the prompt too (the chat still answers as usual).
                 if self.server.events.has_source('chat') and isinstance(data['messages'],list) and data['messages'] and isinstance(data['messages'][-1],dict) and isinstance(data['messages'][-1].get('content'),str):
                     result['event']=self.server.events.fire('chat',{'prompt':data['messages'][-1]['content'],'model':data['model']},origin='chat')
@@ -539,7 +551,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 # Thin slice: one question, a JSON answer constrained and checked against a small schema (local_lab/decide.py).
                 if set(data)-{'model','question','context','schema','attempts'} or not {'model','question','schema'}<=set(data):raise ValueError('Send {model, question, context, schema, attempts}')
                 if not isinstance(data['model'],str):raise ValueError('model must be text')
-                result=lab_decide.ask(data['model'],data['question'],data.get('context',''),data['schema'],attempts=data.get('attempts',2) if isinstance(data.get('attempts',2),int) else 2)
+                result=self.server.decide(data['model'],data['question'],data.get('context',''),data['schema'],attempts=data.get('attempts',2) if isinstance(data.get('attempts',2),int) else 2)
                 self.server.journal.write('model.decide','Decision %s via %s (%d attempt%s)'%('ok' if result.get('ok') else 'failed',result.get('model',data['model']),result.get('attempts',0),'' if result.get('attempts')==1 else 's'),{'model':data['model'],'ok':bool(result.get('ok')),'attempts':result.get('attempts'),'error':result.get('error')})
                 return self.out(200 if result.get('ok') else 409,result)
             if path=='/api/setup/docker/open':
@@ -797,7 +809,7 @@ class LabHandler(BaseHTTPRequestHandler):
                         if set(data)-{'text','model'} or not isinstance(data.get('text'),str):raise ValueError('Send {text, model?}')
                         if 'model' in data and data['model'] is not None and not isinstance(data['model'],str):raise ValueError('model must be text')
                         lab_memory._root(self.server.state_dir)
-                        out=lab_ideas.draft(self.server.state_dir,data['text'],model=data.get('model') or None)
+                        out=lab_ideas.draft(self.server.state_dir,data['text'],model=data.get('model') or None,ask=self.server.decide)
                         self.server.journal.write('memory.idea.draft','Idea drafted%s: %s'%((' by '+out['model']) if out['model'] else ' without a model',out['draft']['title']),{'model':out['model'],'ok':out['ok'],'elapsed_ms':out['elapsed_ms'],'attempts':out['attempts'],'error':out['error']})
                         return self.out(200,out)
                     if path=='/api/memory/idea':
@@ -822,7 +834,7 @@ class LabHandler(BaseHTTPRequestHandler):
                         if set(data)-{'path','model'}:raise ValueError('Send {path?, model?}')
                         chat=data.get('path') if isinstance(data.get('path'),str) else lab_import.review_status(self.server.state_dir)['next']
                         if not chat:return self.out(409,{'error':'Every imported chat has been reviewed'})
-                        out=lab_import.propose(self.server.state_dir,chat,model=data.get('model') if isinstance(data.get('model'),str) else None)
+                        out=lab_import.propose(self.server.state_dir,chat,model=data.get('model') if isinstance(data.get('model'),str) else None,ask=self.server.decide)
                         self.server.journal.write('memory.review.propose','Review of "%s": %d item%s proposed%s'%(out['chat']['title'],len(out['items']),'' if len(out['items'])==1 else 's',(' by '+out['model']) if out['model'] else ''),{'chat':chat,'model':out['model'],'ok':out['ok'],'items':len(out['items']),'elapsed_ms':out['elapsed_ms'],'error':out['error']})
                         return self.out(200,out)
                     if path=='/api/memory/review/keep':
@@ -832,6 +844,29 @@ class LabHandler(BaseHTTPRequestHandler):
                     if path=='/api/memory/review/skip':
                         if set(data)!={'path'} or not isinstance(data['path'],str):raise ValueError('Send {path}')
                         out=lab_import.skip(self.server.state_dir,data['path']);self.server.journal.write('memory.review.skip','Skipped %s'%data['path'],{'chat':data['path']});return self.out(200,out)
+                    if path=='/api/memory/costs/watts':
+                        if set(data)!={'watts'}:raise ValueError('Send {watts}')
+                        try:w=lab_costs.set_watts(self.server.state_dir,data['watts'])
+                        except ValueError as e:return self.out(400,{'error':str(e)})
+                        self.server.journal.write('memory.costs.watts','Device draw set to %s'%('%g W'%w if w else 'unknown'),{'watts':w});return self.out(200,lab_costs.summary(self.server.state_dir))
+                    if path=='/api/memory/ask/plan':
+                        # Stage 1: what memory has, what reusing or regenerating would cost. Nothing runs.
+                        if set(data)-{'question','model'} or not isinstance(data.get('question'),str):raise ValueError('Send {question, model?}')
+                        out=lab_ask.plan(self.server.state_dir,data['question'],model=data.get('model') if isinstance(data.get('model'),str) else None)
+                        self.server.journal.write('memory.ask.plan','Ask: %d note%s match; %s (%s)'%(len(out['hits']),'' if len(out['hits'])==1 else 's',out['recommendation'],out['why']),{'hits':[h['path'] for h in out['hits']],'recommendation':out['recommendation'],'model':out['model'],'estimate':out['regenerate']})
+                        return self.out(200,out)
+                    if path=='/api/memory/ask/reuse':
+                        if set(data)!={'question','path'} or not isinstance(data['question'],str) or not isinstance(data['path'],str):raise ValueError('Send {question, path}')
+                        out=lab_ask.reuse(self.server.state_dir,data['question'],data['path'])
+                        self.server.journal.write('memory.ask.reuse','Answered from memory: %s'%out['note']['title'],{'path':data['path'],'question':data['question'][:200]});return self.out(200,out)
+                    if path=='/api/memory/ask':
+                        # Stage 3: the model is asked once, with the chosen notes; the reply is saved as a draft answer note.
+                        if set(data)-{'question','model','use','confirm'} or data.get('confirm') is not True or not isinstance(data.get('question'),str) or not isinstance(data.get('model'),str):raise ValueError('Review the cost, then confirm')
+                        use=data.get('use') if isinstance(data.get('use'),list) else []
+                        out=lab_ask.answer(self.server.state_dir,data['question'],data['model'],use=[u for u in use if isinstance(u,str)],chat=self.server.chat)
+                        self.server.journal.write('memory.ask' if out['ok'] else 'memory.ask.failed','Asked %s%s: %s'%(data['model'],(' with %d note%s'%(len(out['used']),'' if len(out['used'])==1 else 's')) if out['used'] else '',('%d ms, %s tokens'%(out['elapsed_ms'],(out['tokens'] or {}).get('reply'))) if out['ok'] else out['error']),{'model':data['model'],'used':out['used'],'elapsed_ms':out['elapsed_ms'],'tokens':out['tokens'],'note':(out['note'] or {}).get('path'),'error':out['error']})
+                        return self.out(200 if out['ok'] else 409,out)
+                except lab_ask.AskError as e:return self.out(400,{'error':str(e)})
                 except lab_ideas.IdeaError as e:return self.out(400,{'error':str(e)})
                 except lab_import.ImportError_ as e:return self.out(400,{'error':str(e)})
                 except lab_memory.MemoryError as e:return self.out(409 if ('changed since' in str(e) or 'Choose a Memory folder' in str(e)) else 400,{'error':str(e)})

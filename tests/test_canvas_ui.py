@@ -509,31 +509,33 @@ class MemoryPageTests(RealServerCase):
     """The Memory page: approve a folder, write notes that link, search, grow a note, mark it stable, see the link graph."""
     def test_folder_notes_links_search_grow_and_graph(self):
         p = self.page
-        p.goto(self.origin + '/memory'); p.wait_for_selector('#memory-main:not([hidden])'); p.wait_for_function("() => document.getElementById('memory-stats').textContent.includes('No Memory folder')")
-        self.assertTrue(p.locator('#note-new').is_disabled())
-        p.click('#memory-choose'); p.wait_for_selector('#folder-dialog[open]'); self.assertTrue(p.input_value('#folder-input').endswith('MainAIger Lab/Memory')); p.click('#folder-confirm')
-        p.wait_for_function("() => document.getElementById('memory-stats').textContent.startsWith('0 notes')"); self.assertTrue((self.root / 'Documents' / 'MainAIger Lab' / 'Memory' / 'notes').is_dir())
+        p.goto(self.origin + '/memory'); p.wait_for_selector('#memory-main:not([hidden])'); p.wait_for_function("() => document.getElementById('memory-stats').textContent !== 'Reading…'")
+        if 'No Memory folder' in p.inner_text('#memory-stats'):  # the tests share one server; another test may have approved the folder already
+            self.assertTrue(p.locator('#note-new').is_disabled())
+            p.click('#memory-choose'); p.wait_for_selector('#folder-dialog[open]'); self.assertTrue(p.input_value('#folder-input').endswith('MainAIger Lab/Memory')); p.click('#folder-confirm')
+            p.wait_for_function("() => document.getElementById('memory-stats').textContent.startsWith('0 notes')")
+        self.assertTrue((self.root / 'Documents' / 'MainAIger Lab' / 'Memory' / 'notes').is_dir())
         # Two notes that link to each other.
         p.click('#note-new'); p.wait_for_selector('#new-dialog[open]'); p.fill('#new-title', 'Quantum kernels'); p.select_option('#new-kind', 'fact'); p.fill('#new-tags', 'quantum, ml'); p.fill('#new-body', 'Kernel methods map features into Hilbert space. Used by [[Fraud idea]].'); p.click('#new-confirm')
         p.wait_for_function("() => document.getElementById('note-meta').textContent.includes('notes/quantum-kernels.md')"); self.assertEqual(p.input_value('#note-title'), 'Quantum kernels')
         p.click('#note-new'); p.wait_for_selector('#new-dialog[open]'); p.fill('#new-title', 'Fraud idea'); p.select_option('#new-kind', 'idea'); p.fill('#new-body', 'Try [[Quantum kernels]] on the fraud data.'); p.click('#new-confirm')
         p.wait_for_function("() => document.getElementById('note-meta').textContent.includes('notes/fraud-idea.md')")
-        p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 2"); self.assertIn('2 notes', p.inner_text('#memory-stats'))
+        p.wait_for_function("() => [...document.querySelectorAll('#note-list li b')].filter(b => ['Quantum kernels', 'Fraud idea'].includes(b.textContent)).length === 2")
         # Links open the other note; search finds by words; a dated section grows a draft into growing; mark stable.
         p.locator('#note-links a[data-link="Quantum kernels"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Quantum kernels'")
         p.fill('#memory-search', 'hilbert'); p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 1 && document.querySelector('#note-list li mark')")
-        self.assertIn('Hilbert', p.inner_text('#note-list li .snippet')); p.fill('#memory-search', ''); p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 2")
+        self.assertIn('Hilbert', p.inner_text('#note-list li .snippet')); p.fill('#memory-search', ''); p.wait_for_function("() => document.querySelectorAll('#note-list li').length >= 2")
         p.locator('#note-list li[data-path="notes/fraud-idea.md"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Fraud idea'")
         self.assertEqual(p.input_value('#note-status'), 'draft')
         p.click('text=Add a dated section'); p.fill('#note-add-heading', 'Asked again'); p.fill('#note-add-text', 'Also try amplitude encoding.'); p.click('#note-add')
         p.wait_for_function("() => document.getElementById('note-status').value === 'growing'"); self.assertIn('## Asked again', p.input_value('#note-body'))
         p.click('#note-stable'); p.wait_for_function("() => document.getElementById('note-status').value === 'stable' && document.getElementById('note-result').textContent === 'Saved.'")
         self.assertIn('status: stable', (self.root / 'Documents' / 'MainAIger Lab' / 'Memory' / 'notes' / 'fraud-idea.md').read_text())
-        p.select_option('#filter-status', 'stable'); p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 1"); p.select_option('#filter-status', '')
-        # The graph view draws both notes with their links; chats tier is empty.
-        p.click('#view-graph'); p.wait_for_function("() => document.querySelectorAll('.mnode').length === 2 && document.querySelectorAll('#edge-layer path').length === 2")
+        p.select_option('#filter-status', 'stable'); p.wait_for_function("() => [...document.querySelectorAll('#note-list li b')].some(b => b.textContent === 'Fraud idea') && ![...document.querySelectorAll('#note-list li b')].some(b => b.textContent === 'Quantum kernels')"); p.select_option('#filter-status', '')
+        # The graph view draws the notes with their links.
+        p.click('#view-graph'); p.wait_for_function("() => document.querySelectorAll('.mnode').length >= 2 && document.querySelectorAll('#edge-layer path').length >= 2")
         p.locator('.mnode[data-path="notes/quantum-kernels.md"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Quantum kernels'")
-        p.click('#view-list'); p.click('#tier-chats'); p.wait_for_function("() => document.getElementById('list-note').textContent.includes('No chats')")
+        p.click('#view-list'); p.click('#tier-chats'); p.wait_for_function("() => document.getElementById('list-note').textContent.includes('chats') || document.getElementById('list-note').textContent.includes('No chats')")
         kinds = [e['kind'] for e in self.server.journal.tail(0, 200)]; self.assertIn('memory.create', kinds); self.assertIn('memory.folder', kinds); self.assertIn('memory.append', kinds)
 
     def test_idea_box_drafts_reviews_saves_and_grows(self):
@@ -572,10 +574,9 @@ class MemoryPageTests(RealServerCase):
         p.wait_for_function("() => document.getElementById('review-state').textContent.includes('2 to go')")
         p.locator('#note-list li[data-path="chats/chatgpt/fraud-model-talk.md"]').click(); p.wait_for_function("() => document.getElementById('note-meta').textContent.includes('read-only')"); self.assertTrue(p.locator('#note-body').is_disabled())
         # Review with a scripted model: one item proposed; edit its title, keep it; the note links to the chat.
-        def ask(model, question, context, schema, attempts=2):
-            return {'ok': True, 'decision': {'items': [{'kind': 'fact', 'title': 'Quantum kernel fraud approach', 'text': 'Feature map, then an SVM.', 'tags': ['quantum'], 'messages': [2]}]}, 'elapsed_ms': 30, 'attempts': 1, 'model': model}
-        with patch.object(memory_import, 'decide') as fake_decide, patch.object(memory_import.models, 'installed_models', return_value=[{'name': 'fake:1b'}]):
-            fake_decide.ask = ask
+        def chat(model, messages, timeout=300, format=None):  # what Ollama would answer, in the shape decide.ask asks for
+            return {'ok': True, 'model': model, 'reply': json.dumps({'items': [{'kind': 'fact', 'title': 'Quantum kernel fraud approach', 'text': 'Feature map, then an SVM.', 'tags': ['quantum'], 'messages': [2]}]}), 'elapsed_ms': 30, 'tokens': {'prompt': 50, 'reply': 40}}
+        with patch.object(type(self.server), 'chat', lambda self_, *a, **k: chat(*a, **k)), patch.object(memory_import.models, 'installed_models', return_value=[{'name': 'fake:1b'}]):
             p.click('#review-next'); p.wait_for_selector('#review-dialog[open]')
             self.assertIn('1 proposal by fake:1b', p.inner_text('#review-meta')); self.assertEqual(p.input_value('#review-items .review-item .title'), 'Quantum kernel fraud approach')
             p.fill('#review-items .review-item .title', 'Quantum kernels for fraud'); p.click('#review-keep')
@@ -587,6 +588,29 @@ class MemoryPageTests(RealServerCase):
         with patch.object(memory_import.models, 'installed_models', return_value=[]):
             p.click('#review-next'); p.wait_for_selector('#review-dialog[open]'); self.assertIn('No local model', p.inner_text('#review-meta')); p.click('#review-skip')
         p.wait_for_function("() => document.getElementById('review-state').textContent.includes('0 to go')"); self.assertTrue(p.locator('#review-next').is_disabled())
+
+    def test_ask_shows_memory_hits_two_costs_and_answers(self):
+        from local_lab import ask as ask_module, memory
+        p = self.page
+        p.goto(self.origin + '/memory'); p.wait_for_selector('#memory-main:not([hidden])')
+        if 'No Memory folder' in p.inner_text('#memory-stats'):
+            p.click('#memory-choose'); p.wait_for_selector('#folder-dialog[open]'); p.click('#folder-confirm'); p.wait_for_function("() => !document.getElementById('memory-stats').textContent.includes('No Memory folder')")
+        memory.create(self.server.state_dir, 'Haptic glove setup', 'Calibrate each finger, then run the demo scene.', status_='stable', tags=['haptics'])
+        p.fill('#costs-watts', '30'); p.click('#costs-save'); p.wait_for_function("() => document.getElementById('toast').textContent.includes('Device draw saved')")
+        p.fill('#ask-text', 'how do I set up the haptic glove?')
+        with patch.object(ask_module.models, 'installed_models', return_value=[{'name': 'fake:1b'}]):
+            p.press('#ask-text', 'Enter'); p.wait_for_selector('#ask-result:not([hidden])')
+            self.assertIn('Haptic glove setup', p.inner_text('#ask-hits')); self.assertIn('0 tokens · instant', p.inner_text('#cost-reuse-text')); self.assertIn('Wh (approx.)', p.inner_text('#cost-regen-text')); self.assertIn('default rates', p.inner_text('#cost-regen-text'))
+            self.assertIn('Recommended: use memory', p.inner_text('#ask-recommend')); self.assertTrue(p.evaluate("() => document.getElementById('cost-reuse').classList.contains('recommended')"))
+            p.click('#ask-reuse'); p.wait_for_selector('#ask-answer:not([hidden])'); self.assertIn('Calibrate each finger', p.inner_text('#ask-answer-text')); self.assertIn('no model ran', p.inner_text('#ask-answer-meta'))
+            # Ask the model instead: a scripted chat answers; the answer is saved as a draft note with the note used as a source.
+            def chat(model, messages, timeout=300, format=None):
+                return {'ok': True, 'model': model, 'reply': 'Calibrate each finger; run the demo scene.', 'elapsed_ms': 800, 'tokens': {'prompt': 120, 'reply': 12}}
+            with patch.object(type(self.server), 'chat', lambda self_, *a, **k: chat(*a, **k)):
+                p.click('#ask-model'); p.wait_for_function("() => document.getElementById('ask-answer-meta').textContent.includes('saved as a draft answer note')")
+            self.assertIn('fake:1b · 0.8 s', p.inner_text('#ask-answer-meta')); self.assertIn('12 reply tokens', p.inner_text('#ask-answer-meta')); self.assertIn('Wh', p.inner_text('#ask-answer-meta'))
+            p.wait_for_function("() => document.getElementById('note-title').value.startsWith('Q: how do I set up the haptic glove')"); self.assertEqual(p.input_value('#note-kind'), 'answer'); self.assertIn('note: notes/haptic-glove-setup.md', p.inner_text('#note-sources'))
+        self.assertIn('fake:1b:', p.inner_text('#costs-summary'))
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')

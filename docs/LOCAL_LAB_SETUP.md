@@ -917,6 +917,48 @@ least two shared) and grow are tested (`tests/test_memory.py`); the routes
 against a fake Ollama too; the box, the review, saving and growing without a
 model are tested in headless Chromium.
 
+### Ask: memory first, with the cost of each way (`local_lab/ask.py`, `local_lab/costs.py`, `/api/memory/ask*`)
+
+The ASK box at the top of the Memory page. Type a question and press Enter:
+
+1. **Plan** (`POST /api/memory/ask/plan`, nothing runs): the notes that
+   match (persistent memory only, never raw chats), ranked by a plain score
+   — each query word counts 3 in a title and 1 in the text, with a small
+   bonus for stable notes — and two cost cards: **Use memory** (0 tokens,
+   instant, the best note) and **Ask the model** (about how many tokens,
+   about how many seconds, and about how many watt-hours when you have
+   entered the device's draw under COSTS — all labelled approximate). The
+   seconds come from the tokens per second *this device* has measured for
+   that model across every call made through the Lab (`model-stats.json`
+   in the private state, fed by every chat, decision, idea, review and
+   answer); until a model has answered once the card says *default rates,
+   not measured yet*. The recommendation is **use memory** when a stable
+   note's title shares half the question's words (or no model is running),
+   else **ask the model**; `rule` notes tagged `ask` are listed as house
+   rules, and one tagged `auto-reuse` lets a reuse recommendation act
+   without asking.
+2. **Use memory** shows the best note as the answer — no model runs; the Log
+   says "answered from memory".
+3. **Ask the model** (`POST /api/memory/ask`, confirm) asks once with the
+   matching notes as context and a fixed brevity rule (the reader is
+   competent, fewest words, only what is needed, "not in memory" for what
+   the notes do not cover); the house rules go into the prompt; the reply
+   is saved as a draft `answer` note (`Q: …`) that cites the question, the
+   notes used and the model, and the measured cost (seconds, reply tokens,
+   watt-hours) is shown next to the estimate.
+
+Where this is on the "visual and modular" road: the three stages are
+routes you can call from anything; making the pipeline a Mainbook needs a
+host cell (cells in the sandbox cannot reach the Memory folder or Ollama),
+noted in `MEMORY_PLAN.md`.
+
+**Status:** rates (defaults, then measured), estimates, watts, the plan's
+ranking and recommendation, reuse, the answer prompt and the saved note,
+the routes against a fake Ollama and the measured-call counting are tested
+(`tests/test_ask.py`); the box, both cards, reuse and a scripted answer
+are tested in headless Chromium. The energy figure is an estimate by
+construction (seconds × watts); the seconds are measured.
+
 ### Chat import and review (`local_lab/memory_import.py`, `/api/memory/import*`, `/api/memory/review*`)
 
 **Import.** Export your chats first (ChatGPT: Settings → Data controls →

@@ -82,7 +82,7 @@ notes, so they link to the chats, answers and Mainbooks that came from them.
 decision (`decide.py`, a small schema, your local model); the note is shown
 before it is saved (a reviewed step). Growing = appending dated sections.
 
-## 3. Memory-first, cost-aware answers (M3)
+## 3. Memory-first, cost-aware answers (M3) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Ask" (three routes on the page; the Mainbook form needs a host cell)
 
 **What:** an ask box whose pipeline is itself a **Mainbook** you can open and
 rearrange: Question → *Search memory* → *Decide: reuse or regenerate* →

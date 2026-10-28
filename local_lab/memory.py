@@ -547,23 +547,37 @@ def search(state_dir, query, tier=None, limit=20):
             if not file.is_file():
                 continue
             try:
-                row = _summary(file, root)
+                text = file.read_text(encoding='utf-8', errors='replace')
+                row = _summary(file, root, text)
             except OSError:
                 continue
-            row.update(snippet=snippet, score=round(-score, 3))
+            row.update(snippet=snippet, score=_score(words, row['title'], text, -score))
             hits.append(row)
-            if len(hits) >= limit:
-                break
-        return hits
+        hits.sort(key=lambda r: -r['score'])
+        return hits[:limit]
     for row in listing(state_dir, tier=tier, limit=MAX_NOTES):
         try:
-            text = (root / row['path']).read_text(encoding='utf-8', errors='replace').lower()
+            text = (root / row['path']).read_text(encoding='utf-8', errors='replace')
         except OSError:
             continue
-        score = sum(text.count(w) for w in words) + 3 * sum(1 for w in words if w in row['title'].lower())
+        score = _score(words, row['title'], text, 0.0)
         if score:
-            pos = min((text.find(w) for w in words if w in text), default=0)
+            low = text.lower()
+            pos = min((low.find(w) for w in words if w in low), default=0)
             row.update(snippet=text[max(0, pos - 60):pos + 120].replace('\n', ' '), score=score)
             hits.append(row)
     hits.sort(key=lambda r: -r['score'])
     return hits[:limit]
+
+
+def _score(words, title, text, rank_hint=0.0):
+    """A plain relevance score that works for a vault of three notes as well as three thousand: each distinct query
+    word counts 3 when it is in the title and 1 when it is in the text; the FTS rank only breaks ties."""
+    low_title, low_text = title.lower(), text.lower()
+    score = 0.0
+    for w in words:
+        if w in low_title:
+            score += 3.0
+        if w in low_text:
+            score += 1.0
+    return round(score + min(0.5, max(0.0, rank_hint) * 1000.0 if abs(rank_hint) < 0.001 else min(0.5, abs(rank_hint) / 20.0)), 3)

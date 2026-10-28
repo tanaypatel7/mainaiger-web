@@ -24,7 +24,7 @@
     $('memory-stats').textContent = st.configured ? `${st.counts.notes} note${st.counts.notes === 1 ? '' : 's'} · ${st.counts.chats} chat${st.counts.chats === 1 ? '' : 's'} · search: ${st.search}` : 'No Memory folder yet';
     $('memory-summary').textContent = st.configured ? `${st.folder} — notes/ holds what you keep (${st.counts.notes}), chats/ holds imported conversations (${st.counts.chats}). Search uses ${st.search === 'fts5' ? 'an SQLite full-text index in the private state folder' : 'a plain scan (SQLite FTS5 is not available here)'}.` : 'Approve a folder to start keeping notes.';
     for (const sel of [$('filter-kind'), $('note-kind'), $('new-kind')]) { const keep = sel.value; sel.textContent = ''; if (sel.id === 'filter-kind') { const o = document.createElement('option'); o.value = ''; o.textContent = 'any kind'; sel.append(o); } for (const k of st.kinds) { if (k === 'chat' && sel.id !== 'filter-kind') continue; const o = document.createElement('option'); o.value = k; o.textContent = k; sel.append(o); } if (keep) sel.value = keep; }
-    $('note-new').disabled = !st.configured; $('idea-draft').disabled = !st.configured || !$('idea-text').value.trim();
+    $('note-new').disabled = !st.configured; $('idea-draft').disabled = !st.configured || !$('idea-text').value.trim(); $('ask-plan').disabled = !st.configured || !$('ask-text').value.trim();
   }
   async function refreshList() {
     if (!state.status || !state.status.configured) { $('list-note').textContent = 'Choose a Memory folder to begin.'; $('note-list').textContent = ''; return; }
@@ -90,6 +90,47 @@
     $('delete-dialog').close(); const n = state.note; if (!n) return;
     try { await api('/api/memory/note/delete', {path: n.path, confirm: true}); state.note = null; state.selected = null; renderNote(); toast('Deleted.'); await refreshStatus(); await refreshList(); if (state.view === 'graph') await drawGraph(); } catch (error) { toast(error.message); }
   });
+  // ---- ask: memory first, two costs, your choice (local_lab/ask.py, local_lab/costs.py)
+  let askPlan = null;
+  const fmtCost = c => c ? `~${c.tokens} tokens · ~${c.seconds} s${c.watt_hours != null ? ` · ~${c.watt_hours} Wh (approx.)` : ''} · ${c.model} (${c.basis === 'measured' ? 'measured here' : 'default rates, not measured yet'})` : 'No local model is running.';
+  $('ask-text').addEventListener('input', () => { $('ask-plan').disabled = !$('ask-text').value.trim() || !(state.status && state.status.configured); });
+  $('ask-text').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!$('ask-plan').disabled) $('ask-plan').click(); } });
+  $('ask-plan').addEventListener('click', async () => {
+    const question = $('ask-text').value.trim(); if (!question) return;
+    $('ask-plan').disabled = true; $('ask-note').textContent = 'Searching memory…'; $('ask-answer').hidden = true;
+    try { askPlan = await api('/api/memory/ask/plan', {question}); } catch (error) { $('ask-note').textContent = error.message; $('ask-plan').disabled = false; return; }
+    $('ask-plan').disabled = false; $('ask-note').textContent = '';
+    const r = askPlan; const hits = $('ask-hits'); hits.textContent = '';
+    for (const h of r.hits) { const li = document.createElement('li'); const b = document.createElement('b'); b.textContent = h.title; b.dataset.path = h.path; const st = document.createElement('span'); st.className = 'status'; st.dataset.s = h.status; st.textContent = h.status; const sn = document.createElement('span'); sn.className = 'muted'; sn.textContent = (h.snippet || '').replace(/[\[\]]/g, '').slice(0, 90); li.append(b, st, sn); hits.append(li); }
+    if (!r.hits.length) { const li = document.createElement('li'); li.className = 'muted'; li.textContent = 'Nothing in memory matches.'; hits.append(li); }
+    $('cost-reuse-text').textContent = r.hits.length ? `0 tokens · instant · ${r.hits[0].title} (${r.hits[0].status})` : 'No note to reuse.'; $('ask-reuse').disabled = !r.hits.length;
+    $('cost-regen-text').textContent = fmtCost(r.regenerate); $('ask-model').disabled = !r.model; $('ask-model').textContent = r.hits.length ? `Ask with the ${Math.min(3, r.hits.length)} matching note${Math.min(3, r.hits.length) === 1 ? '' : 's'}` : 'Ask the model';
+    $('cost-reuse').classList.toggle('recommended', r.recommendation === 'reuse'); $('cost-regen').classList.toggle('recommended', r.recommendation === 'regenerate');
+    $('ask-recommend').textContent = `Recommended: ${r.recommendation === 'reuse' ? 'use memory' : r.recommendation === 'regenerate' ? 'ask the model' : 'nothing to do'} — ${r.why}.${r.rules.length ? ` House rules in effect: ${r.rules.map(x => x.title).join(', ')}.` : ''}${r.auto ? ' (a rule lets memory answer without asking)' : ''}`;
+    $('ask-result').hidden = false;
+    if (r.auto) $('ask-reuse').click();
+  });
+  $('ask-hits').addEventListener('click', event => { const b = event.target.closest('b[data-path]'); if (b) open(b.dataset.path); });
+  $('ask-reuse').addEventListener('click', async () => {
+    if (!askPlan || !askPlan.hits.length) return;
+    try { const r = await api('/api/memory/ask/reuse', {question: askPlan.question, path: askPlan.hits[0].path}); $('ask-answer').hidden = false; $('ask-answer-text').textContent = r.note.body.trim(); $('ask-answer-meta').textContent = `From memory: "${r.note.title}" (${r.note.status}) · 0 tokens · no model ran.`; open(r.note.path); }
+    catch (error) { toast(error.message); }
+  });
+  $('ask-model').addEventListener('click', async () => {
+    if (!askPlan || !askPlan.model) return;
+    $('ask-model').disabled = true; $('ask-answer').hidden = false; $('ask-answer-text').textContent = 'Asking ' + askPlan.model + '…'; $('ask-answer-meta').textContent = '';
+    try {
+      const r = await api('/api/memory/ask', {question: askPlan.question, model: askPlan.model, use: askPlan.use, confirm: true});
+      $('ask-answer-text').textContent = r.reply.trim(); const est = askPlan.regenerate || {};
+      $('ask-answer-meta').textContent = `${r.model} · ${(r.elapsed_ms / 1000).toFixed(1)} s (estimated ${est.seconds} s) · ${r.tokens && r.tokens.reply != null ? r.tokens.reply + ' reply tokens' : 'tokens unknown'}${r.watt_hours != null ? ` · ~${r.watt_hours} Wh` : ''} · ${r.used.length} note${r.used.length === 1 ? '' : 's'} used · saved as a draft answer note.`;
+      await refreshStatus(); await refreshList(); await refreshCosts(); if (r.note) open(r.note.path);
+    } catch (error) { $('ask-answer-text').textContent = error.message; }
+    $('ask-model').disabled = false;
+  });
+  async function refreshCosts() {
+    try { const c = await api('/api/memory/costs'); state.costs = c; const names = Object.keys(c.models); $('costs-summary').textContent = names.length ? names.map(n => `${n}: ${c.models[n].tokens_per_second} tokens/s over ${c.models[n].calls} call${c.models[n].calls === 1 ? '' : 's'}`).join(' · ') : 'No model measured yet: estimates use default rates until a model answers once through this Lab.'; if (document.activeElement !== $('costs-watts')) $('costs-watts').value = c.watts || ''; } catch {}
+  }
+  $('costs-save').addEventListener('click', async () => { const v = $('costs-watts').value.trim(); try { await api('/api/memory/costs/watts', {watts: v ? Number(v) : null}); toast(v ? 'Device draw saved.' : 'Device draw cleared.'); await refreshCosts(); } catch (error) { toast(error.message); } });
   // ---- ideas: describe -> draft (model) -> review -> save as new or grow an existing idea
   let ideaDraft = null;
   $('idea-text').addEventListener('input', () => { $('idea-draft').disabled = !$('idea-text').value.trim() || !(state.status && state.status.configured); });
@@ -220,5 +261,5 @@
   const endPan = () => { state.panning = null; }; viewport.addEventListener('pointerup', endPan); viewport.addEventListener('pointercancel', endPan);
   viewport.addEventListener('wheel', event => { event.preventDefault(); const factor = Math.exp(-event.deltaY * 0.0015); const zoom = Math.max(0.2, Math.min(2.5, state.zoom * factor)); const r = viewport.getBoundingClientRect(), mx = event.clientX - r.left, my = event.clientY - r.top; state.pan = {x: mx - (mx - state.pan.x) * (zoom / state.zoom), y: my - (my - state.pan.y) * (zoom / state.zoom)}; state.zoom = zoom; applyViewport(); }, {passive: false});
   // ---- boot
-  (async () => { try { const st = await api('/api/state'); csrf = st.csrf; $('memory-main').hidden = false; await refreshStatus(); await refreshList(); await refreshReview(); } catch (error) { if ($('locked').hidden) toast(error.message); } })();
+  (async () => { try { const st = await api('/api/state'); csrf = st.csrf; $('memory-main').hidden = false; await refreshStatus(); await refreshList(); await refreshReview(); await refreshCosts(); } catch (error) { if ($('locked').hidden) toast(error.message); } })();
 })();
