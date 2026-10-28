@@ -136,7 +136,7 @@ What the pieces do, and which file implements them:
   as one `.py` with the notes as comments. **Clear outputs** resets counts.
 - **Open example…** lists the Mainbooks in `examples/` (`signal-demo`,
   `csv-pipeline`, `branching-stats`, `self-improve`, `self-improve-repo`,
-  `ask-memory`);
+  `ask-memory`, `review-chats`);
   `tests/test_examples.py` runs each one with the real kernel, so they cannot
   rot. **Open .ipymb / .ipynb** sends a
   plain notebook to `POST /api/graph/import` (`graph.from_notebook()`): cells
@@ -567,36 +567,53 @@ sharing the session.
 ### Memory cells (`graph.py` `MEMORY_OPS`, `graph_run.py` `_memory_cell`, `server.py` `memory_op`)
 
 A code cell can **use Memory** instead of its own code: tick "This cell uses
-Memory" in the SELECTED NODE panel and pick one of four fixed operations the
+Memory" in the SELECTED NODE panel and pick one of six fixed operations the
 Lab performs on this Mac (never arbitrary host code, never inside the
 container): **search** (reads the session variable `question`, stores
 `hits`), **read** (`path` → `note`), **write** (`title`, `body`, optional
 `kind`, `tags` → `note_path`; adds a draft note with the open Mainbook as its
-source) and **ask** (`question`, optional `use` → `answer`: the brief,
-memory-grounded answer of the ASK box, saved as a note). Inputs are read from
-the session as JSON, the operation runs on the host, the result is bound back
-like a model cell's answer, and each operation is a Log line
-(`memory.cell.search`, `memory.cell.read`, `memory.cell.write`,
-`memory.ask`). The run review names every Memory cell and says when a run
-may add notes; it refuses the run when no Memory folder is approved. The
-analysis treats the fixed input names as the cell's inputs, so data edges
-flow through (a form that sets `question` feeds a search; `hits` feeds the
-next cell). A cell uses Memory, runs a Mainbook, asks a model or carries a
-form — one of the four.
+source), **ask** (`question`, optional `use`, `model` → `answer`: the brief,
+memory-grounded answer of the ASK box, saved as a note), **review** (no
+inputs → `proposal`: the next unreviewed imported chat and what your local
+model proposes keeping from it — `chat`, `items`, `model`, `error`,
+`pending`; nothing is written; `chat` is `None` when nothing is pending) and
+**keep** (`path`, `items`, optional `model` → `kept`: writes the items as
+draft notes linked to that chat and marks it reviewed, exactly like *Keep
+selected* on the Memory page). Inputs are read from the session as JSON, the
+operation runs on the host, the result is bound back like a model cell's
+answer, and each operation is a Log line (`memory.cell.search`,
+`memory.cell.read`, `memory.cell.write`, `memory.ask`,
+`memory.review.propose`, `memory.review.keep`). The run review names every
+Memory cell and says when a run may add notes; it refuses the run when no
+Memory folder is approved. The analysis treats the fixed input names as the
+cell's inputs, so data edges flow through (a form that sets `question` feeds
+a search; `hits` feeds the next cell). A cell uses Memory, runs a Mainbook,
+asks a model or carries a form — one of the four.
 
 Why fixed operations: the Lab's rule is that everything touching the system
-is a reviewed, named step. Four named operations keep that rule while
+is a reviewed, named step. Six named operations keep that rule while
 letting a Mainbook read and grow memory — which is what makes the ASK and
 review loops composable as graphs. `examples/ask-memory.ipymb` is the ASK
 pipeline laid out as cards (Question form → Search memory → *Choose notes*,
 plain Python you edit → Ask with notes → Keep the answer → Write the note
-→ Report).
+→ Report). `examples/review-chats.ipymb` is the chat-review loop as cards
+(Review next chat → *Choose items*, the rule for what to keep → Keep, on an
+arrow whose condition is "a real chat and the model answered" → Report →
+a loop arrow back to Review while chats are pending, at most 3 more per
+run). Kept notes are drafts either way; promoting them to stable stays a
+human step on the Memory page. `review` deliberately takes no `path`: a
+loop's session keeps the previous pass's variables, and a named chat would
+be reviewed again and again — "the next unreviewed chat" is the loop-safe
+meaning.
 
 **Status:** validation, analysis, the engine (inputs read, result bound,
-missing input, refused operation, no operations configured) and the real
+missing input, refused operation, no operations configured, the review loop
+with a conditional keep and the nothing-pending case) and the real
 operations through the server (search and write against a real vault, the
-review's refusal without a folder) are tested (`tests/test_nested.py`); the
-example runs in CI with fake operations (`tests/test_examples.py`); the
+review's refusal without a folder, review and keep over a real imported
+export with the model patched: one proposal per chat, draft notes with chat
+sources, the ledger emptied) are tested (`tests/test_nested.py`); both
+examples run in CI with fake operations (`tests/test_examples.py`); the
 panel and a real search are tested in headless Chromium.
 
 ### Thin-slice decisions (`local_lab/decide.py`, `POST /api/models/decide`)
@@ -1024,6 +1041,8 @@ chat files stay untouched and the loop resumes where it stopped. Without a
 running model the dialog says so and you can skip or keep notes by hand.
 Every import, proposal, keep and skip is a Log line. `decide.py` schemas
 may now hold a list of flat objects, which is what this answer shape needs.
+The same loop as a Mainbook — with your own rule for what to keep instead
+of checkboxes — is `examples/review-chats.ipymb` (see "Memory cells").
 
 **Status:** both export shapes (tree walk, hidden system messages, code
 and output content, attachments), bad inputs, idempotent re-import,

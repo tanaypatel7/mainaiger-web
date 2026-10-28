@@ -816,7 +816,7 @@
   });
   let installedModels = [];
   async function refreshModels() { try { const data = await api('/api/models'); installedModels = (data.models || []).map(m => m.name); const dl = $('model-names'); dl.textContent = ''; for (const n of installedModels) { const o = document.createElement('option'); o.value = n; dl.append(o); } } catch {} }
-  const MEM_DEFAULT_OUTPUT = {search: 'hits', read: 'note', write: 'note_path', ask: 'answer'};
+  const MEM_DEFAULT_OUTPUT = {search: 'hits', read: 'note', write: 'note_path', ask: 'answer', review: 'proposal', keep: 'kept'};
   function renderMemoryChoice(id) {
     const own = meta(cellOf(nodeById(id))); const mem = own.memory || null;
     $('mem-enabled').checked = !!mem; $('mem-fields').hidden = !mem;
@@ -1054,7 +1054,7 @@
     sessBox.hidden = !sessLines.length; for (const line of sessLines) { const li = document.createElement('li'); li.textContent = line; sessList.append(li); }
     const arrowsBox = $('run-dialog-arrows'), arrowsList = $('run-dialog-arrows-list'); arrowsList.textContent = '';
     const arrowLines = [];
-    for (const mm of check.memory || []) arrowLines.push(`${titleOf(nodeById(mm.node) || {id: mm.node, kind: 'code'})} uses Memory: ${mm.op}${mm.op === 'write' ? ' \u2014 this run may add draft notes to your Memory folder' : mm.op === 'ask' ? ' \u2014 asks your local model and saves the answer as a note' : ''}`);
+    for (const mm of check.memory || []) arrowLines.push(`${titleOf(nodeById(mm.node) || {id: mm.node, kind: 'code'})} uses Memory: ${mm.op}${mm.op === 'write' || mm.op === 'keep' ? ' \u2014 this run may add draft notes to your Memory folder' : mm.op === 'ask' || mm.op === 'review' ? ' \u2014 asks your local model' + (mm.op === 'ask' ? ' and saves the answer as a note' : ' about the next imported chat') : ''}`);
     if (check.memory && check.memory.length && check.memory_ready === false) arrowLines.push('No Memory folder is approved yet (Memory page): these cells cannot run.');
     for (const b of check.mainbooks || []) arrowLines.push(`${titleOf(nodeById(b.node) || {id: b.node, kind: 'code'})} runs the Mainbook "${b.name}"${b.found ? ` (${b.cells} cell${b.cells === 1 ? '' : 's'}, in this session)` : ' \u2014 not in the Mainbooks folder'}`);
     for (const l of check.loops || []) arrowLines.push(`Loop ${l.source_title} \u2192 ${l.target_title}: runs the body again at most ${l.max_fires} time${l.max_fires === 1 ? '' : 's'}${l.when ? ` when ${l.when}` : ''}${l.inside ? '' : ' \u2014 leads outside this run, so it will not fire'}`);

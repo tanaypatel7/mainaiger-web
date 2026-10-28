@@ -245,6 +245,17 @@ class LabServer(ThreadingHTTPServer):
             if not out['ok']:raise lab_ask.AskError(out['error'])
             self.journal.write('memory.ask','A cell asked %s%s: %d ms'%(model,(' with %d note%s'%(len(out['used']),'' if len(out['used'])==1 else 's')) if out['used'] else '',out['elapsed_ms']),{'model':model,'used':out['used'],'elapsed_ms':out['elapsed_ms'],'tokens':out['tokens'],'note':(out['note'] or {}).get('path')})
             return {'reply':out['reply'],'model':model,'used':out['used'],'note_path':(out['note'] or {}).get('path'),'elapsed_ms':out['elapsed_ms'],'tokens':out['tokens']}
+        if op=='review':
+            # Always the next unreviewed chat (never a named one: a loop's session keeps last pass's `path`, which would review the same chat again).
+            chat=lab_import.review_status(state)['next']
+            if not chat:return {'chat':None,'items':[],'model':None,'ok':True,'error':None,'pending':0}
+            out=lab_import.propose(state,chat,ask=self.decide)
+            self.journal.write('memory.review.propose','Review of "%s" by a cell: %d item%s proposed%s'%(out['chat']['title'],len(out['items']),'' if len(out['items'])==1 else 's',(' by '+out['model']) if out['model'] else ''),{'chat':chat,'model':out['model'],'ok':out['ok'],'items':len(out['items']),'error':out['error']})
+            out['pending']=lab_import.review_status(state)['pending'];return out
+        if op=='keep':
+            items=params.get('items') if isinstance(params.get('items'),list) else []
+            out=lab_import.keep(state,str(params['path']),items,model=params.get('model') if isinstance(params.get('model'),str) else None)
+            self.journal.write('memory.review.keep','A cell kept %d item%s from %s'%(len(out['written']),'' if len(out['written'])==1 else 's',params['path']),{'chat':params['path'],'written':[w['path'] for w in out['written']]});return out
         raise ValueError('Unknown memory operation')
     def ask_model(self,cfg,prompt):
         """How a model cell asks the local model: schema -> one checked decision (decide.ask); no schema -> plain chat."""

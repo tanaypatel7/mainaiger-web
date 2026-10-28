@@ -111,7 +111,7 @@ with `question` bound like an event; the answer note links to the idea.
 Cost figures come from `models.py` (it already measures elapsed time and
 tokens per chat) kept as a running average per model in the state folder.
 
-## 4. Chat import (M4) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Chat import and review" (the review loop is on the page; Memory cells now make a Mainbook version possible — a `review` operation would be the one addition)
+## 4. Chat import (M4) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Chat import and review"; the review loop is on the page *and* a Mainbook (`examples/review-chats.ipymb`, through the `review` and `keep` Memory operations)
 
 **What:** upload a ChatGPT or Claude export zip on the Memory page. The Lab
 reads it on this Mac (never in the container), writes one chat note per
@@ -128,10 +128,12 @@ ChatGPT's zip holds `conversations.json` with a `mapping` of message nodes
 (`author.role`, `content.parts`, `create_time`); Claude's data export holds
 `conversations.json` with `name`, `created_at` and `chat_messages`
 (`sender`, `text`, attachments). Attachments are copied next to the chat
-note. The review Mainbook is an example (`examples/memory-review.ipymb`)
-like the self-improvement loops, so it is visible and editable.
+note. The review Mainbook is an example (`examples/review-chats.ipymb`)
+like the self-improvement loops, so it is visible and editable. *As built:*
+one chat per pass rather than a batch, the choice made by a rule cell you
+edit (the page keeps the checkbox version), and kept items stay drafts.
 
-## 5. Memory as Mainbooks (M5) — **built (28 Oct 2026)**: `mainbook` notes have a Run button (opens the Mainbook on the Graph page with the run review ready), and **Memory cells** (search, read, write, ask: fixed host operations, `LOCAL_LAB_SETUP.md` "Memory cells") let a Mainbook read and grow memory; rule notes are read by the ask pipeline
+## 5. Memory as Mainbooks (M5) — **built (28 Oct 2026)**: `mainbook` notes have a Run button (opens the Mainbook on the Graph page with the run review ready), and **Memory cells** (search, read, write, ask, review, keep: fixed host operations, `LOCAL_LAB_SETUP.md` "Memory cells") let a Mainbook read and grow memory; rule notes are read by the ask pipeline
 
 **What:** a note of `kind: mainbook` points at a saved Mainbook: a procedure
 with its code, its tests, and a direct way to run it ("run this memory").

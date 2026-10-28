@@ -138,6 +138,32 @@ class MemoryCellTests(unittest.TestCase):
         if op == 'read': return {'path': params['path'], 'title': 'A', 'body': 'body text'}
         if op == 'write': return 'notes/' + params['title'].lower().replace(' ', '-') + '.md'
         if op == 'ask': raise ValueError('No local model is running')
+        if op == 'review':
+            n = sum(1 for o, _ in self.ops if o == 'review')  # chat A with two proposals, then chat B with none, then nothing pending
+            if n == 1: return {'chat': {'path': 'chats/a.md', 'title': 'A'}, 'items': [{'kind': 'fact', 'title': 'Keep me', 'text': 'A fact long enough to keep.', 'tags': [], 'messages': [1]}, {'kind': 'idea', 'title': 'Drop me', 'text': 'short', 'tags': [], 'messages': []}], 'model': 'fake:1b', 'ok': True, 'error': None, 'pending': 2}
+            if n == 2: return {'chat': {'path': 'chats/b.md', 'title': 'B'}, 'items': [], 'model': 'fake:1b', 'ok': True, 'error': None, 'pending': 1}
+            return {'chat': None, 'items': [], 'model': None, 'ok': True, 'error': None, 'pending': 0}
+        if op == 'keep':
+            left = 2 - sum(1 for o, _ in self.ops if o == 'keep')
+            return {'chat': params['path'], 'written': [{'path': 'notes/' + i['title'].lower().replace(' ', '-') + '.md', 'title': i['title'], 'kind': i['kind']} for i in params['items']], 'review': {'pending': left, 'reviewed': 2 - left}}
+    def test_review_and_keep_loop_until_nothing_is_pending(self):
+        """review (no inputs) → choose (the rule) → keep only when a chat is real → report → loop while pending; the optional `model` rides along."""
+        doc = chain([('rv', ''), ('choose', 'path = proposal["chat"]["path"] if proposal["chat"] else None\nmodel = proposal["model"]\nitems = [i for i in proposal["items"] if i["kind"] == "fact"]\nprint("chat:", path, "keeping", len(items))'), ('kp', ''), ('rep', 'print("pending:", kept["review"]["pending"])')])
+        doc['notebook']['cells'][0]['metadata']['mainaiger']['memory'] = {'op': 'review'}; doc['notebook']['cells'][2]['metadata']['mainaiger']['memory'] = {'op': 'keep'}
+        edge = next(e for e in doc['graph']['edges'] if e['target'] == 'kp'); edge['when'] = 'path is not None'
+        doc['graph']['edges'].append({'id': 'back', 'kind': 'control', 'source': 'rep', 'target': 'rv', 'loop': True, 'when': 'kept["review"]["pending"] > 0', 'max_fires': 5})
+        doc = g.validate(doc)
+        self.assertEqual((g.analysis(doc)['rv']['inputs'], g.analysis(doc)['rv']['optional'], g.analysis(doc)['kp']['inputs'], g.analysis(doc)['kp']['optional']), ([], [], ['path', 'items'], ['model']))
+        self.assertEqual(g.preflight(doc, g.plan(doc, 'all'))['missing'], [], 'review needs nothing; keep gets path and items from choose')
+        run = GraphRun(doc, g.plan(doc, 'all'), self.kernel, memory_op=self.memory_op).start(); self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error')); snap = run.snapshot()
+        self.assertEqual([o for o, _ in self.ops], ['review', 'keep', 'review', 'keep'], 'two chats reviewed and kept; the loop stops when nothing is pending')
+        self.assertEqual(self.ops[0][1], {}, 'review reads no inputs: always the next unreviewed chat'); self.assertEqual(self.ops[1][1], {'path': 'chats/a.md', 'items': [{'kind': 'fact', 'title': 'Keep me', 'text': 'A fact long enough to keep.', 'tags': [], 'messages': [1]}], 'model': 'fake:1b'})
+        self.assertEqual(self.ops[3][1]['items'], [], 'chat B had nothing worth keeping but is still marked reviewed')
+        self.assertEqual((snap['edges']['back']['fires'], snap['edges']['back']['state']), (1, 'not_fired')); self.assertEqual(snap['nodes']['choose']['output'], 'chat: chats/b.md keeping 0\n'); self.assertEqual(snap['nodes']['rep']['output'], 'pending: 0\n'); self.assertIn('Memory keep → kept', snap['nodes']['kp']['note'] or '')
+        # Nothing pending at all: review answers {chat: None}, the conditional arrow does not fire, keep and report stay idle, the run still finishes.
+        self.ops[:] = [('review', {})] * 2 + [('keep', {})] * 2
+        run = GraphRun(doc, g.plan(doc, 'all'), self.kernel, memory_op=self.memory_op).start(); self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error')); snap = run.snapshot()
+        self.assertEqual((snap['nodes']['choose']['output'], snap['nodes']['kp']['status'], snap['nodes']['rep']['status'], snap['edges']['back']['state']), ('chat: None keeping 0\n', 'idle', 'idle', 'idle'))
     def test_validation_analysis_run_and_failures(self):
         doc = chain([('q', 'question = "haptics"'), ('s', ''), ('use', 'use = [h["path"] for h in hits]\nprint(len(hits), use)'), ('r', ''), ('w', 'title = "Kept " + question\nbody = note["body"]'), ('out', '')])
         for ident, mem in (('s', {'op': 'search'}), ('r', {'op': 'read', 'output': 'note'}), ('out', {'op': 'write', 'output': 'where'})):
@@ -224,6 +250,32 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(run['state'], 'finished', run.get('error')); self.assertIn('Haptic glove setup', run['nodes']['s']['output']); self.assertEqual(run['nodes']['w']['output'], 'notes/kept-haptic-glove-setup.md')
         note = memory.read(self.state, 'notes/kept-haptic-glove-setup.md'); self.assertEqual((note['status'], note['tags'], note['sources']), ('draft', ['kept'], ['mainbook: the open Mainbook'])); self.assertEqual(note['body'].strip(), 'From notes/haptic-glove-setup.md')
         kinds = [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]; self.assertIn('memory.cell.search', kinds); self.assertIn('memory.cell.write', kinds)
+    def test_review_and_keep_cells_turn_an_imported_chat_into_draft_notes(self):
+        from local_lab import memory, memory_import, models
+        from tests.test_memory_import import chatgpt_rows
+        import zipfile
+        auth = self.login(); cookie = {'Cookie': auth['Cookie']}
+        memory.configure(self.state, str(self.root / 'Memory')); z = self.root / 'export.zip'
+        with zipfile.ZipFile(z, 'w') as a: a.writestr('conversations.json', json.dumps(chatgpt_rows()))
+        self.assertEqual(memory_import.import_zip(self.state, str(z))['imported'], 2)
+        seen = []
+        def decide(server, model, question, context, schema, attempts=2):
+            seen.append(context); return {'ok': True, 'decision': {'items': [{'kind': 'fact', 'title': 'Quantum kernel fraud approach', 'text': 'Feature map, then an SVM.', 'tags': ['quantum'], 'messages': [1]}]}, 'elapsed_ms': 5, 'attempts': 1, 'model': model}
+        doc = chain([('rv', ''), ('choose', 'path = proposal["chat"]["path"] if proposal["chat"] else None\nmodel = proposal["model"]\nitems = proposal["items"]'), ('kp', ''), ('rep', 'print(kept["review"]["pending"], [w["path"] for w in kept["written"]])')])
+        doc['notebook']['cells'][0]['metadata']['mainaiger']['memory'] = {'op': 'review'}; doc['notebook']['cells'][2]['metadata']['mainaiger']['memory'] = {'op': 'keep'}
+        next(e for e in doc['graph']['edges'] if e['target'] == 'kp')['when'] = 'path is not None'
+        doc['graph']['edges'].append({'id': 'back', 'kind': 'control', 'source': 'rep', 'target': 'rv', 'loop': True, 'when': 'kept["review"]["pending"] > 0', 'max_fires': 3}); doc = g.validate(doc)
+        self.assertEqual(self.req('/api/graph', {'document': doc}, auth)[0], 200)
+        check = self.req('/api/graph/preflight', {'mode': 'all', 'nodes': [], 'include_prerequisites': False}, auth)[1]; self.assertEqual((check['memory'], check['memory_ready']), ([{'node': 'rv', 'op': 'review'}, {'node': 'kp', 'op': 'keep'}], True))
+        rev = self.req('/api/sessions', headers=cookie)[1]['revision']; self.req('/api/sessions/start', {'confirm': True, 'revision': rev}, auth)
+        with patch.object(type(self.server), 'decide', decide), patch.object(models, 'installed_models', lambda: [{'name': 'q:1b'}]):
+            self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth); run = self.wait_run(cookie)
+        self.assertEqual(run['state'], 'finished', run.get('error')); self.assertEqual(len(seen), 2, 'each chat was proposed once, in import order'); self.assertIn('Fraud model talk', seen[0]); self.assertIn('Code chat', seen[1])
+        self.assertEqual((run['edges']['back']['fires'], run['edges']['back']['state']), (1, 'not_fired')); self.assertEqual(run['nodes']['rep']['output'], "0 ['notes/quantum-kernel-fraud-approach-2.md']\n")
+        self.assertEqual(memory_import.review_status(self.state)['pending'], 0)
+        kept = [n for n in memory.listing(self.state, tier='notes') if n['kind'] == 'fact']; self.assertEqual(len(kept), 2, 'one draft note per chat (the fake proposes the same item each time)')
+        note = memory.read(self.state, kept[0]['path']); self.assertEqual((note['status'], note['front'].get('reviewed_by')), ('draft', 'q:1b')); self.assertTrue(any(s.startswith('chat: chats/chatgpt/') for s in note['sources']))
+        kinds = [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]; self.assertEqual(kinds.count('memory.review.propose'), 2); self.assertEqual(kinds.count('memory.review.keep'), 2)
 
 
 if __name__ == '__main__':

@@ -84,8 +84,9 @@ SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}(/[A-Za-z0-9][A-Za-
 MAINBOOK_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,80}$')  # a saved Mainbook a cell may run (local_lab/mainbooks.py NAME)
 # Memory cells: a fixed operation the Lab performs on the host (never arbitrary host code), reading named session
 # variables and binding one result. {op: (input variable names, default output name)}.
-MEMORY_OPS = {'search': (('question',), 'hits'), 'read': (('path',), 'note'), 'write': (('title', 'body'), 'note_path'), 'ask': (('question',), 'answer')}
-MEMORY_OPTIONAL = {'write': ('kind', 'tags'), 'ask': ('use',)}
+MEMORY_OPS = {'search': (('question',), 'hits'), 'read': (('path',), 'note'), 'write': (('title', 'body'), 'note_path'), 'ask': (('question',), 'answer'),
+              'review': ((), 'proposal'), 'keep': (('path', 'items'), 'kept')}
+MEMORY_OPTIONAL = {'write': ('kind', 'tags'), 'ask': ('use', 'model'), 'keep': ('model',)}
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
 
@@ -246,7 +247,7 @@ def validate(document):
             if mem in (None, False, {}, ''):
                 del own['memory']
             else:
-                _require(isinstance(mem, dict) and set(mem) <= {'op', 'output'} and mem.get('op') in MEMORY_OPS, 'Cell %d memory must be {op: search|read|write|ask, output?}' % i)
+                _require(isinstance(mem, dict) and set(mem) <= {'op', 'output'} and mem.get('op') in MEMORY_OPS, 'Cell %d memory must be {op: search|read|write|ask|review|keep, output?}' % i)
                 _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can use Memory' % i)
                 _require('model' not in own and 'form' not in own and 'mainbook' not in own, 'Cell %d: a cell uses Memory, runs a Mainbook, asks a model or carries a form, not several' % i)
                 if mem.get('output') in (None, ''):

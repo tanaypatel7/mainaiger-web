@@ -24,6 +24,8 @@ EXPECTED = {
     'self-improve': {'last': 'report', 'contains': 'Self-improvement loop: 2 attempts', 'fired': 14, 'steps': 12, 'also': {'apply': 'candidate accuracy', 'report': 'last verdict: keep'}, 'model': True,
                      'loop': ('e-judge-propose', 1, 'not_fired')},
     'ask-memory': {'last': 'report', 'contains': 'model: fake:1b', 'fired': 8, 'steps': 7, 'memory': True, 'also': {'choose': 'using 1:', 'report': 'saved as: notes/q-what-do-i-know.md'}},
+    'review-chats': {'last': 'report', 'contains': 'kept 0 draft note(s) from chats/b.md; 0 chat(s) still pending', 'fired': 10, 'steps': 8, 'memory': True,
+                     'also': {'choose': 'chat: B | 0 proposed, keeping 0 | 0 chat(s) still pending'}, 'loop': ('e-report-review', 1, 'not_fired')},
     'self-improve-repo': {'last': 'report', 'contains': 'Repository self-improvement loop: 2 attempts', 'fired': 15, 'steps': 13, 'model': 'repo',
                           'also': {'copy': 'copied', 'baseline': 'baseline: OK', 'tests': 'tests after the change: OK', 'report': 'git apply change.patch'},
                           'loop': ('e-judge-propose', 1, 'not_fired')},
@@ -114,7 +116,13 @@ class ExampleRunTests(unittest.TestCase):
                 try:
                     doc = g.validate(load_example(name))
                     fake = make_fake_model(expect['model']) if expect.get('model') else None
+                    reviews = []
                     def memory_op(op, params):
+                        if op == 'review':
+                            reviews.append(params)
+                            if len(reviews) == 1: return {'chat': {'path': 'chats/a.md', 'title': 'A'}, 'items': [{'kind': 'fact', 'title': 'Keep me', 'text': 'A fact long enough to keep.', 'tags': [], 'messages': [1]}, {'kind': 'idea', 'title': 'Short', 'text': 'tiny', 'tags': [], 'messages': []}], 'model': 'fake:1b', 'ok': True, 'error': None, 'pending': 1}
+                            return {'chat': {'path': 'chats/b.md', 'title': 'B'}, 'items': [], 'model': 'fake:1b', 'ok': True, 'error': None, 'pending': 0}
+                        if op == 'keep': return {'chat': params['path'], 'written': [{'path': 'notes/kept.md', 'title': i['title'], 'kind': i['kind']} for i in params['items']], 'review': {'pending': 1 if params['path'] == 'chats/a.md' else 0}}
                         if op == 'search': return [{'path': 'notes/project.md', 'title': 'Project notes', 'status': 'stable', 'kind': 'fact', 'tags': [], 'snippet': 'x', 'score': 4}]
                         if op == 'ask': return {'reply': 'A local-first graph lab.', 'model': 'fake:1b', 'used': params.get('use', []), 'note_path': None, 'elapsed_ms': 12, 'tokens': {'reply': 6}}
                         if op == 'write': return 'notes/q-what-do-i-know.md'
