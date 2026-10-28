@@ -87,7 +87,7 @@
       if (node.kind === 'code') { const needs = document.createElement('div'); needs.className = 'node-needs'; needs.hidden = true; el.append(needs); }
       if (node.kind === 'code' || node.kind === 'markdown') {
         const area = document.createElement('textarea'); area.spellcheck = false; area.value = sourceOf(cellOf(node)); area.placeholder = node.kind === 'code' ? '# Python — Shift+Enter runs this cell' : 'Write a note…'; area.setAttribute('aria-label', node.kind === 'code' ? 'Python code' : 'Note'); el.append(area); if (node.kind === 'markdown') requestAnimationFrame(() => autosize(area));
-        if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); const sess = document.createElement('span'); sess.className = 'node-session'; sess.title = 'Session this cell runs on'; foot.append(sess); el.append(foot); }
+        if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); const sess = document.createElement('span'); sess.className = 'node-session'; sess.title = 'Session this cell runs on'; foot.append(sess); const mdl = document.createElement('span'); mdl.className = 'node-model'; mdl.title = 'This cell asks a model; its text is the prompt'; foot.append(mdl); el.append(foot); }
       }
       if (node.kind === 'finish') { const foot = document.createElement('div'); foot.className = 'finish-note'; el.append(foot); }
       if (node.kind !== 'finish' && node.kind !== 'markdown') { const pout = document.createElement('span'); pout.className = 'port out'; pout.title = 'Drag to another cell to add a trigger'; el.append(pout); }
@@ -114,6 +114,8 @@
     el.querySelector('.count').textContent = 'In [' + (cell.execution_count == null ? ' ' : cell.execution_count) + ']';
     el.querySelector('.stale').hidden = !(last && last.source_hash && last.source_hash !== fnv(sourceOf(cell)) && !(runNode && runNode.status === 'running'));
     el.querySelector('.node-session').textContent = own.session ? 'on ' + own.session : '';
+    el.querySelector('.node-model').textContent = own.model ? 'model ' + own.model.model + ' → ' + own.model.output : ''; el.classList.toggle('model', !!own.model);
+    const ta = el.querySelector('textarea'); if (ta) ta.placeholder = own.model ? 'Prompt — use {{output:Cell title}} and {{var:name}}' : '# Python — Shift+Enter runs this cell';
     const needs = missingFor(id), needsEl = el.querySelector('.node-needs'); needsEl.hidden = !needs.length; needsEl.textContent = needs.length ? 'needs: ' + needs.join(', ') : '';
     const out = el.querySelector('.node-output'); let text = '', hasError = false;
     if (runNode && runNode.output !== undefined) { text = runNode.output || ''; if (runNode.error) { text += (text ? '\n' : '') + (runNode.error.traceback || []).join('\n'); hasError = true; } if (runNode.note) text += (text ? '\n' : '') + runNode.note; }
@@ -249,6 +251,7 @@
       $('node-links').textContent = `Triggered by: ${by.length ? by.join(', ') : '— (not connected)'} · Triggers: ${to.length ? to.join(', ') : '—'}`;
       $('node-analysis-note').textContent = info.error ? 'Analysis unavailable: ' + info.error : (info.declared ? 'Declared by you (overrides the automatic reading).' : 'Read automatically from the code; edit below to override.');
       const own = meta(cell); if (document.activeElement !== $('override-inputs')) $('override-inputs').value = (own.inputs || []).join(', '); if (document.activeElement !== $('override-outputs')) $('override-outputs').value = (own.outputs || []).join(', ');
+      renderModelChoice(sel.id);
       renderSessionChoice(sel.id);
       renderLibraryLink(sel.id);
       const r = state.run && state.run.nodes[sel.id]; const last = r || own.last_run;
@@ -666,6 +669,31 @@
       await refreshSessions(); state.session = await api('/api/kernel'); renderInspector(); refreshJournal(); if (row.active) refreshVariables();
     } catch (error) { $('session-new-note').textContent = error.message; }
   });
+  let installedModels = [];
+  async function refreshModels() { try { const data = await api('/api/models'); installedModels = (data.models || []).map(m => m.name); const dl = $('model-names'); dl.textContent = ''; for (const n of installedModels) { const o = document.createElement('option'); o.value = n; dl.append(o); } } catch {} }
+  function renderModelChoice(id) {
+    const own = meta(cellOf(nodeById(id))); const cfg = own.model || null;
+    $('model-enabled').checked = !!cfg; $('model-fields').hidden = !cfg;
+    if (document.activeElement !== $('model-name')) $('model-name').value = cfg ? cfg.model : (installedModels[0] || '');
+    if (document.activeElement !== $('model-output')) $('model-output').value = cfg ? cfg.output : 'reply';
+    if (document.activeElement !== $('model-schema')) $('model-schema').value = cfg && cfg.schema ? JSON.stringify(cfg.schema, null, 1) : '';
+    $('model-note').textContent = cfg ? `Asks ${cfg.model}; the answer becomes "${cfg.output}"${cfg.schema ? ', checked against the shape' : ', as text'}.` : '';
+  }
+  $('model-enabled').addEventListener('change', () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    if ($('model-enabled').checked) { $('model-fields').hidden = false; if (!$('model-name').value) $('model-name').value = installedModels[0] || ''; $('model-name').focus(); }
+    else { delete meta(cellOf(sel)).model; updateNode(sel.id); markDirty(); renderModelChoice(sel.id); }
+  });
+  $('model-apply').addEventListener('click', async () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    const cfg = {model: $('model-name').value.trim(), output: $('model-output').value.trim() || 'reply'};
+    const schemaText = $('model-schema').value.trim();
+    if (schemaText) { try { cfg.schema = JSON.parse(schemaText); } catch (error) { $('model-note').textContent = 'The answer shape is not valid JSON: ' + error.message; return; } }
+    if (!cfg.model) { $('model-note').textContent = 'Name a model (install one on the Models page).'; return; }
+    meta(cellOf(sel)).model = cfg; updateNode(sel.id); markDirty(); clearTimeout(state.saveTimer); await save();
+    if (state.dirty) { $('model-note').textContent = $('save-state').textContent; delete meta(cellOf(sel)).model; updateNode(sel.id); return; }
+    renderModelChoice(sel.id); toast(`Cell asks ${cfg.model}; answer stored as ${cfg.output}.`);
+  });
   function renderSessionChoice(id) {
     const sel = $('node-session'); const node = nodeById(id); const own = meta(cellOf(node)); const current = own.session || '';
     sel.textContent = ''; const first = document.createElement('option'); first.value = ''; first.textContent = 'Active session'; sel.append(first);
@@ -847,7 +875,7 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); refreshModels(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });

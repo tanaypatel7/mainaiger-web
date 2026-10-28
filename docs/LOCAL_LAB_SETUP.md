@@ -378,6 +378,33 @@ fit rules, the routes and the page are tested against a fake Ollama server
 download and its signature/notarization checks run in the macOS acceptance
 workflow; installing and running Ollama, and model downloads, need a real Mac.
 
+### Model cells (`graph.py` `model_config`, `graph_run.py` `_model_cell`)
+
+A code cell can **ask a model instead of running Python**: tick "This cell
+asks a model" in the SELECTED NODE panel, name an installed Ollama model, the
+variable to store the answer in, and optionally the answer's shape (a small
+JSON schema). The cell's text is then the prompt. Two placeholders pull in
+facts from the graph: `{{output:Cell title}}` pastes what another cell printed
+(this run's output, else the saved one) and `{{var:name}}` pastes a variable's
+type and short summary from the session. The Lab asks the model **on the host**
+(models never run inside the container, which has no network), checks the
+answer against the shape through `decide.ask` when one is given, and binds the
+answer in the cell's session with one assignment
+(`decision = json.loads('…')`), so the next cells use it like any variable.
+The card shows `model <name> → <variable>`, the analysis treats the cell as
+reading its `{{var:…}}` names and defining its output, so data edges connect
+model cells like code cells. Exports to `.ipynb` turn a prompt into a raw cell
+that says what it was. Failures are plain: a bad placeholder stops the run
+before any model is asked (`PromptError`); a model that is not installed or
+answers outside the shape stops it with the reason (`ModelError`); the journal
+records the model used for each cell.
+
+**Status:** validation, rendering, binding, data edges, export and every
+failure path are tested on a real kernel with a fake model
+(`tests/test_sessions.py` `ModelCellTests`); the panel flow is tested in
+headless Chromium (`ModelCellPanelTests`). A real Ollama answer is unverified
+here; on your Mac, install a model on the Models page first.
+
 ### Thin-slice decisions (`local_lab/decide.py`, `POST /api/models/decide`)
 
 The pattern every AI-made decision in MainAIger follows: the harness asks the

@@ -294,3 +294,51 @@ class PanelsOnRealKernelTests(RealServerCase):
         # 6. Stop worker from the table; it stays listed as stopped; cells naming it are refused at review time.
         p.once('dialog', lambda d: d.accept()); p.locator('#sessions-table tbody tr:nth-child(2) button[data-act="stop"]').click()
         p.wait_for_function("() => document.querySelector('#sessions-table tbody tr:nth-child(2) .status').textContent === 'stopped'")
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class ModelCellPanelTests(RealServerCase):
+    """A cell becomes a model cell from the inspector; it runs on a real kernel with a fake model."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sys
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+        cls.asked = []
+        def fake_ask(cfg, prompt):
+            cls.asked.append(prompt); return {'ok': True, 'value': {'action': 'keep', 'confidence': 0.75}, 'raw': '', 'error': None, 'elapsed_ms': 5, 'attempts': 1, 'model': cfg['model']}
+        cls.server.ask_model = fake_ask
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+
+    def test_configure_model_cell_and_run(self):
+        p = self.page
+        # The starter cell prints; a second cell becomes a model cell judging that output; a third uses the answer.
+        p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
+        p.fill('#node-title', 'Evaluate'); p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-1\"] .node-head b').textContent === 'Evaluate'")
+        p.click('#add-cell'); p.wait_for_selector('.node[data-id="cell-2"]')
+        area = p.locator('.node[data-id="cell-2"] textarea'); area.fill('Given this output, keep or revert?\n{{output:Evaluate}}')
+        p.check('#model-enabled'); p.wait_for_selector('#model-fields:not([hidden])')
+        p.fill('#model-name', 'llama3.2:3b'); p.fill('#model-output', 'decision'); p.fill('#model-schema', '{"type":"object","properties":{"action":{"type":"string","enum":["keep","revert"]},"confidence":{"type":"number"}}}')
+        p.click('#model-apply'); p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-2\"] .node-model').textContent === 'model llama3.2:3b → decision'")
+        p.wait_for_function("() => document.getElementById('model-note').textContent.includes('checked against the shape')")
+        self.assertEqual(p.inner_text('#node-outputs'), 'decision', 'the inspector shows the model output as the cell\'s output name')
+        p.click('#add-cell'); p.wait_for_selector('.node[data-id="cell-3"]'); p.locator('.node[data-id="cell-3"] textarea').fill('print("decided", decision["action"], decision["confidence"])')
+        p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        self.assertTrue(p.evaluate("() => [...document.querySelectorAll('#edge-layer .edge-label')].some(t => t.textContent === 'decision')"), 'a data edge carries the model answer to the next cell')
+        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm'); p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]'); self.assertTrue(p.locator('#run-dialog-missing').is_hidden()); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => /finished|failed/.test(document.getElementById('run-summary').textContent)", timeout=30000)
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('.node.code .status')].map(s => s.textContent)"), ['ok', 'ok', 'ok'])
+        self.assertIn('Hello from the graph', self.asked[0]); self.assertNotIn('{{', self.asked[0])
+        self.assertEqual(p.inner_text('.node[data-id="cell-3"] .node-output').strip(), 'decided keep 0.75')
+        self.assertIn('"action": "keep"', p.inner_text('.node[data-id="cell-2"] .node-output'))
+        # Turning the model off makes it a plain code cell again.
+        p.click('#arrange'); p.wait_for_timeout(150); p.locator('.node[data-id="cell-2"] .node-foot').click(); p.wait_for_function("() => document.querySelector('.node.selected') && document.querySelector('.node.selected').dataset.id === 'cell-2'")
+        p.uncheck('#model-enabled'); p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-2\"] .node-model').textContent === ''")

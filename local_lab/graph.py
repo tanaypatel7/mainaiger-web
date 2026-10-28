@@ -27,6 +27,8 @@ SCHEMA_VERSION = 2
 NODE_KINDS = {'start', 'finish', 'code', 'markdown'}
 EDGE_KINDS = {'control', 'data'}
 MAX_NODES, MAX_EDGES, MAX_SOURCE = 200, 1000, 100000
+MODEL_NAME = re.compile(r'^[a-z0-9][a-z0-9._/-]{0,80}(:[a-z0-9][a-z0-9._-]{0,40})?$')
+PLACEHOLDER = re.compile(r'\{\{\s*(var|output)\s*:\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}')
 SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}$')
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
@@ -112,6 +114,27 @@ def validate(document):
                          'Cell %d declared %s must be a list of Python names' % (i, key))
         if 'title' in own:
             _require(isinstance(own['title'], str) and len(own['title']) <= 120, 'Cell %d title too long' % i)
+        if 'model' in own:
+            # A model-backed cell: the source is a prompt, not Python. The Lab asks the named local model and
+            # binds the (optionally schema-checked) answer to `output` in the session. See docs/LOCAL_LAB_SETUP.md.
+            cfg = own['model']
+            if cfg in (None, False, {}):
+                del own['model']
+            else:
+                _require(isinstance(cfg, dict) and set(cfg) <= {'model', 'output', 'schema', 'attempts'}, 'Cell %d model config must be {model, output, schema?, attempts?}' % i)
+                _require(isinstance(cfg.get('model'), str) and MODEL_NAME.match(cfg['model']), 'Cell %d needs a model name like llama3.2:3b' % i)
+                _require(isinstance(cfg.get('output'), str) and NAME.match(cfg['output']), 'Cell %d model output must be a Python name' % i)
+                if cfg.get('schema') is not None:
+                    from . import decide as decide_module
+                    try:
+                        cfg['schema'] = decide_module.check_schema(cfg['schema'])
+                    except decide_module.DecisionError as error:
+                        raise GraphError('Cell %d model schema: %s' % (i, error)) from None
+                else:
+                    cfg.pop('schema', None)
+                if 'attempts' in cfg:
+                    _require(isinstance(cfg['attempts'], int) and not isinstance(cfg['attempts'], bool) and 1 <= cfg['attempts'] <= 3, 'Cell %d model attempts must be 1-3' % i)
+                _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can ask a model' % i)
         if 'session' in own:
             # The label of the session this cell runs on; absent means "the active session".
             if own['session'] in (None, ''):
@@ -272,11 +295,30 @@ def _comprehension_locals(statement):
     return names
 
 
+def model_config(cell):
+    own = cell.get('metadata', {}).get('mainaiger', {}) if isinstance(cell.get('metadata'), dict) else {}
+    cfg = own.get('model')
+    return cfg if isinstance(cfg, dict) and cfg.get('model') and cfg.get('output') else None
+
+
+def prompt_placeholders(text):
+    """[(kind, name)] for every {{var:name}} / {{output:cell}} in a prompt, in order, de-duplicated."""
+    return list(dict.fromkeys((m.group(1), m.group(2)) for m in PLACEHOLDER.finditer(text or '')))
+
+
 def declared(doc, node_id):
     """Inputs/outputs for a code node: the cell's declaration if set, else the analysis."""
     node = node_by_id(doc, node_id)
     cell = doc['notebook']['cells'][node['cell_index']]
     own = cell.get('metadata', {}).get('mainaiger', {})
+    cfg = model_config(cell)
+    if cfg:
+        # The source is a prompt: it reads the variables it mentions and defines the output name.
+        result = {'inputs': [n for k, n in prompt_placeholders(source_text(cell)) if k == 'var'], 'outputs': [cfg['output']], 'error': None, 'model': cfg['model']}
+        if 'inputs' in own:
+            result['inputs'] = list(own['inputs'])
+        result['declared'] = True
+        return result
     result = analyze(source_text(cell))
     if 'inputs' in own:
         result['inputs'] = list(own['inputs'])
@@ -578,6 +620,12 @@ def to_notebook(document):
     for ident in ordered:
         node = node_by_id(doc, ident)
         if node['kind'] in ('code', 'markdown'):
-            cells.append(copy.deepcopy(doc['notebook']['cells'][node['cell_index']]))
+            cell = copy.deepcopy(doc['notebook']['cells'][node['cell_index']])
+            cfg = model_config(cell)
+            if cfg:
+                # A prompt is not Python: export it as a raw cell that says what it was.
+                cell = {'id': cell['id'], 'cell_type': 'raw', 'metadata': cell.get('metadata', {}),
+                        'source': '# MainAIger model cell (%s -> %s); the Lab asks the local model with this prompt:\n%s' % (cfg['model'], cfg['output'], source_text(cell))}
+            cells.append(cell)
     sequential = all(n['kind'] != 'code' or len([e for e in control_edges(doc) if e['target'] == n['id']]) <= 1 for n in doc['graph']['nodes'])
     return {**copy.deepcopy(doc['notebook']), 'cells': cells}, {'lossy': not sequential or len(control_edges(doc)) != len([n for n in doc['graph']['nodes'] if n['kind'] == 'code']) + 1}

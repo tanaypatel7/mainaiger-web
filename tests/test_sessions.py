@@ -179,3 +179,67 @@ class SessionsHttpTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ModelCellTests(unittest.TestCase):
+    """A model cell: prompt rendered from cell outputs and variable summaries, answer bound into the session."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name).resolve()
+        state, key = initialize_state(self.root / 'private'); self.key = key
+        self.server = LabServer(('127.0.0.1', 0), state, key, executor=lambda c, s: self.fail('one-shot'), kernel_factory=local_factory)
+        self.asked = []
+        def fake_ask(cfg, prompt):
+            self.asked.append((cfg, prompt))
+            if cfg.get('schema'): return {'ok': True, 'value': {'action': 'keep', 'confidence': 0.9}, 'raw': '{"action":"keep","confidence":0.9}', 'error': None, 'elapsed_ms': 12, 'attempts': 1, 'model': cfg['model']}
+            if 'fail' in prompt: return {'ok': False, 'value': None, 'raw': None, 'error': 'Model x is not downloaded yet.', 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+            return {'ok': True, 'value': 'The accuracy looks fine.', 'raw': 'The accuracy looks fine.', 'error': None, 'elapsed_ms': 12, 'attempts': 1, 'model': cfg['model']}
+        self.server.ask_model = fake_ask
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
+        self.port = self.server.server_port; self.origin = f'http://127.0.0.1:{self.port}'
+    def tearDown(self):
+        self.server.shutdown(); self.server.server_close(); self.thread.join(); self.tmp.cleanup()
+    req = SessionsHttpTests.req; login = SessionsHttpTests.login; wait_run = SessionsHttpTests.wait_run
+    def doc(self, prompt, schema=None, output='verdict'):
+        doc = g.new_document(); doc['notebook']['cells'][0]['source'] = 'metrics = {"accuracy": 0.9}\nprint("accuracy 0.9")\n'; doc['notebook']['cells'][0]['metadata']['mainaiger']['title'] = 'Evaluate'
+        cfg = {'model': 'llama3.2:3b', 'output': output}
+        if schema: cfg['schema'] = schema
+        doc['notebook']['cells'].append({'id': 'judge', 'cell_type': 'code', 'metadata': {'mainaiger': {'title': 'Judge', 'model': cfg}}, 'source': prompt, 'execution_count': None, 'outputs': []})
+        doc['notebook']['cells'].append({'id': 'use', 'cell_type': 'code', 'metadata': {'mainaiger': {'title': 'Use'}}, 'source': 'print(type(%s).__name__, %s)\n' % (output, output), 'execution_count': None, 'outputs': []})
+        doc['graph']['nodes'] = [{'id': 'start', 'kind': 'start'}, {'id': 'cell-1', 'kind': 'code', 'cell_index': 0}, {'id': 'judge', 'kind': 'code', 'cell_index': 1}, {'id': 'use', 'kind': 'code', 'cell_index': 2}, {'id': 'finish', 'kind': 'finish'}]
+        doc['graph']['edges'] = [{'id': 'e1', 'kind': 'control', 'source': 'start', 'target': 'cell-1'}, {'id': 'e2', 'kind': 'control', 'source': 'cell-1', 'target': 'judge'}, {'id': 'e3', 'kind': 'control', 'source': 'judge', 'target': 'use'}, {'id': 'e4', 'kind': 'control', 'source': 'use', 'target': 'finish'}]
+        return doc
+    def test_plain_reply_is_bound_as_text_and_data_edges_connect(self):
+        auth = self.login(); cookie = {'Cookie': auth['Cookie']}
+        status, view, _ = self.req('/api/graph', {'document': self.doc('Here is what Evaluate printed:\n{{output:Evaluate}}\nAnd the variable {{var:metrics}}. Is it fine?')}, auth)
+        self.assertEqual(status, 200); self.assertEqual(view['analysis']['judge'], {'inputs': ['metrics'], 'outputs': ['verdict'], 'error': None, 'model': 'llama3.2:3b', 'declared': True})
+        self.assertIn({'source': 'judge', 'target': 'use', 'name': 'verdict'}, [{k: e[k] for k in ('source', 'target', 'name')} for e in view['data_edges']])
+        self.assertIn({'source': 'cell-1', 'target': 'judge', 'name': 'metrics'}, [{k: e[k] for k in ('source', 'target', 'name')} for e in view['data_edges']])
+        rev = self.req('/api/sessions', headers=cookie)[1]['revision']; self.req('/api/sessions/start', {'confirm': True, 'revision': rev, 'label': 'main'}, auth)
+        self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth); run = self.wait_run(cookie)
+        self.assertEqual([run['nodes'][i]['status'] for i in ('cell-1', 'judge', 'use')], ['ok', 'ok', 'ok'], run)
+        self.assertEqual(run['nodes']['judge']['model'], 'llama3.2:3b'); self.assertIn('Bound to verdict', run['nodes']['judge']['note'])
+        cfg, prompt = self.asked[0]
+        self.assertIn('accuracy 0.9', prompt, 'the printed output was pasted into the prompt'); self.assertIn('metrics (dict) = 1 items', prompt, 'the variable summary was pasted'); self.assertNotIn('{{', prompt)
+        self.assertEqual(run['nodes']['use']['output'].strip(), 'str The accuracy looks fine.')
+        doc = self.req('/api/graph', headers=cookie)[1]['document']
+        self.assertEqual(doc['notebook']['cells'][1]['outputs'][0]['text'], 'The accuracy looks fine.')
+        exported = self.req('/api/graph/export', headers=cookie)[1]['notebook']; self.assertEqual(exported['cells'][1]['cell_type'], 'raw'); self.assertIn('model cell', exported['cells'][1]['source'])
+    def test_schema_answer_is_bound_as_object_and_failures_are_truthful(self):
+        auth = self.login(); cookie = {'Cookie': auth['Cookie']}
+        schema = {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['keep', 'revert']}, 'confidence': {'type': 'number'}}}
+        self.req('/api/graph', {'document': self.doc('Keep or revert? {{output:Evaluate}}', schema=schema, output='decision')}, auth)
+        rev = self.req('/api/sessions', headers=cookie)[1]['revision']; self.req('/api/sessions/start', {'confirm': True, 'revision': rev, 'label': 'main'}, auth)
+        self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth); run = self.wait_run(cookie)
+        self.assertEqual(run['nodes']['use']['output'].strip(), "dict {'action': 'keep', 'confidence': 0.9}"); self.assertIn('schema-checked', run['nodes']['judge']['note'])
+        # A bad placeholder is a PromptError before any model is asked; a failed model is an error that stops the run; both skip "use".
+        for prompt, ename, evalue in (('{{output:Nowhere}}', 'PromptError', 'no code cell named'), ('{{var:ghost}}', 'PromptError', 'not defined in the session'), ('please fail', 'ModelError', 'not downloaded')):
+            with self.subTest(prompt=prompt):
+                before = len(self.asked); self.req('/api/graph', {'document': self.doc(prompt)}, auth)
+                self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth); run = self.wait_run(cookie)
+                self.assertEqual((run['state'], run['nodes']['judge']['status'], run['nodes']['judge']['error']['ename'], run['nodes']['use']['status']), ('failed', 'error', ename, 'skipped'))
+                self.assertIn(evalue, run['nodes']['judge']['error']['evalue'])
+                if ename == 'PromptError': self.assertEqual(len(self.asked), before, 'no model call for a broken prompt')
+        for bad in ({'model': 'Bad Name', 'output': 'x'}, {'model': 'llama3.2:3b', 'output': '1x'}, {'model': 'llama3.2:3b', 'output': 'x', 'schema': {'nope': 1}}, {'model': 'llama3.2:3b', 'output': 'x', 'attempts': 9}):
+            with self.subTest(bad=bad):
+                doc = self.doc('p'); doc['notebook']['cells'][1]['metadata']['mainaiger']['model'] = bad
+                self.assertEqual(self.req('/api/graph', {'document': doc}, auth)[0], 400)

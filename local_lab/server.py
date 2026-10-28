@@ -149,14 +149,21 @@ class LabServer(ThreadingHTTPServer):
                 with self.graph_lock:
                     graph_module.record_result(doc,ident,result)
                 node=graph_module.node_by_id(doc,ident);title=(doc['notebook']['cells'][node['cell_index']].get('metadata',{}).get('mainaiger',{}).get('title') or ident) if node else ident
-                self.journal.write('cell.'+result['status'],'%s: %s%s'%(title,result['status'],(' in %d ms'%result['elapsed_ms']) if result.get('elapsed_ms') is not None else ''),
-                                   {'node':ident,'status':result['status'],'elapsed_ms':result.get('elapsed_ms'),'session':result.get('session'),'error':(result.get('error') or {}).get('evalue')})
+                self.journal.write('cell.'+result['status'],'%s: %s%s%s'%(title,result['status'],(' in %d ms'%result['elapsed_ms']) if result.get('elapsed_ms') is not None else '',(' · model %s'%result['model']) if result.get('model') else ''),
+                                   {'node':ident,'status':result['status'],'elapsed_ms':result.get('elapsed_ms'),'session':result.get('session'),'model':result.get('model'),'error':(result.get('error') or {}).get('evalue')})
             def finished(run):
                 ok=sum(1 for n in run.nodes.values() if n.get('status')=='ok')
                 self.journal.write('run.'+run.state,'Run %s %s: %d/%d ok%s'%(run.mode,run.state,ok,len(run.plan),(' · '+run.error) if run.error else ''),{'run':run.id,'mode':run.mode,'state':run.state,'ok':ok,'total':len(run.plan)})
-            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished).start()
+            self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model).start()
             self.journal.write('run.start','Run %s approved: %d cell%s'%(mode,len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan})
             return self.graph_run.snapshot()
+    def ask_model(self,cfg,prompt):
+        """How a model cell asks the local model: schema -> one checked decision (decide.ask); no schema -> plain chat."""
+        if cfg.get('schema'):
+            r=lab_decide.ask(cfg['model'],prompt,'',cfg['schema'],attempts=cfg.get('attempts',2))
+            return {'ok':bool(r.get('ok')),'value':r.get('decision'),'raw':r.get('raw'),'error':r.get('error'),'elapsed_ms':r.get('elapsed_ms'),'attempts':r.get('attempts'),'model':r.get('model',cfg['model'])}
+        r=lab_models.chat(cfg['model'],[{'role':'user','content':prompt[:50000]}])
+        return {'ok':bool(r.get('ok')),'value':r.get('reply'),'raw':r.get('reply'),'error':None if r.get('ok') else r.get('output'),'elapsed_ms':r.get('elapsed_ms'),'attempts':1,'model':r.get('model',cfg['model'])}
     def kernel_status(self):
         row=self.kernels.active()
         if row is None: return {'alive':False,'executing':False,'label':None,'count':0,'python':None,'started_at':None,'ended':None,'session_label':None}

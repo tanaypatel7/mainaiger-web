@@ -8,6 +8,7 @@ remaining nodes are marked ``skipped`` and the run ends. Nothing runs in
 parallel; a branching picture is still one Python process executing one
 cell at a time.
 """
+import json
 import secrets
 import threading
 import time
@@ -17,7 +18,7 @@ from . import graph as graph_module
 
 
 class GraphRun:
-    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None):
+    def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None):
         self.id = 'run-' + secrets.token_hex(4)
         self.document, self.plan, self.kernel, self.mode = document, list(plan_ids), kernel, mode
         self.on_result = on_result
@@ -25,6 +26,9 @@ class GraphRun:
         # active one for None; it raises KernelError when that session is missing or dead.
         self.kernel_for = kernel_for
         self.on_finish = on_finish
+        # ask_model(config, prompt) -> {'ok', 'value', 'raw', 'error', 'elapsed_ms', 'attempts', 'model'}; the server
+        # supplies it (local_lab/decide.py or models.chat). Model cells run on the host, never inside the container.
+        self.ask_model = ask_model
         self.current_kernel = None
         self.state = 'pending'
         self.current = None
@@ -63,6 +67,88 @@ class GraphRun:
         node = graph_module.node_by_id(self.document, ident)
         return graph_module.source_text(self.document['notebook']['cells'][node['cell_index']])
 
+    def _cell(self, ident):
+        node = graph_module.node_by_id(self.document, ident)
+        return self.document['notebook']['cells'][node['cell_index']]
+
+    def _recorded_output(self, ref):
+        """The stdout a cell printed: from this run when it ran here, else from the document."""
+        target = next((n for n in self.document['graph']['nodes'] if n['id'] == ref), None)
+        if target is None:
+            for node in self.document['graph']['nodes']:
+                if node['kind'] == 'code' and (self._cell(node['id']).get('metadata', {}).get('mainaiger', {}).get('title') == ref):
+                    target = node
+                    break
+        if target is None or target['kind'] != 'code':
+            return None
+        with self.lock:
+            ran = self.nodes.get(target['id'])
+        if ran and 'output' in ran:
+            return ran.get('output') or ''
+        text = ''
+        for out in self._cell(target['id']).get('outputs') or []:
+            if out.get('output_type') == 'stream':
+                text += ''.join(out['text']) if isinstance(out.get('text'), list) else str(out.get('text', ''))
+        return text
+
+    def _render_prompt(self, source, kernel):
+        """Fill {{output:cell}} and {{var:name}}; returns (prompt, problem)."""
+        summaries = None
+        def fill(match):
+            nonlocal summaries
+            kind, name = match.group(1), match.group(2)
+            if kind == 'output':
+                text = self._recorded_output(name)
+                if text is None:
+                    raise KeyError('no code cell named "%s" for {{output:%s}}' % (name, name))
+                return text
+            if summaries is None:
+                summaries = {v['name']: v for v in (kernel.variables() if kernel is not None else [])}
+            if name not in summaries:
+                raise KeyError('"%s" is not defined in the session for {{var:%s}}' % (name, name))
+            return '%s (%s) = %s' % (name, summaries[name]['type'], summaries[name]['summary'])
+        try:
+            return graph_module.PLACEHOLDER.sub(fill, source), None
+        except KeyError as error:
+            return None, str(error).strip('\'"')
+
+    def _model_cell(self, ident, cfg, source, label):
+        """Ask the model on the host, then bind the answer to cfg['output'] in the cell's session."""
+        started = time.time()
+        def failed(message, kind='ModelError'):
+            return {'status': 'error', 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': int((time.time() - started) * 1000),
+                    'error': {'ename': kind, 'evalue': message, 'traceback': []}, 'model': cfg['model']}
+        if self.ask_model is None:
+            return failed('This Lab has no model runner configured')
+        try:
+            kernel = self.kernel_for(label) if self.kernel_for else self.kernel
+        except KernelError as error:
+            return failed(str(error), 'KernelError')
+        prompt, problem = self._render_prompt(source, kernel)
+        if problem:
+            return failed(problem, 'PromptError')
+        if not prompt.strip():
+            return failed('The prompt is empty')
+        try:
+            answer = self.ask_model(cfg, prompt)
+        except Exception as error:  # a provider bug must not kill the run thread
+            return failed('The model runner failed: %s' % error)
+        if not answer.get('ok'):
+            return failed(answer.get('error') or 'The model did not answer')
+        value = answer.get('value')
+        literal = json.dumps(value, ensure_ascii=False)
+        code = '%s = __import__("json").loads(%r)\n' % (cfg['output'], literal)
+        try:
+            bound = kernel.execute(code)
+        except KernelError as error:
+            return failed('The answer could not be stored in the session: %s' % error, 'KernelError')
+        if bound.get('status') != 'ok':
+            return failed('The answer could not be stored in the session: %s' % (bound.get('error') or {}).get('evalue', bound.get('status')), 'KernelError')
+        shown = value if isinstance(value, str) else json.dumps(value, indent=1, ensure_ascii=False)
+        return {'status': 'ok', 'count': bound.get('count'), 'output': shown, 'truncated': False, 'error': None,
+                'elapsed_ms': int((time.time() - started) * 1000), 'model': answer.get('model', cfg['model']), 'attempts': answer.get('attempts'),
+                'note': 'Bound to %s in the session (model %s%s).' % (cfg['output'], answer.get('model', cfg['model']), ', schema-checked' if cfg.get('schema') else '')}
+
     def _outgoing(self, ident):
         return [e['id'] for e in graph_module.control_edges(self.document) if e['source'] == ident]
 
@@ -78,7 +164,10 @@ class GraphRun:
                     self.nodes[ident] = {'status': 'running', 'started_at': time.time()}
                 source = self._source(ident)
                 label = graph_module.session_of(self.document, ident)
-                if not source.strip():
+                cfg = graph_module.model_config(self._cell(ident))
+                if cfg:
+                    result = self._model_cell(ident, cfg, source, label)
+                elif not source.strip():
                     result = {'status': 'ok', 'count': None, 'output': '', 'truncated': False, 'error': None, 'elapsed_ms': 0,
                               'note': 'Empty cell; nothing to run.'}
                 else:
@@ -108,6 +197,13 @@ class GraphRun:
                 with self.lock:
                     self.fired.extend(self._outgoing(ident))
             self.state = 'finished'
+        except Exception as error:  # a bug must never leave a run "running" forever
+            with self.lock:
+                for ident in self.plan:
+                    if self.nodes[ident].get('status') in ('pending', 'running'):
+                        self.nodes[ident] = {'status': 'skipped'}
+            self.state = 'failed'
+            self.error = 'The run stopped on an internal error: %s: %s' % (type(error).__name__, error)
         finally:
             self.current = None
             self.finished_at = time.time()
