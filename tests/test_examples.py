@@ -114,7 +114,7 @@ class ExampleRunTests(unittest.TestCase):
                     doc = g.validate(load_example(name))
                     fake = make_fake_model(expect['model']) if expect.get('model') else None
                     run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake).start()
-                    self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error'))
+                    self.assertEqual(run.wait(300), 'finished', run.snapshot().get('error'))  # the repository example runs a test module three times; macOS CI runners are slow
                     snap = run.snapshot()
                     self.assertTrue(all(n['status'] == 'ok' for n in snap['nodes'].values()), {k: v['status'] for k, v in snap['nodes'].items()})
                     self.assertIn(expect['contains'], snap['nodes'][expect['last']]['output'])
