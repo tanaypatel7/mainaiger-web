@@ -35,9 +35,9 @@ class DecisionError(ValueError):
 # ---------------------------------------------------------------- schema
 
 
-def check_schema(schema):
+def check_schema(schema, _nested=False):
     """Accept a small subset of JSON Schema: an object with typed properties, enums, required,
-    maxLength, maxItems, items of a simple type. Returns the normalised schema."""
+    maxLength, maxItems, items of a simple type or (one level down) a flat object. Returns the normalised schema."""
     if not isinstance(schema, dict) or schema.get('type', 'object') != 'object' or not isinstance(schema.get('properties'), dict):
         raise DecisionError('schema must be {"type": "object", "properties": {...}}')
     props = schema['properties']
@@ -61,9 +61,13 @@ def check_schema(schema):
             clean['maxLength'] = spec['maxLength']
         if kind == 'array':
             items = spec.get('items', {'type': 'string'})
-            if not isinstance(items, dict) or items.get('type', 'string') not in ('string', 'number', 'integer', 'boolean'):
-                raise DecisionError('property "%s": array items must be a simple type' % name)
-            clean['items'] = {'type': items.get('type', 'string')}
+            if isinstance(items, dict) and items.get('type') == 'object' and not _nested:
+                # One level of structure: a list of small objects with simple fields (e.g. memory items to keep).
+                clean['items'] = check_schema(items, _nested=True)
+            elif not isinstance(items, dict) or items.get('type', 'string') not in ('string', 'number', 'integer', 'boolean'):
+                raise DecisionError('property "%s": array items must be a simple type or a flat object' % name)
+            else:
+                clean['items'] = {'type': items.get('type', 'string')}
             if 'maxItems' in spec and isinstance(spec['maxItems'], int) and spec['maxItems'] > 0:
                 clean['maxItems'] = spec['maxItems']
         out['properties'][name] = clean
@@ -102,6 +106,12 @@ def validate(value, schema):
         if kind == 'array':
             if 'maxItems' in spec and len(v) > spec['maxItems']:
                 return 'field "%s" has more than %d items' % (name, spec['maxItems'])
+            if spec['items']['type'] == 'object':
+                for i, x in enumerate(v):
+                    reason = validate(x, spec['items'])
+                    if reason:
+                        return 'field "%s" item %d: %s' % (name, i + 1, reason)
+                continue
             item_type = _TYPES[spec['items']['type']]
             if not all(isinstance(x, item_type) and not (isinstance(x, bool) and spec['items']['type'] in ('integer', 'number')) for x in v):
                 return 'field "%s" must contain only %s values' % (name, spec['items']['type'])

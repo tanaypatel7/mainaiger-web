@@ -94,10 +94,12 @@ def similar(state_dir, text, limit=3):
     return out
 
 
-def draft(state_dir, text, model=None, ask=decide.ask, installed=models.installed_models):
+def draft(state_dir, text, model=None, ask=None, installed=None):
     """Propose the idea card. Returns {ok, draft, model, elapsed_ms, attempts, error, similar}; never raises for a model problem."""
     text = _clean_text(text)
     out = {'ok': False, 'draft': fallback(text), 'model': None, 'elapsed_ms': 0, 'attempts': 0, 'error': None, 'similar': similar(state_dir, text)}
+    ask = ask or decide.ask  # resolved at call time so tests can patch the modules
+    installed = installed or models.installed_models
     chosen = model
     if not chosen:
         try:

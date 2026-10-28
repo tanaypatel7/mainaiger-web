@@ -917,6 +917,46 @@ least two shared) and grow are tested (`tests/test_memory.py`); the routes
 against a fake Ollama too; the box, the review, saving and growing without a
 model are tested in headless Chromium.
 
+### Chat import and review (`local_lab/memory_import.py`, `/api/memory/import*`, `/api/memory/review*`)
+
+**Import.** Export your chats first (ChatGPT: Settings → Data controls →
+Export data, a zip arrives by email; Claude: Settings → Privacy → Export
+data). On the Memory page, *Import an export…* takes the zip's path on this
+Mac (or its `conversations.json`): **Inspect** reads only `conversations.json`
+out of the zip (no other member is extracted; attachments are listed by
+name, not copied), tells the format by its shape (ChatGPT: a `mapping` tree
+per conversation, walked from `current_node` back to the root so abandoned
+branches are left out; Claude: `chat_messages` with `sender` and `text` or
+`content[].text`, attachments' extracted text appended), counts, titles and
+dates; **Import** writes one read-only note per conversation under
+`chats/<source>/` (`### n · You · time` sections, `source_id` in the front
+matter, the export file as the source). The same export again adds nothing;
+one broken conversation never stops the rest; notes over 2 MB are cut and
+say so. Nothing from the zip is executed.
+
+**Review.** *Review next chat…* takes the oldest unreviewed chat, sends its
+title and text (the first 18 KB of a long one, and says so) to your local
+model as one thin-slice question whose answer is a list of at most eight
+items — kind (fact, procedure, snippet, idea, rule), title, text, up to four
+tags, the message numbers — and shows them as checkboxes with editable
+titles and text. **Keep selected** writes draft notes with the chat and its
+message numbers as sources (`chat: chats/…#2`) and a `From [[chat]]` link;
+**Keep nothing, next chat** skips; **Stop for now** stops. Progress is a
+private ledger (`memory-review.json` in the state folder, mode 0600), so the
+chat files stay untouched and the loop resumes where it stopped. Without a
+running model the dialog says so and you can skip or keep notes by hand.
+Every import, proposal, keep and skip is a Log line. `decide.py` schemas
+may now hold a list of flat objects, which is what this answer shape needs.
+
+**Status:** both export shapes (tree walk, hidden system messages, code
+and output content, attachments), bad inputs, idempotent re-import,
+read-only chat notes, truncation, the review (propose, clean, keep with
+sources, skip, the ledger) and the routes against a fake Ollama are tested
+(`tests/test_memory_import.py`); the dialogs end to end in headless
+Chromium. **Unverified:** the parsers were written from the documented
+export shapes, not from a real export file — drop one in and the first
+real import will tell.
+
 **Status:** the format (front matter round trip, links), folder approval
 rules, create/read/update/append/delete, the chat tier's read-only rule, path
 safety, the link graph (title or id, case-insensitive, unresolved listed),

@@ -118,6 +118,56 @@
       await refreshStatus(); state.tier = 'notes'; setTier(); await refreshList(); open(note.path);
     } catch (error) { toast(error.message); }
   });
+  // ---- import an export zip (path on this Mac) and review chats into memory
+  async function refreshReview() {
+    if (!state.status || !state.status.configured) { $('review-state').textContent = 'Choose a Memory folder first.'; $('review-next').disabled = true; $('import-open').disabled = true; return; }
+    $('import-open').disabled = false;
+    try { state.review = await api('/api/memory/review'); } catch { return; }
+    const r = state.review;
+    $('review-state').textContent = r.chats ? `${r.chats} chat${r.chats === 1 ? '' : 's'} · ${r.reviewed} reviewed · ${r.pending} to go · ${r.kept_total} item${r.kept_total === 1 ? '' : 's'} kept${r.next_title ? ` · next: "${r.next_title}"` : ''}` : 'No chats imported yet.';
+    $('review-next').disabled = !r.pending;
+  }
+  $('import-open').addEventListener('click', () => { $('import-summary').textContent = ''; $('import-titles').textContent = ''; $('import-confirm').disabled = true; $('import-dialog').showModal(); $('import-path').focus(); });
+  $('import-cancel').addEventListener('click', () => $('import-dialog').close());
+  $('import-inspect').addEventListener('click', async () => {
+    $('import-summary').textContent = 'Reading…'; $('import-confirm').disabled = true;
+    try {
+      const r = await api('/api/memory/import/inspect', {path: $('import-path').value.trim()}); state.importInfo = r;
+      $('import-summary').textContent = `${r.source === 'chatgpt' ? 'ChatGPT' : 'Claude'} export: ${r.conversations} conversation${r.conversations === 1 ? '' : 's'}, ${r.messages} messages${r.first ? `, ${r.first.slice(0, 10)} to ${r.last.slice(0, 10)}` : ''}${r.errors.length ? ` · ${r.errors.length} could not be read` : ''}.`;
+      const ul = $('import-titles'); ul.textContent = ''; for (const t of r.titles) { const li = document.createElement('li'); li.textContent = t; ul.append(li); } if (r.conversations > r.titles.length) { const li = document.createElement('li'); li.textContent = `… ${r.conversations - r.titles.length} more`; ul.append(li); }
+      $('import-confirm').disabled = !r.conversations; $('import-confirm').textContent = `Import ${r.conversations} conversation${r.conversations === 1 ? '' : 's'}`;
+    } catch (error) { $('import-summary').textContent = error.message; }
+  });
+  $('import-confirm').addEventListener('click', async () => {
+    $('import-confirm').disabled = true; $('import-summary').textContent = 'Importing…';
+    try { const r = await api('/api/memory/import', {path: $('import-path').value.trim(), confirm: true}); $('import-dialog').close(); $('import-result').textContent = `Imported ${r.imported} from ${r.file}${r.skipped ? ` (${r.skipped} already there)` : ''}${r.errors.length ? `; ${r.errors.length} could not be imported` : ''}.`; toast('Chats imported.'); await refreshStatus(); state.tier = 'chats'; setTier(); await refreshList(); await refreshReview(); }
+    catch (error) { $('import-summary').textContent = error.message; $('import-confirm').disabled = false; }
+  });
+  let reviewing = null;
+  $('review-next').addEventListener('click', async () => {
+    $('review-next').disabled = true; $('review-state').textContent = 'Asking your local model about the next chat…';
+    try { reviewing = await api('/api/memory/review/propose', {}); } catch (error) { toast(error.message); await refreshReview(); return; }
+    const r = reviewing; const box = $('review-items'); box.textContent = '';
+    $('review-meta').textContent = `"${r.chat.title}" (${r.chat.messages || '?'} messages)${r.ok ? ` — ${r.items.length} proposal${r.items.length === 1 ? '' : 's'} by ${r.model} in ${(r.elapsed_ms / 1000).toFixed(1)} s` : ` — ${r.error}`}${r.truncated ? ' · only the first part of a long chat was read' : ''}.`;
+    if (!r.items.length) { const p = document.createElement('p'); p.className = 'muted small'; p.textContent = r.ok ? 'The model found nothing worth keeping. Skip, or add a note by hand.' : 'No proposals. Skip this chat for now, or keep notes by hand with New note…'; box.append(p); }
+    r.items.forEach((item, i) => {
+      const div = document.createElement('div'); div.className = 'review-item'; div.dataset.index = i;
+      const row = document.createElement('div'); row.className = 'row'; const keep = document.createElement('input'); keep.type = 'checkbox'; keep.checked = true; keep.className = 'keep'; keep.setAttribute('aria-label', 'Keep this item');
+      const kind = document.createElement('select'); kind.className = 'quiet-select kind'; for (const k of ['fact', 'procedure', 'snippet', 'idea', 'rule']) { const o = document.createElement('option'); o.value = k; o.textContent = k; o.selected = k === item.kind; kind.append(o); }
+      const title = document.createElement('input'); title.type = 'text'; title.className = 'title'; title.value = item.title; title.maxLength = 100; row.append(keep, kind, title); div.append(row);
+      const text = document.createElement('textarea'); text.className = 'text'; text.rows = 3; text.value = item.text; div.append(text);
+      const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${item.tags.length ? 'tags: ' + item.tags.join(', ') + ' · ' : ''}${item.messages.length ? 'from message' + (item.messages.length === 1 ? ' ' : 's ') + item.messages.join(', ') : 'no message numbers given'}`; div.append(meta);
+      box.append(div);
+    });
+    $('review-keep').disabled = !r.items.length; $('review-dialog').showModal(); $('review-cancel').focus();
+  });
+  $('review-cancel').addEventListener('click', () => { $('review-dialog').close(); refreshReview(); });
+  $('review-skip').addEventListener('click', async () => { try { await api('/api/memory/review/skip', {path: reviewing.chat.path}); } catch (error) { toast(error.message); } $('review-dialog').close(); await refreshReview(); });
+  $('review-keep').addEventListener('click', async () => {
+    const items = [...document.querySelectorAll('#review-items .review-item')].filter(div => div.querySelector('.keep').checked).map(div => { const src = reviewing.items[Number(div.dataset.index)]; return {kind: div.querySelector('.kind').value, title: div.querySelector('.title').value, text: div.querySelector('.text').value, tags: src.tags, messages: src.messages}; });
+    try { const r = await api('/api/memory/review/keep', {path: reviewing.chat.path, items, model: reviewing.model, confirm: true}); $('review-dialog').close(); toast(`Kept ${r.written.length} item${r.written.length === 1 ? '' : 's'}.`); await refreshStatus(); await refreshReview(); if (state.tier === 'notes') await refreshList(); }
+    catch (error) { toast(error.message); }
+  });
   // ---- new note
   $('note-new').addEventListener('click', () => { $('new-title').value = ''; $('new-tags').value = ''; $('new-body').value = ''; $('new-dialog').showModal(); $('new-title').focus(); });
   $('new-cancel').addEventListener('click', () => $('new-dialog').close());
@@ -130,7 +180,7 @@
   $('memory-choose').addEventListener('click', () => { $('folder-input').value = state.status && (state.status.folder || state.status.default) || ''; $('folder-dialog').showModal(); $('folder-cancel').focus(); });
   $('folder-cancel').addEventListener('click', () => $('folder-dialog').close());
   $('folder-confirm').addEventListener('click', async () => {
-    try { await api('/api/memory/folder', {folder: $('folder-input').value, confirm: true}); $('folder-dialog').close(); toast('Memory folder approved.'); await refreshStatus(); await refreshList(); } catch (error) { toast(error.message); }
+    try { await api('/api/memory/folder', {folder: $('folder-input').value, confirm: true}); $('folder-dialog').close(); toast('Memory folder approved.'); await refreshStatus(); await refreshList(); await refreshReview(); } catch (error) { toast(error.message); }
   });
   // ---- filters, tiers, views
   function setTier() { $('tier-notes').classList.toggle('active', state.tier === 'notes'); $('tier-chats').classList.toggle('active', state.tier === 'chats'); }
@@ -170,5 +220,5 @@
   const endPan = () => { state.panning = null; }; viewport.addEventListener('pointerup', endPan); viewport.addEventListener('pointercancel', endPan);
   viewport.addEventListener('wheel', event => { event.preventDefault(); const factor = Math.exp(-event.deltaY * 0.0015); const zoom = Math.max(0.2, Math.min(2.5, state.zoom * factor)); const r = viewport.getBoundingClientRect(), mx = event.clientX - r.left, my = event.clientY - r.top; state.pan = {x: mx - (mx - state.pan.x) * (zoom / state.zoom), y: my - (my - state.pan.y) * (zoom / state.zoom)}; state.zoom = zoom; applyViewport(); }, {passive: false});
   // ---- boot
-  (async () => { try { const st = await api('/api/state'); csrf = st.csrf; $('memory-main').hidden = false; await refreshStatus(); await refreshList(); } catch (error) { if ($('locked').hidden) toast(error.message); } })();
+  (async () => { try { const st = await api('/api/state'); csrf = st.csrf; $('memory-main').hidden = false; await refreshStatus(); await refreshList(); await refreshReview(); } catch (error) { if ($('locked').hidden) toast(error.message); } })();
 })();

@@ -27,6 +27,7 @@ from . import codemap as lab_codemap
 from . import events as lab_events
 from . import memory as lab_memory
 from . import ideas as lab_ideas
+from . import memory_import as lab_import
 from .journal import Journal
 from .sessions import SessionRegistry
 from .devices import DeviceManager, DeviceError
@@ -366,6 +367,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 if path=='/api/memory/note':return self.out(200,{'note':lab_memory.read(self.server.state_dir,one('path',''))})
                 if path=='/api/memory/graph':return self.out(200,lab_memory.graph(self.server.state_dir,tier=one('tier')))
                 if path=='/api/memory/search':return self.out(200,{'hits':lab_memory.search(self.server.state_dir,one('q',''),tier=one('tier'))})
+                if path=='/api/memory/review':return self.out(200,lab_import.review_status(self.server.state_dir))
             except lab_memory.MemoryError as e:return self.out(409 if 'Choose a Memory folder' in str(e) else 400,{'error':str(e)})
             except OSError as e:return self.out(500,{'error':'The Memory folder could not be read: %s'%e})
             return self.out(404,{'error':'Unknown memory route'})
@@ -806,7 +808,32 @@ class LabHandler(BaseHTTPRequestHandler):
                         if set(data)!={'path','text'} or not isinstance(data['path'],str) or not isinstance(data['text'],str):raise ValueError('Send {path, text}')
                         note=lab_ideas.grow(self.server.state_dir,data['path'],data['text'])
                         self.server.journal.write('memory.idea.grow','Idea "%s" grew'%note['title'],{'path':note['path'],'status':note['status']});return self.out(200,{'note':note})
+                    if path=='/api/memory/import/inspect':
+                        # Read-only look at an export zip on this Mac: format, counts, titles. Nothing is written.
+                        if set(data)!={'path'} or not isinstance(data['path'],str):raise ValueError('Send {path}')
+                        lab_memory._root(self.server.state_dir);return self.out(200,lab_import.inspect_zip(data['path']))
+                    if path=='/api/memory/import':
+                        if set(data)-{'path','confirm','limit'} or data.get('confirm') is not True or not isinstance(data.get('path'),str):raise ValueError('Inspect the export, then confirm the import')
+                        limit=data.get('limit') if isinstance(data.get('limit'),int) and data.get('limit')>0 else None
+                        out=lab_import.import_zip(self.server.state_dir,data['path'],limit=limit)
+                        self.server.journal.write('memory.import','Imported %d %s conversation%s from %s (%d already there%s)'%(out['imported'],out['source'],'' if out['imported']==1 else 's',out['file'],out['skipped'],(', %d errors'%len(out['errors'])) if out['errors'] else ''),{'source':out['source'],'imported':out['imported'],'skipped':out['skipped'],'file':out['file']})
+                        return self.out(200,out)
+                    if path=='/api/memory/review/propose':
+                        if set(data)-{'path','model'}:raise ValueError('Send {path?, model?}')
+                        chat=data.get('path') if isinstance(data.get('path'),str) else lab_import.review_status(self.server.state_dir)['next']
+                        if not chat:return self.out(409,{'error':'Every imported chat has been reviewed'})
+                        out=lab_import.propose(self.server.state_dir,chat,model=data.get('model') if isinstance(data.get('model'),str) else None)
+                        self.server.journal.write('memory.review.propose','Review of "%s": %d item%s proposed%s'%(out['chat']['title'],len(out['items']),'' if len(out['items'])==1 else 's',(' by '+out['model']) if out['model'] else ''),{'chat':chat,'model':out['model'],'ok':out['ok'],'items':len(out['items']),'elapsed_ms':out['elapsed_ms'],'error':out['error']})
+                        return self.out(200,out)
+                    if path=='/api/memory/review/keep':
+                        if set(data)-{'path','items','model','confirm'} or data.get('confirm') is not True or not isinstance(data.get('path'),str) or not isinstance(data.get('items'),list):raise ValueError('Choose what to keep, then confirm')
+                        out=lab_import.keep(self.server.state_dir,data['path'],data['items'],model=data.get('model') if isinstance(data.get('model'),str) else None)
+                        self.server.journal.write('memory.review.keep','Kept %d item%s from %s'%(len(out['written']),'' if len(out['written'])==1 else 's',data['path']),{'chat':data['path'],'written':[w['path'] for w in out['written']]});return self.out(200,out)
+                    if path=='/api/memory/review/skip':
+                        if set(data)!={'path'} or not isinstance(data['path'],str):raise ValueError('Send {path}')
+                        out=lab_import.skip(self.server.state_dir,data['path']);self.server.journal.write('memory.review.skip','Skipped %s'%data['path'],{'chat':data['path']});return self.out(200,out)
                 except lab_ideas.IdeaError as e:return self.out(400,{'error':str(e)})
+                except lab_import.ImportError_ as e:return self.out(400,{'error':str(e)})
                 except lab_memory.MemoryError as e:return self.out(409 if ('changed since' in str(e) or 'Choose a Memory folder' in str(e)) else 400,{'error':str(e)})
                 except OSError as e:return self.out(500,{'error':'The Memory folder could not be written: %s'%e})
                 return self.out(404,{'error':'Unknown memory route'})

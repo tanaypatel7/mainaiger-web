@@ -555,6 +555,39 @@ class MemoryPageTests(RealServerCase):
             p.wait_for_function("() => document.getElementById('note-status').value === 'growing'"); self.assertIn('Claude chats', p.input_value('#note-body'))
             self.assertEqual(len([n for n in self.server.journal.tail(0, 300) if n['kind'] == 'memory.idea']), 1, 'one idea note, grown once')
 
+    def test_import_an_export_and_review_a_chat_into_memory(self):
+        import zipfile
+        from local_lab import memory_import
+        from tests.test_memory_import import chatgpt_rows
+        p = self.page
+        p.goto(self.origin + '/memory'); p.wait_for_selector('#memory-main:not([hidden])')
+        if 'No Memory folder' in p.inner_text('#memory-stats'):
+            p.click('#memory-choose'); p.wait_for_selector('#folder-dialog[open]'); p.click('#folder-confirm'); p.wait_for_function("() => !document.getElementById('memory-stats').textContent.includes('No Memory folder')")
+        z = self.root / 'chatgpt-export.zip'
+        with zipfile.ZipFile(z, 'w') as a: a.writestr('conversations.json', json.dumps(chatgpt_rows()))
+        p.wait_for_function("() => !document.getElementById('import-open').disabled"); p.click('#import-open'); p.wait_for_selector('#import-dialog[open]')
+        p.fill('#import-path', str(z)); p.click('#import-inspect'); p.wait_for_function("() => document.getElementById('import-summary').textContent.includes('ChatGPT export: 2 conversations')")
+        self.assertEqual(p.inner_text('#import-titles'), 'Fraud model talk\nCode chat'); p.click('#import-confirm')
+        p.wait_for_function("() => document.getElementById('import-result').textContent.includes('Imported 2')"); p.wait_for_function("() => document.querySelectorAll('#note-list li').length === 2")
+        p.wait_for_function("() => document.getElementById('review-state').textContent.includes('2 to go')")
+        p.locator('#note-list li[data-path="chats/chatgpt/fraud-model-talk.md"]').click(); p.wait_for_function("() => document.getElementById('note-meta').textContent.includes('read-only')"); self.assertTrue(p.locator('#note-body').is_disabled())
+        # Review with a scripted model: one item proposed; edit its title, keep it; the note links to the chat.
+        def ask(model, question, context, schema, attempts=2):
+            return {'ok': True, 'decision': {'items': [{'kind': 'fact', 'title': 'Quantum kernel fraud approach', 'text': 'Feature map, then an SVM.', 'tags': ['quantum'], 'messages': [2]}]}, 'elapsed_ms': 30, 'attempts': 1, 'model': model}
+        with patch.object(memory_import, 'decide') as fake_decide, patch.object(memory_import.models, 'installed_models', return_value=[{'name': 'fake:1b'}]):
+            fake_decide.ask = ask
+            p.click('#review-next'); p.wait_for_selector('#review-dialog[open]')
+            self.assertIn('1 proposal by fake:1b', p.inner_text('#review-meta')); self.assertEqual(p.input_value('#review-items .review-item .title'), 'Quantum kernel fraud approach')
+            p.fill('#review-items .review-item .title', 'Quantum kernels for fraud'); p.click('#review-keep')
+            p.wait_for_function("() => document.getElementById('review-state').textContent.includes('1 reviewed') && document.getElementById('review-state').textContent.includes('1 item kept')")
+        p.click('#tier-notes'); p.wait_for_function("() => [...document.querySelectorAll('#note-list li b')].some(b => b.textContent === 'Quantum kernels for fraud')")
+        p.locator('#note-list li b:has-text("Quantum kernels for fraud")').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Quantum kernels for fraud'")
+        self.assertIn('chat: chats/chatgpt/fraud-model-talk.md#2', p.inner_text('#note-sources')); self.assertIn('[[Fraud model talk]]', p.inner_text('#note-links'))
+        # Skip the remaining chat; nothing left to review.
+        with patch.object(memory_import.models, 'installed_models', return_value=[]):
+            p.click('#review-next'); p.wait_for_selector('#review-dialog[open]'); self.assertIn('No local model', p.inner_text('#review-meta')); p.click('#review-skip')
+        p.wait_for_function("() => document.getElementById('review-state').textContent.includes('0 to go')"); self.assertTrue(p.locator('#review-next').is_disabled())
+
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
 class FormCellPanelTests(RealServerCase):

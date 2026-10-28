@@ -111,7 +111,7 @@ with `question` bound like an event; the answer note links to the idea.
 Cost figures come from `models.py` (it already measures elapsed time and
 tokens per chat) kept as a running average per model in the state folder.
 
-## 4. Chat import (M4)
+## 4. Chat import (M4) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Chat import and review" (the review loop is on the page, not a Mainbook yet: cells in the sandbox cannot reach the Memory folder, a "host cell" is needed first)
 
 **What:** upload a ChatGPT or Claude export zip on the Memory page. The Lab
 reads it on this Mac (never in the container), writes one chat note per

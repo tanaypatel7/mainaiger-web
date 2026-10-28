@@ -121,7 +121,7 @@ class ExampleRunTests(unittest.TestCase):
                     if expect.get('model') == 'repo':
                         judge_prompts = [p for p in fake.seen['prompts'] if 'Decide:' in p]
                         self.assertEqual(len(judge_prompts), 2); self.assertIn('tests after the change: FAILED', judge_prompts[0]); self.assertIn('-def extract_json(text):', judge_prompts[0]); self.assertIn('tests after the change: OK', judge_prompts[1])
-                        self.assertIn('Rename the function', fake.seen['prompts'][2], 'the second proposal prompt carries the first attempt'); self.assertIn(' 114  def extract_json(text):', fake.seen['prompts'][0], 'the model saw the numbered file')
+                        self.assertIn('Rename the function', fake.seen['prompts'][2], 'the second proposal prompt carries the first attempt'); self.assertRegex(fake.seen['prompts'][0], r'\n +\d+  def extract_json\(text\):', 'the model saw the numbered file')
                         self.assertIn('1. tests FAILED', snap['nodes']['report']['output']); self.assertIn('2. tests OK', snap['nodes']['report']['output']); self.assertIn('+# Pulls the first JSON object', snap['nodes']['report']['output'])
                         self.assertNotIn('Pulls the first JSON object', (Path(__file__).resolve().parent.parent / 'local_lab' / 'decide.py').read_text(), 'the checkout is never written')
                     elif expect.get('model'):
