@@ -166,6 +166,60 @@ process (`tests/test_graph.py`) and the canvas was exercised end to end in a
 headless browser. Running the graph inside Docker on a Mac is the same
 unverified step as the session itself.
 
+### Resources: several sessions, per-cell "run on" (`local_lab/sessions.py`, `/api/sessions*`)
+
+The Lab used to have exactly one kernel. Now the RESOURCES section of the
+inspector is a table of sessions on this device (at most 4 running), each with
+its own label, CPU and memory limits and image, and one of them is **active**:
+
+- **New session…** → `POST /api/sessions/start {confirm, revision, label,
+  cpus, memory}`: one more container with those limits, the same read-only
+  workspace, and the Mainbook's environment image when one is declared and
+  built. The header's **Start session** button (`/api/kernel/start`) still
+  starts one session when none is running; more come from this table.
+- **Use / ⏸ / ■ / ✕** → `/api/sessions/select | interrupt | stop | forget`.
+  A stopped session stays listed with its reason until removed.
+- **Run on** (SELECTED NODE) → `metadata.mainaiger.session = "<label>"`. The
+  card shows `on <label>`; cells with no label run in the active session.
+  `graph_run.py` resolves a kernel per cell (`sessions.kernel_for`), so one
+  run can use several sessions, still one cell at a time.
+- **Every session is its own process.** Variables do not cross sessions. The
+  run review lists which cells run where, says when a data edge crosses
+  sessions ("x is produced in the active session but Use x runs in worker: it
+  will not be available there"), and refuses to start while a named session
+  is not running (`preflight.sessions / cross_session / missing_sessions`).
+  A cell that reads a name from another session fails with the real
+  `NameError`; nothing is copied silently.
+- Settings (folder, default limits) are frozen while any session runs.
+
+**Status:** registry, cap, label uniqueness, dead sessions, per-cell routing
+and the HTTP flow are tested with real kernel processes
+(`tests/test_sessions.py`); the panel and a two-session run are tested in
+headless Chromium (`tests/test_canvas_ui.py`, `PanelsOnRealKernelTests`),
+which also runs the six-cell starter ML flow end to end on a real kernel.
+Several Docker containers at once on a Mac is unverified.
+
+### Files (`local_lab/files.py`, `GET /api/files`, `GET /api/files/read`)
+
+Read-only browsing of the **workspace** folder (the one mounted into
+sessions), the **Mainbooks** folder and the **Library** folder, in the FILES
+section: pick the root, click folders, click a file for a bounded text preview
+(200 kB; binary files say so). `.ipymb` and `.ipynb` previews offer **Open as
+Mainbook** (the latter through the normal import report). Paths stay inside
+the root; symlinks are neither listed nor followed; nothing is written.
+Tested: listing, previews, every escape attempt (`tests/test_sessions.py`).
+
+### Log (`local_lab/journal.py`, `GET /api/journal?after=`)
+
+One append-only line per thing the Lab did on this device, in
+`<state dir>/journal.jsonl`: sessions started/stopped/interrupted, runs
+approved and finished, each cell's result with its session, environment
+builds, library and Mainbook saves. `seq` only grows, so the LOG section asks
+for "everything after N" every 5 s and after each action; the file is kept
+under 2 MB by dropping the oldest half. This is the "why did that run?" record
+that cross-device runs (roadmap C3) will join by device name. Tested:
+rotation, ordering, the sequence of a real run (`tests/test_sessions.py`).
+
 ### Cell library (`local_lab/library.py`, `/api/library/*`)
 
 One global folder of reusable cells that any Mainbook can use. Feature → file:

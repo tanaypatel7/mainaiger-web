@@ -229,3 +229,68 @@ class EnvironmentPanelTests(RealServerCase):
         # Clearing the list goes back to the base image.
         p.fill('#env-packages', ''); p.click('#env-apply'); p.wait_for_function("() => document.getElementById('env-status').textContent.includes('Base image')")
         self.assertNotIn('environment', self.server.graph_doc['notebook']['metadata']['mainaiger'])
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class PanelsOnRealKernelTests(RealServerCase):
+    """Resources, Run on, Files and Log panels, plus the starter ML flow, on a real kernel process (no Docker)."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import sys
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+
+    def test_sessions_run_on_library_flow_files_and_log(self):
+        p = self.page
+        # 1. Resources: start "main" and "worker" (2 CPUs) from the panel; main is active and the header says so.
+        self.assertTrue(p.locator('#sessions-table').is_hidden())
+        p.click('#session-new'); p.wait_for_selector('#session-new-dialog[open]'); p.fill('#session-label', 'main'); p.click('#session-new-confirm')
+        p.wait_for_function("() => document.querySelectorAll('#sessions-table tbody tr').length === 1")
+        p.wait_for_function("() => document.getElementById('session-state').textContent.includes('\"main\": ready')")
+        p.click('#session-new'); p.wait_for_selector('#session-new-dialog[open]'); p.fill('#session-label', 'worker'); p.select_option('#session-cpus', '2'); p.click('#session-new-confirm')
+        p.wait_for_function("() => document.querySelectorAll('#sessions-table tbody tr').length === 2")
+        rows = p.evaluate("() => [...document.querySelectorAll('#sessions-table tbody tr')].map(r => [...r.children].slice(0, 4).map(td => td.textContent))")
+        self.assertEqual(rows, [['main ★', 'this Mac', '0.5', '256m'], ['worker', 'this Mac', '2', '256m']])
+        # 2. Run on: cell-1 names "worker"; the card shows it; the run review lists it; the cell runs there.
+        p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('#node-session option')].map(o => o.textContent)"), ['Active session', 'main', 'worker'])
+        p.select_option('#node-session', 'worker'); p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-1\"] .node-session').textContent === 'on worker'")
+        p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]')
+        self.assertFalse(p.locator('#run-dialog-sessions').is_hidden()); self.assertIn('runs on "worker"', p.inner_text('#run-dialog-sessions-list'))
+        p.click('#run-dialog-confirm'); p.wait_for_function("() => document.getElementById('run-summary').textContent.includes('finished')", timeout=30000)
+        p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-1\"] .status').textContent === 'ok'")
+        self.assertEqual([v['name'] for v in self.server.kernels.by_label('main')['kernel'].variables()], [], 'main stayed empty')
+        # 3. The six starter ML cells, inserted in order after cell-1 (which prints only), run end to end in the active session.
+        p.select_option('#node-session', ''); p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        p.click('#library-folder'); p.wait_for_selector('#library-folder-dialog[open]'); p.click('#library-folder-confirm'); p.wait_for_selector('#library-seed:not([hidden])')
+        p.click('#library-seed'); p.wait_for_selector('#library-seed-dialog[open]'); p.click('#library-seed-confirm'); p.wait_for_function("() => document.querySelectorAll('#library-list li').length === 6", timeout=10000)
+        for name in ['load-data', 'extract-features', 'split-train-test', 'train-classifier', 'evaluate', 'report']:
+            p.locator(f'#library-list li[data-name="{name}"] .lib-insert').click(); p.wait_for_selector(f'.node[data-id="{name}"]'); p.wait_for_function(f"() => document.querySelector('.node.selected') && document.querySelector('.node.selected').dataset.id === '{name}'")
+        p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]')
+        self.assertEqual(p.evaluate("() => document.querySelectorAll('#run-dialog-plan li').length"), 7); self.assertTrue(p.locator('#run-dialog-missing').is_hidden(), 'data edges connect the flow; nothing is missing')
+        p.click('#run-dialog-confirm'); p.wait_for_function("() => document.getElementById('run-summary').textContent.includes('running')")
+        p.wait_for_function("() => /finished|failed|cancelled/.test(document.getElementById('run-summary').textContent)", timeout=60000)
+        self.assertIn('accuracy', p.inner_text('.node[data-id="report"] .node-output')); self.assertIn('Classification report', p.inner_text('.node[data-id="report"] .node-output'))
+        self.assertEqual(p.evaluate("() => [...document.querySelectorAll('.node.code .status')].map(s => s.textContent)"), ['ok'] * 7)
+        # 4. Files: the Library folder is browsable read-only; a cell file previews as text.
+        p.wait_for_function("() => document.getElementById('files-root').options.length >= 1")
+        p.select_option('#files-root', 'library'); p.wait_for_function("() => document.querySelectorAll('#files-list li[data-path]').length === 6")
+        p.locator('#files-list li[data-path="report.cell.json"]').click(); p.wait_for_selector('#file-dialog[open]')
+        self.assertIn('"name": "report"', p.inner_text('#file-dialog-text')); self.assertTrue(p.locator('#file-dialog-open').is_hidden()); p.click('#file-dialog-close')
+        # 5. Log: the journal shows the story, newest first.
+        p.wait_for_function("() => document.querySelectorAll('#log-list li').length > 10")
+        kinds = p.evaluate("() => [...document.querySelectorAll('#log-list li')].map(li => li.dataset.kind)")
+        self.assertEqual(kinds[0], 'run.finished'); self.assertIn('cell.ok', kinds); self.assertIn('session.start', kinds); self.assertIn('library.insert', kinds)
+        # 6. Stop worker from the table; it stays listed as stopped; cells naming it are refused at review time.
+        p.once('dialog', lambda d: d.accept()); p.locator('#sessions-table tbody tr:nth-child(2) button[data-act="stop"]').click()
+        p.wait_for_function("() => document.querySelector('#sessions-table tbody tr:nth-child(2) .status').textContent === 'stopped'")

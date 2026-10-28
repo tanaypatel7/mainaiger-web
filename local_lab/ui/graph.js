@@ -87,7 +87,7 @@
       if (node.kind === 'code') { const needs = document.createElement('div'); needs.className = 'node-needs'; needs.hidden = true; el.append(needs); }
       if (node.kind === 'code' || node.kind === 'markdown') {
         const area = document.createElement('textarea'); area.spellcheck = false; area.value = sourceOf(cellOf(node)); area.placeholder = node.kind === 'code' ? '# Python — Shift+Enter runs this cell' : 'Write a note…'; area.setAttribute('aria-label', node.kind === 'code' ? 'Python code' : 'Note'); el.append(area); if (node.kind === 'markdown') requestAnimationFrame(() => autosize(area));
-        if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); el.append(foot); }
+        if (node.kind === 'code') { const out = document.createElement('pre'); out.className = 'node-output'; el.append(out); const foot = document.createElement('div'); foot.className = 'node-foot'; const status = document.createElement('span'); status.className = 'status'; foot.append(status); const timing = document.createElement('span'); timing.className = 'timing'; foot.append(timing); const stale = document.createElement('span'); stale.className = 'stale'; stale.textContent = 'stale'; stale.title = 'The code changed after this output was produced'; stale.hidden = true; foot.append(stale); const sess = document.createElement('span'); sess.className = 'node-session'; sess.title = 'Session this cell runs on'; foot.append(sess); el.append(foot); }
       }
       if (node.kind === 'finish') { const foot = document.createElement('div'); foot.className = 'finish-note'; el.append(foot); }
       if (node.kind !== 'finish' && node.kind !== 'markdown') { const pout = document.createElement('span'); pout.className = 'port out'; pout.title = 'Drag to another cell to add a trigger'; el.append(pout); }
@@ -113,6 +113,7 @@
     el.querySelector('.timing').textContent = elapsed != null && status && status !== 'running' ? elapsed + ' ms' : '';
     el.querySelector('.count').textContent = 'In [' + (cell.execution_count == null ? ' ' : cell.execution_count) + ']';
     el.querySelector('.stale').hidden = !(last && last.source_hash && last.source_hash !== fnv(sourceOf(cell)) && !(runNode && runNode.status === 'running'));
+    el.querySelector('.node-session').textContent = own.session ? 'on ' + own.session : '';
     const needs = missingFor(id), needsEl = el.querySelector('.node-needs'); needsEl.hidden = !needs.length; needsEl.textContent = needs.length ? 'needs: ' + needs.join(', ') : '';
     const out = el.querySelector('.node-output'); let text = '', hasError = false;
     if (runNode && runNode.output !== undefined) { text = runNode.output || ''; if (runNode.error) { text += (text ? '\n' : '') + (runNode.error.traceback || []).join('\n'); hasError = true; } if (runNode.note) text += (text ? '\n' : '') + runNode.note; }
@@ -248,6 +249,7 @@
       $('node-links').textContent = `Triggered by: ${by.length ? by.join(', ') : '— (not connected)'} · Triggers: ${to.length ? to.join(', ') : '—'}`;
       $('node-analysis-note').textContent = info.error ? 'Analysis unavailable: ' + info.error : (info.declared ? 'Declared by you (overrides the automatic reading).' : 'Read automatically from the code; edit below to override.');
       const own = meta(cell); if (document.activeElement !== $('override-inputs')) $('override-inputs').value = (own.inputs || []).join(', '); if (document.activeElement !== $('override-outputs')) $('override-outputs').value = (own.outputs || []).join(', ');
+      renderSessionChoice(sel.id);
       renderLibraryLink(sel.id);
       const r = state.run && state.run.nodes[sel.id]; const last = r || own.last_run;
       $('node-result').textContent = last && last.status ? `${last.status}${last.elapsed_ms != null ? ' · ' + last.elapsed_ms + ' ms' : ''}${r && r.error ? ' · ' + r.error.ename + (r.error.evalue ? ': ' + r.error.evalue : '') : ''}` : 'Not run.';
@@ -258,7 +260,8 @@
       for (const id of state.run.plan) { const li = document.createElement('li'); const n = nodeById(id); li.textContent = n ? titleOf(n) : id; const s = document.createElement('span'); s.className = 'status'; const rn = state.run.nodes[id] || {}; s.dataset.s = rn.status || ''; s.textContent = (rn.status || 'pending') + (rn.elapsed_ms != null ? ' ' + rn.elapsed_ms + ' ms' : ''); li.append(s); list.append(li); }
     } else $('run-summary').textContent = 'No run yet. Start a session, then choose Run all.';
     const alive = !!state.session.alive;
-    $('session-state').textContent = alive ? (state.session.executing ? 'Session: running a cell' : 'Session: ready · Python ' + (state.session.python || '')) : (state.session.ended ? 'Session: stopped · ' + state.session.ended : 'Session: not started');
+    const who = state.session.session_label ? `"${state.session.session_label}"` : 'Session';
+    $('session-state').textContent = alive ? (state.session.executing ? `${who}: running a cell` : `${who}: ready · Python ` + (state.session.python || '')) : (state.session.ended ? `${who}: stopped · ` + state.session.ended : 'Session: not started');
     $('session-state').dataset.state = alive ? (state.session.executing ? 'busy' : 'ready') : (state.session.ended ? 'dead' : '');
     $('session-start').disabled = alive; $('session-stop').disabled = !alive; $('session-interrupt').disabled = !alive || !state.session.executing;
     const running = state.run && (state.run.state === 'running' || state.run.state === 'pending');
@@ -465,12 +468,12 @@
   $('save-confirm').addEventListener('click', async () => {
     const name = $('name-input').value.trim(); if (!name) { $('save-note').textContent = 'Enter a name.'; return; }
     try {
-      if (!books.configured) { books = await api('/api/mainbooks/folder', {folder: $('folder-input').value, confirm: true}); $('folder-section').hidden = true; }
+      if (!books.configured) { books = await api('/api/mainbooks/folder', {folder: $('folder-input').value, confirm: true}); $('folder-section').hidden = true; refreshFiles(); }
       if (state.dirty) { clearTimeout(state.saveTimer); await save(); }
       let result;
       try { result = await api('/api/mainbooks/save', {name, overwrite: false}); }
       catch (error) { if (error.status === 409 && window.confirm(`Replace the existing Mainbook "${name}"?`)) result = await api('/api/mainbooks/save', {name, overwrite: true}); else throw error; }
-      $('save-dialog').close(); const view = await api('/api/graph'); const run = state.run; applyView(view); state.run = run; $('save-state').textContent = 'Saved · ' + name; toast(`Saved ${name}.ipymb in ${books.folder}`); refreshMainbooks();
+      $('save-dialog').close(); const view = await api('/api/graph'); const run = state.run; applyView(view); state.run = run; $('save-state').textContent = 'Saved · ' + name; toast(`Saved ${name}.ipymb in ${books.folder}`); refreshMainbooks(); refreshFiles(filesState.root, filesState.path); refreshJournal();
     } catch (error) { $('save-note').textContent = error.message; }
   });
   $('open-mainbook').addEventListener('change', async () => {
@@ -569,7 +572,7 @@
   $('library-folder').addEventListener('click', () => openLibraryFolderDialog(null));
   $('library-folder-cancel').addEventListener('click', () => $('library-folder-dialog').close());
   $('library-folder-confirm').addEventListener('click', async () => {
-    try { library = await api('/api/library/folder', {folder: $('library-folder-input').value, confirm: true}); $('library-folder-dialog').close(); await refreshLibrary(); const then = state.afterLibraryFolder; state.afterLibraryFolder = null; if (then) then(); }
+    try { library = await api('/api/library/folder', {folder: $('library-folder-input').value, confirm: true}); $('library-folder-dialog').close(); await refreshLibrary(); refreshFiles(); const then = state.afterLibraryFolder; state.afterLibraryFolder = null; if (then) then(); }
     catch (error) { $('library-folder-note').textContent = error.message; }
   });
   // Starter cells.
@@ -577,7 +580,7 @@
   $('library-seed-cancel').addEventListener('click', () => $('library-seed-dialog').close());
   $('library-seed-confirm').addEventListener('click', async () => {
     $('library-seed-dialog').close();
-    try { const r = await api('/api/library/seed', {confirm: true}); toast(r.added.length ? `Added ${r.added.length} starter cells.` : 'The starter cells were already in your Library.'); refreshLibrary(); } catch (error) { toast(error.message); }
+    try { const r = await api('/api/library/seed', {confirm: true}); toast(r.added.length ? `Added ${r.added.length} starter cells.` : 'The starter cells were already in your Library.'); refreshLibrary(); refreshFiles(filesState.root, filesState.path); } catch (error) { toast(error.message); }
   });
   // Save / push a cell of this graph.
   function openLibrarySaveDialog(push) {
@@ -613,6 +616,121 @@
     if (state.dirty) { clearTimeout(state.saveTimer); await save(); if (state.dirty) return; }
     try { const data = await api('/api/library/pull', {node: sel.id}); await afterLibraryChange(data.view, sel.id); toast(`Updated to ${link.name} v${link.latest}.`); } catch (error) { toast(error.message); }
   });
+
+  // ---------------------------------------------------------------- resources (sessions on this device)
+  // local_lab/sessions.py keeps a table of sessions; one is active. A cell may name the session it runs
+  // on (metadata.mainaiger.session). Each session is its own container and process, so variables stay
+  // inside it; the run review says so whenever a data edge crosses sessions.
+  let resources = {sessions: [], active: null, max: 4, defaults: {}, options: {cpus: [], memory: []}, revision: 0, environment: {}};
+  async function refreshSessions() {
+    try { resources = await api('/api/sessions'); } catch (error) { $('sessions-note').textContent = error.message; return; }
+    renderSessions();
+  }
+  function sessionState(s) { return s.alive ? (s.executing ? 'busy' : 'ready') : 'dead'; }
+  function renderSessions() {
+    const table = $('sessions-table'), body = table.querySelector('tbody'); body.textContent = '';
+    table.hidden = !resources.sessions.length;
+    $('sessions-note').textContent = resources.sessions.length ? `${resources.sessions.filter(s => s.alive).length} running of at most ${resources.max}. The active one runs cells that do not name a session.` : 'No sessions yet. Start one from the header (Start session) or here with its own limits.';
+    for (const s of resources.sessions) {
+      const tr = document.createElement('tr'); tr.dataset.id = s.id; tr.classList.toggle('active', !!s.active);
+      const cells = [s.label + (s.active ? ' ★' : ''), s.device === 'this-device' ? 'this Mac' : s.device, s.cpus, s.memory];
+      for (const text of cells) { const td = document.createElement('td'); td.textContent = text; tr.append(td); }
+      const st = document.createElement('td'); const span = document.createElement('span'); span.className = 'status'; span.dataset.s = sessionState(s); span.textContent = s.alive ? (s.executing ? 'running a cell' : 'ready') : (s.ended ? 'stopped' : 'not started'); span.title = s.ended || (s.image && s.image !== 'base' ? 'image ' + s.image : 'base image'); st.append(span); tr.append(st);
+      const act = document.createElement('td'); act.className = 'row-actions';
+      if (s.alive && !s.active) act.append(button('quiet small', 'select', 'Make this the active session', 'Use'));
+      if (s.alive) { act.append(button('quiet small', 'interrupt', 'Interrupt the running cell', '⏸')); act.append(button('quiet small', 'stop', 'Stop this session; its variables are gone', '■')); }
+      else act.append(button('quiet small', 'forget', 'Remove this stopped session from the table', '✕'));
+      tr.append(act); body.append(tr);
+    }
+    renderInspector();
+  }
+  $('sessions-table').addEventListener('click', async event => {
+    const b = event.target.closest('button'); if (!b) return; const id = b.closest('tr').dataset.id, act = b.dataset.act;
+    if (act === 'stop' && !window.confirm('Stop this session? Its variables are gone.')) return;
+    try { await api('/api/sessions/' + act, {id}); await refreshSessions(); if (act !== 'forget') { const s = await api('/api/kernel'); state.session = s; } renderInspector(); refreshJournal(); if (act === 'select') refreshVariables(); } catch (error) { toast(error.message); }
+  });
+  $('session-new').addEventListener('click', async () => {
+    await refreshSessions();
+    const fill = (sel, values, chosen) => { sel.textContent = ''; for (const v of values) { const o = document.createElement('option'); o.value = v; o.textContent = v; o.selected = v === chosen; sel.append(o); } };
+    fill($('session-cpus'), resources.options.cpus, resources.defaults.cpus); fill($('session-memory'), resources.options.memory, resources.defaults.memory);
+    $('session-label').value = ''; $('session-new-note').textContent = '';
+    const env = resources.environment || {}; $('session-new-image').textContent = env.derived ? `Image: ${env.image}` + (env.ready ? '' : ' — not built yet; build the environment first.') : `Image: ${env.image || 'base'} (base, standard library only).`;
+    $('session-new-dialog').showModal(); $('session-label').focus();
+  });
+  $('session-new-cancel').addEventListener('click', () => $('session-new-dialog').close());
+  $('session-new-confirm').addEventListener('click', async () => {
+    try {
+      const body = {confirm: true, revision: resources.revision, cpus: $('session-cpus').value, memory: $('session-memory').value};
+      const label = $('session-label').value.trim(); if (label) body.label = label;
+      const row = await api('/api/sessions/start', body); $('session-new-dialog').close(); toast(`Session "${row.label}" started.`);
+      await refreshSessions(); state.session = await api('/api/kernel'); renderInspector(); refreshJournal(); if (row.active) refreshVariables();
+    } catch (error) { $('session-new-note').textContent = error.message; }
+  });
+  function renderSessionChoice(id) {
+    const sel = $('node-session'); const node = nodeById(id); const own = meta(cellOf(node)); const current = own.session || '';
+    sel.textContent = ''; const first = document.createElement('option'); first.value = ''; first.textContent = 'Active session'; sel.append(first);
+    const labels = resources.sessions.map(s => s.label); if (current && !labels.includes(current)) labels.push(current);
+    for (const label of labels) { const s = resources.sessions.find(x => x.label === label); const o = document.createElement('option'); o.value = label; o.textContent = label + (s ? (s.alive ? '' : ' (stopped)') : ' (not started)'); sel.append(o); }
+    sel.value = current;
+  }
+  $('node-session').addEventListener('change', () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    const own = meta(cellOf(sel)); const v = $('node-session').value; if (v) own.session = v; else delete own.session;
+    updateNode(sel.id); markDirty();
+  });
+
+  // ---------------------------------------------------------------- files (read-only)
+  let filesState = {root: '', path: '', roots: {}};
+  async function refreshFiles(root, path) {
+    try {
+      const base = await api('/api/files'); filesState.roots = base.roots;
+      const sel = $('files-root'); const names = Object.keys(base.roots); sel.textContent = '';
+      for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n === 'workspace' ? 'Workspace (read-only in sessions)' : n === 'mainbooks' ? 'Mainbooks' : 'Library'; sel.append(o); }
+      if (!names.length) { $('files-list').textContent = ''; $('files-path').textContent = ''; $('files-note').hidden = false; $('files-up').disabled = true; return; }
+      $('files-note').hidden = true;
+      filesState.root = root && names.includes(root) ? root : (filesState.root && names.includes(filesState.root) ? filesState.root : names[0]); sel.value = filesState.root;
+      filesState.path = path !== undefined ? path : (root === filesState.root ? filesState.path : '');
+      const data = await api('/api/files?root=' + encodeURIComponent(filesState.root) + '&path=' + encodeURIComponent(filesState.path));
+      filesState.path = data.path; $('files-path').textContent = (filesState.roots[filesState.root] || '') + (data.path ? '/' + data.path : ''); $('files-up').disabled = !data.path;
+      const list = $('files-list'); list.textContent = '';
+      for (const e of data.entries) {
+        const li = document.createElement('li'); li.className = (e.kind === 'dir' ? 'dir' : 'file') + (e.hidden ? ' hidden-file' : ''); li.dataset.path = e.path; li.dataset.kind = e.kind; li.dataset.text = e.text ? '1' : '';
+        const name = document.createElement('span'); name.textContent = (e.kind === 'dir' ? '▸ ' : '') + e.name; li.append(name);
+        if (e.kind === 'file') { const size = document.createElement('span'); size.className = 'size'; size.textContent = e.size < 1024 ? e.size + ' B' : e.size < 1048576 ? (e.size / 1024).toFixed(1) + ' kB' : (e.size / 1048576).toFixed(1) + ' MB'; li.append(size); }
+        list.append(li);
+      }
+      if (data.skipped) { const li = document.createElement('li'); li.className = 'hidden-file'; li.textContent = `${data.skipped} item(s) not shown (symlinks or beyond ${500})`; list.append(li); }
+    } catch (error) { $('files-note').hidden = false; $('files-note').textContent = error.message; }
+  }
+  $('files-root').addEventListener('change', () => refreshFiles($('files-root').value, ''));
+  $('files-up').addEventListener('click', () => { const parts = filesState.path.split('/'); parts.pop(); refreshFiles(filesState.root, parts.join('/')); });
+  $('files-list').addEventListener('click', async event => {
+    const li = event.target.closest('li[data-path]'); if (!li) return;
+    if (li.dataset.kind === 'dir') { refreshFiles(filesState.root, li.dataset.path); return; }
+    try {
+      const data = await api('/api/files/read?root=' + encodeURIComponent(filesState.root) + '&path=' + encodeURIComponent(li.dataset.path));
+      $('file-dialog-title').textContent = data.path; $('file-dialog-meta').textContent = `${data.size} bytes` + (data.binary ? ' · binary file, no preview' : data.truncated ? ' · first 200 kB shown' : '');
+      $('file-dialog-text').textContent = data.binary ? '' : data.text; const openable = !data.binary && !data.truncated && /\.(ipymb|ipynb)$/i.test(data.path);
+      $('file-dialog-open').hidden = !openable; $('file-dialog-open').dataset.path = data.path; $('file-dialog').showModal(); $('file-dialog-close').focus();
+    } catch (error) { toast(error.message); }
+  });
+  $('file-dialog-close').addEventListener('click', () => $('file-dialog').close());
+  $('file-dialog-open').addEventListener('click', async () => {
+    const text = $('file-dialog-text').textContent, name = $('file-dialog-open').dataset.path; $('file-dialog').close();
+    try { const data = JSON.parse(text); if (data && data.format === 'mainaiger') await openDocument(data, name); else { const imported = await api('/api/graph/import', {notebook: data}); await openDocument(imported.document, name); showImportReport(name, imported.report); } }
+    catch (error) { toast(error.message || 'The file could not be opened.'); }
+  });
+
+  // ---------------------------------------------------------------- log (journal)
+  let journalSeq = 0; const journalRows = [];
+  async function refreshJournal() {
+    try {
+      const data = await api('/api/journal?after=' + journalSeq + '&limit=100'); if (!data.entries.length) return;
+      for (const e of data.entries) { journalRows.unshift(e); journalSeq = Math.max(journalSeq, e.seq); } journalRows.length = Math.min(journalRows.length, 80);
+      const list = $('log-list'); list.textContent = '';
+      for (const e of journalRows) { const li = document.createElement('li'); li.dataset.kind = e.kind; const when = document.createElement('span'); when.className = 'when'; when.textContent = new Date(e.t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'}); const kind = document.createElement('span'); kind.className = 'kind'; kind.textContent = e.kind; const text = document.createElement('span'); text.textContent = e.text; li.append(when, kind, text); list.append(li); }
+    } catch {}
+  }
 
   // ---------------------------------------------------------------- environment (derived image)
   // The Mainbook declares notebook.metadata.mainaiger.environment.packages; the server turns that into
@@ -660,8 +778,8 @@
   // ---------------------------------------------------------------- session
   $('session-start').addEventListener('click', () => { $('session-image').textContent = environment.derived ? `Image: ${environment.image} (${environment.packages.join(', ')})` + (environment.ready ? '' : ' — not built yet; build the environment first.') : `Image: ${environment.image} (base, standard library only).`; $('session-dialog').showModal(); $('session-cancel').focus(); });
   $('session-cancel').addEventListener('click', () => $('session-dialog').close());
-  $('session-confirm').addEventListener('click', async () => { $('session-dialog').close(); try { const st = await api('/api/state'); state.csrf = st.csrf; state.session = await api('/api/kernel/start', {confirm: true, revision: st.revision}); toast('Session started.'); renderInspector(); refreshVariables(); } catch (error) { toast(error.message); } });
-  $('session-stop').addEventListener('click', async () => { try { state.session = await api('/api/kernel/stop', {}); toast('Session stopped; variables are gone.'); renderInspector(); $('variables').hidden = true; $('variables-note').textContent = 'Start a session to inspect variables.'; } catch (error) { toast(error.message); } });
+  $('session-confirm').addEventListener('click', async () => { $('session-dialog').close(); try { const st = await api('/api/state'); state.csrf = st.csrf; state.session = await api('/api/kernel/start', {confirm: true, revision: st.revision}); toast('Session started.'); renderInspector(); refreshVariables(); refreshSessions(); refreshJournal(); } catch (error) { toast(error.message); } });
+  $('session-stop').addEventListener('click', async () => { try { state.session = await api('/api/kernel/stop', {}); toast('Session stopped; variables are gone.'); renderInspector(); $('variables').hidden = true; $('variables-note').textContent = 'Start a session to inspect variables.'; refreshSessions(); refreshJournal(); } catch (error) { toast(error.message); } });
   $('session-interrupt').addEventListener('click', async () => { try { await api('/api/kernel/interrupt', {}); toast('Interrupt sent.'); } catch (error) { toast(error.message); } });
   $('variables-refresh').addEventListener('click', refreshVariables);
   async function refreshVariables() {
@@ -680,8 +798,13 @@
     for (const id of check.plan) { const li = document.createElement('li'); const n = nodeById(id); li.textContent = n ? titleOf(n) : id; plan.append(li); }
     const missing = $('run-dialog-missing'), list = $('run-dialog-missing-list'); list.textContent = '';
     if (check.missing.length) { missing.hidden = false; for (const m of check.missing) { const li = document.createElement('li'); const n = nodeById(m.node); li.textContent = `${n ? titleOf(n) : m.node} needs "${m.name}"` + (m.producers.length ? ` — produced by ${m.producers.map(p => titleOf(nodeById(p))).join(', ')}` : ' — no cell in this graph defines it'); list.append(li); } $('include-prereqs').checked = check.prerequisites.length > 0; $('include-prereqs').disabled = !check.prerequisites.length; } else missing.hidden = true;
-    const notes = []; if (check.from_session.length) notes.push('Already in the session: ' + [...new Set(check.from_session.map(x => x.name))].join(', ') + '.'); if (check.unresolvable.length) notes.push('Inputs nobody produces will fail at run time unless they already exist in the session.'); if (!check.session_alive) notes.push('No session is running — start one first.');
-    $('run-dialog-note').textContent = notes.join(' '); $('run-dialog-confirm').disabled = !check.session_alive || !check.plan.length;
+    const sessBox = $('run-dialog-sessions'), sessList = $('run-dialog-sessions-list'); sessList.textContent = '';
+    const sessLines = [];
+    for (const [id, label] of Object.entries(check.sessions || {})) sessLines.push(`${titleOf(nodeById(id) || {id, kind: 'code'})} runs on "${label}"${(check.missing_sessions || []).includes(label) ? ' — not running' : ''}`);
+    for (const x of check.cross_session || []) sessLines.push(`"${x.name}" is produced by ${titleOf(nodeById(x.producer))} in ${x.producer_session ? '"' + x.producer_session + '"' : 'the active session'} but ${titleOf(nodeById(x.consumer))} runs in ${x.consumer_session ? '"' + x.consumer_session + '"' : 'the active session'}: it will not be available there.`);
+    sessBox.hidden = !sessLines.length; for (const line of sessLines) { const li = document.createElement('li'); li.textContent = line; sessList.append(li); }
+    const notes = []; if ((check.missing_sessions || []).length) notes.push('Start the named sessions in Resources first.'); if (check.from_session.length) notes.push('Already in the session: ' + [...new Set(check.from_session.map(x => x.name))].join(', ') + '.'); if (check.unresolvable.length) notes.push('Inputs nobody produces will fail at run time unless they already exist in the session.'); if (!check.session_alive) notes.push('No session is running — start one first.');
+    $('run-dialog-note').textContent = notes.join(' '); $('run-dialog-confirm').disabled = !check.session_alive || !check.plan.length || (check.missing_sessions || []).length > 0;
     $('run-dialog').showModal(); $('run-dialog-cancel').focus();
   }
   $('run-all').addEventListener('click', () => reviewRun('all', []));
@@ -690,7 +813,7 @@
   $('run-dialog-cancel').addEventListener('click', () => $('run-dialog').close());
   $('run-dialog-confirm').addEventListener('click', async () => {
     $('run-dialog').close(); const pending = state.pendingRun; if (!pending) return;
-    try { const data = await api('/api/graph/run', {mode: pending.mode, nodes: pending.nodes, confirm: true, include_prerequisites: $('include-prereqs').checked && !$('include-prereqs').disabled}); state.run = data.run; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector(); poll(); }
+    try { const data = await api('/api/graph/run', {mode: pending.mode, nodes: pending.nodes, confirm: true, include_prerequisites: $('include-prereqs').checked && !$('include-prereqs').disabled}); state.run = data.run; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector(); refreshJournal(); poll(); }
     catch (error) { toast(error.message); }
   });
   $('run-cancel').addEventListener('click', async () => { try { await api('/api/graph/cancel', {}); toast('Cancelling after the current cell…'); } catch (error) { toast(error.message); } });
@@ -717,18 +840,18 @@
       }
       state.pollDelay = 250;
       const view = await api('/api/graph'); const run = state.run; applyView(view); state.run = run; nodes().forEach(n => updateNode(n.id)); layoutNotebook(); drawEdges(); renderInspector(); refreshVariables();
-      toast(state.run ? `Run ${state.run.state}${state.run.error ? ': ' + state.run.error : ''}` : 'Run finished');
+      toast(state.run ? `Run ${state.run.state}${state.run.error ? ': ' + state.run.error : ''}` : 'Run finished'); refreshJournal(); refreshSessions();
       if (state.dirty) save();
     } catch (error) { toast(error.message); }
   }
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });
   // Keep the session pill truthful when the session is started or stopped from another tab or page.
-  setInterval(async () => { if (document.hidden || (state.run && (state.run.state === 'running' || state.run.state === 'pending'))) return; try { const s = await api('/api/kernel'); const was = state.session.alive; state.session = s; if (was !== s.alive) { renderInspector(); if (s.alive) refreshVariables(); } else renderInspector(); } catch {} }, 5000);
+  setInterval(async () => { if (document.hidden || (state.run && (state.run.state === 'running' || state.run.state === 'pending'))) return; try { const s = await api('/api/kernel'); const was = state.session.alive; state.session = s; if (was !== s.alive) { renderInspector(); if (s.alive) refreshVariables(); } else renderInspector(); } catch {} refreshSessions(); refreshJournal(); }, 5000);
   boot();
 })();

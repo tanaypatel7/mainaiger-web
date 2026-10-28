@@ -156,9 +156,9 @@ class LabServer(ThreadingHTTPServer):
             self.journal.write('run.start','Run %s approved: %d cell%s'%(mode,len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan})
             return self.graph_run.snapshot()
     def kernel_status(self):
-        kernel=self.kernel
-        if kernel is None: return {'alive':False,'executing':False,'label':None,'count':0,'python':None,'started_at':None,'ended':None}
-        return kernel.status()
+        row=self.kernels.active()
+        if row is None: return {'alive':False,'executing':False,'label':None,'count':0,'python':None,'started_at':None,'ended':None,'session_label':None}
+        return dict(row['kernel'].status(),session_label=row['label'])
     def environment_status(self):
         """The environment the current Mainbook declares, whether its image exists, and the last build."""
         with self.graph_lock:
