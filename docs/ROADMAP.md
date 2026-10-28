@@ -194,13 +194,24 @@ is MainAIger, with every change reviewed and tested from inside it. Signing with
 Developer ID when you have an Apple account fits anywhere; it changes
 distribution, not design.
 
+## Done since this roadmap was written (same day)
+
+Resources (several sessions, per-cell "run on"), Files, Log, thin-slice
+decisions, the Devices page (read-only tailnet) and model cells: see
+`SESSION_2026-10-27.md` §4–7. The AI parts of the vision are designed in
+`AI_HARNESS.md`.
+
 ## What I recommend doing next, concretely
 
-1. **I1 from `docs/INTEGRATION.md`** (the Mac app sees Nexus), after you have
+1. **The first self-improvement loop** as a Mainbook
+   (`examples/self-improve.ipymb`, `AI_HARNESS.md` §3): it needs only what
+   exists now plus two test folders and one reviewed "apply to checkout" step.
+2. **I1 from `docs/INTEGRATION.md`** (the Mac app sees Nexus), after you have
    run the section-4 trial once by hand so the device link is proven.
-2. **I4 / B1 on `local_lab/`** next, because the source workbench already
-   exists and seeing your own harness as a graph is the quickest way to regain
-   the overview you asked for.
-3. Then **A1** (chat-prompt event) and **A2** (edge conditions with budgets).
+3. **I4 / B1 on `local_lab/`**, because the source workbench already exists and
+   seeing your own harness as a graph is the quickest way to the overview you
+   asked for; B3 (AI labels) follows the thin-slice pattern in `AI_HARNESS.md` §4.
+4. Then **A1** (chat-prompt event) and **A2** (edge conditions with budgets),
+   which also give the loop its repeat and stop rules.
 
 Say which of these to start, or what to change, and I will begin there.
