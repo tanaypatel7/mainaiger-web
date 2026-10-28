@@ -46,7 +46,7 @@ class ConditionError(Exception):
 
 class GraphRun:
     def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None, on_edge=None, bindings=None, reason=None,
-                 load_mainbook=None, on_inner=None, depth=0, ancestry=(), budget=None):
+                 load_mainbook=None, on_inner=None, depth=0, ancestry=(), budget=None, memory_op=None):
         self.id = 'run-' + secrets.token_hex(4)
         self.document, self.plan, self.kernel, self.mode = document, list(plan_ids), kernel, mode
         self.on_result = on_result
@@ -55,6 +55,8 @@ class GraphRun:
         self.load_mainbook, self.on_inner, self.depth, self.ancestry = load_mainbook, on_inner, depth, tuple(ancestry)
         self.budget = budget if budget is not None else {'steps': 0}
         self.inner = None
+        # memory_op(op, params) performs one Memory operation on the host (search, read, write, ask) and returns a JSON-able result.
+        self.memory_op = memory_op
         # bindings: variables an event binds in the active session before the first cell (local_lab/events.py);
         # reason: why this run started ("fired by timer"), shown in the snapshot and the journal.
         self.bindings = dict(bindings) if bindings else None
@@ -248,7 +250,7 @@ class GraphRun:
             return failed('Mainbook "%s" could not be loaded: %s' % (name, error))
         if not plan:
             return failed('Mainbook "%s" has no code cells reachable from Start' % name)
-        inner = GraphRun(inner_doc, plan, self.kernel, mode='all', kernel_for=self.kernel_for, ask_model=self.ask_model, on_edge=self.on_edge,
+        inner = GraphRun(inner_doc, plan, self.kernel, mode='all', kernel_for=self.kernel_for, ask_model=self.ask_model, on_edge=self.on_edge, memory_op=self.memory_op,
                          on_result=(lambda i, r: self.on_inner(ident, name, i, r)) if self.on_inner else None,
                          load_mainbook=self.load_mainbook, on_inner=self.on_inner, depth=self.depth + 1, ancestry=self.ancestry + (name,), budget=self.budget)
         self.inner = inner
@@ -276,18 +278,70 @@ class GraphRun:
         result['sub'] = compact
         return result
 
+    def _memory_cell(self, ident, mem, label):
+        """Read the op's input variables from the session (as JSON), do the op on the host, bind the result."""
+        started = time.time()
+        def failed(message, kind='MemoryError'):
+            return {'status': 'error', 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': int((time.time() - started) * 1000),
+                    'error': {'ename': kind, 'evalue': message, 'traceback': []}, 'memory': mem['op']}
+        if self.memory_op is None:
+            return failed('This Lab has no Memory operations configured')
+        inputs, _ = graph_module.MEMORY_OPS[mem['op']]
+        optional = graph_module.MEMORY_OPTIONAL.get(mem['op'], ())
+        try:
+            kernel = self.kernel_for(label) if self.kernel_for else self.kernel
+        except KernelError as error:
+            return failed(str(error), 'KernelError')
+        if kernel is None:
+            return failed('No session to read the inputs from', 'KernelError')
+        names = list(inputs) + list(optional)
+        probe = ('import json as _j\nprint(_j.dumps({n: globals()[n] for n in %r if n in globals()}, default=str))\n' % names)
+        try:
+            read = kernel.execute(probe)
+        except KernelError as error:
+            return failed('The inputs could not be read from the session: %s' % error, 'KernelError')
+        if read.get('status') != 'ok' or read.get('truncated'):
+            return failed('The inputs could not be read from the session: %s' % ((read.get('error') or {}).get('evalue') or ('too large' if read.get('truncated') else read.get('status'))))
+        try:
+            params = json.loads(read.get('output') or '{}')
+        except ValueError:
+            return failed('The inputs are not JSON-serialisable')
+        missing = [n for n in inputs if n not in params]
+        if missing:
+            return failed('Memory %s needs the variable%s %s in the session (define %s in an earlier cell or a form)' % (mem['op'], '' if len(missing) == 1 else 's', ', '.join(missing), 'it' if len(missing) == 1 else 'them'), 'PromptError')
+        try:
+            value = self.memory_op(mem['op'], params)
+        except Exception as error:  # the Lab reports the reason; the run stops here
+            return failed(str(error))
+        literal = json.dumps(value, ensure_ascii=False)
+        code = '%s = __import__("json").loads(%r)\n' % (mem['output'], literal)
+        try:
+            bound = kernel.execute(code)
+        except KernelError as error:
+            return failed('The result could not be stored in the session: %s' % error, 'KernelError')
+        if bound.get('status') != 'ok':
+            return failed('The result could not be stored in the session: %s' % (bound.get('error') or {}).get('evalue', bound.get('status')), 'KernelError')
+        shown = value if isinstance(value, str) else json.dumps(value, indent=1, ensure_ascii=False)
+        if len(shown) > 4000:
+            shown = shown[:4000] + '\n…'
+        return {'status': 'ok', 'count': bound.get('count'), 'output': shown, 'truncated': False, 'error': None, 'elapsed_ms': int((time.time() - started) * 1000),
+                'memory': mem['op'], 'note': 'Memory %s → %s in the session.' % (mem['op'], mem['output'])}
+
     def _execute(self, ident):
-        """Run one cell (code, form, model or nested Mainbook) in its session; returns the result dict."""
+        """Run one cell (code, form, model, nested Mainbook or Memory) in its session; returns the result dict."""
         source = self._source(ident)
         label = graph_module.session_of(self.document, ident)
         cfg = graph_module.model_config(self._cell(ident))
         form = graph_module.form_config(self._cell(ident))
         book = graph_module.mainbook_config(self._cell(ident))
+        mem = graph_module.memory_config(self._cell(ident))
         if form:
             # Bind the form's values first; the cell's own code (if any) runs after them in the same request.
             source = graph_module.form_prelude(form) + source
         if book:
             result = self._mainbook_cell(ident, book)
+        elif mem:
+            result = self._memory_cell(ident, mem, label)
         elif cfg:
             result = self._model_cell(ident, cfg, source, label)
         elif not source.strip():

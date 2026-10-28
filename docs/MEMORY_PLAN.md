@@ -82,7 +82,7 @@ notes, so they link to the chats, answers and Mainbooks that came from them.
 decision (`decide.py`, a small schema, your local model); the note is shown
 before it is saved (a reviewed step). Growing = appending dated sections.
 
-## 3. Memory-first, cost-aware answers (M3) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Ask" (three routes on the page; the Mainbook form needs a host cell)
+## 3. Memory-first, cost-aware answers (M3) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Ask"; as a Mainbook: `examples/ask-memory.ipymb` through Memory cells
 
 **What:** an ask box whose pipeline is itself a **Mainbook** you can open and
 rearrange: Question → *Search memory* → *Decide: reuse or regenerate* →
@@ -111,7 +111,7 @@ with `question` bound like an event; the answer note links to the idea.
 Cost figures come from `models.py` (it already measures elapsed time and
 tokens per chat) kept as a running average per model in the state folder.
 
-## 4. Chat import (M4) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Chat import and review" (the review loop is on the page, not a Mainbook yet: cells in the sandbox cannot reach the Memory folder, a "host cell" is needed first)
+## 4. Chat import (M4) — **built (28 Oct 2026)**, see `LOCAL_LAB_SETUP.md` "Chat import and review" (the review loop is on the page; Memory cells now make a Mainbook version possible — a `review` operation would be the one addition)
 
 **What:** upload a ChatGPT or Claude export zip on the Memory page. The Lab
 reads it on this Mac (never in the container), writes one chat note per
@@ -131,7 +131,7 @@ ChatGPT's zip holds `conversations.json` with a `mapping` of message nodes
 note. The review Mainbook is an example (`examples/memory-review.ipymb`)
 like the self-improvement loops, so it is visible and editable.
 
-## 5. Memory as Mainbooks (M5)
+## 5. Memory as Mainbooks (M5) — **built (28 Oct 2026)**: `mainbook` notes have a Run button (opens the Mainbook on the Graph page with the run review ready), and **Memory cells** (search, read, write, ask: fixed host operations, `LOCAL_LAB_SETUP.md` "Memory cells") let a Mainbook read and grow memory; rule notes are read by the ask pipeline
 
 **What:** a note of `kind: mainbook` points at a saved Mainbook: a procedure
 with its code, its tests, and a direct way to run it ("run this memory").

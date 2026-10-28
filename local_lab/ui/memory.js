@@ -65,6 +65,8 @@
     $('note-result').textContent = '';
   }
   $('note-kind').addEventListener('change', () => { $('note-mainbook-row').hidden = $('note-kind').value !== 'mainbook'; });
+  // A mainbook note runs through the Graph page: the Mainbook opens there with the run review ready (the approval stays yours).
+  $('note-run').addEventListener('click', () => { const name = $('note-mainbook').value.trim(); if (!name) { toast('Name the saved Mainbook first.'); return; } location.href = '/graph?open=' + encodeURIComponent(name) + '&run=1'; });
   $('note-links').addEventListener('click', async event => {
     const a = event.target.closest('a[data-link]'); if (!a) return;
     const target = a.dataset.link.toLowerCase(); const hit = state.notes.find(n => n.title.toLowerCase() === target || (n.id && n.id.toLowerCase() === target));

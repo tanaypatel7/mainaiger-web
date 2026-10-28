@@ -27,7 +27,7 @@
         <div class="io"><div><label for="note-kind">Kind</label><select id="note-kind" class="quiet-select"></select></div><div><label for="note-status">Status</label><select id="note-status" class="quiet-select"><option value="draft">draft</option><option value="growing">growing</option><option value="stable">stable</option></select></div></div>
         <label for="note-tags">Tags (comma separated)</label><input id="note-tags" type="text" maxlength="400">
         <label for="note-visibility">Visibility</label><select id="note-visibility" class="quiet-select"><option value="private">private (never sent to a cloud model)</option><option value="shareable">shareable</option></select>
-        <div id="note-mainbook-row" hidden><label for="note-mainbook">Mainbook this note runs</label><input id="note-mainbook" type="text" maxlength="80"></div>
+        <div id="note-mainbook-row" hidden><label for="note-mainbook">Mainbook this note runs</label><div class="lib-toolbar"><input id="note-mainbook" type="text" maxlength="80"><button id="note-run" type="button" class="quiet small" title="Open this Mainbook on the Graph page with the run review ready">Run…</button></div></div>
         <p id="note-meta" class="muted small mono"></p>
         <label for="note-body">Body (Markdown; link other notes with [[Title]])</label><textarea id="note-body" class="memory-body" spellcheck="true"></textarea>
         <div class="lib-actions"><button id="note-save" type="button" class="quiet small">Save</button><button id="note-stable" type="button" class="quiet small" title="Confirm this note as stable memory">Mark stable</button><button id="note-delete" type="button" class="quiet small">Delete…</button></div>

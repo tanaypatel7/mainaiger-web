@@ -82,6 +82,10 @@ MODEL_NAME = re.compile(r'^[a-z0-9][a-z0-9._/-]{0,80}(:[a-z0-9][a-z0-9._-]{0,40}
 PLACEHOLDER = re.compile(r'\{\{\s*(var|output)\s*:\s*([^{}\n]+?)\s*\}\}')  # {{output:Cell title with spaces}} / {{var:name}}
 SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}(/[A-Za-z0-9][A-Za-z0-9 _-]{0,30})?$')  # "label" or "device/label"
 MAINBOOK_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,80}$')  # a saved Mainbook a cell may run (local_lab/mainbooks.py NAME)
+# Memory cells: a fixed operation the Lab performs on the host (never arbitrary host code), reading named session
+# variables and binding one result. {op: (input variable names, default output name)}.
+MEMORY_OPS = {'search': (('question',), 'hits'), 'read': (('path',), 'note'), 'write': (('title', 'body'), 'note_path'), 'ask': (('question',), 'answer')}
+MEMORY_OPTIONAL = {'write': ('kind', 'tags'), 'ask': ('use',)}
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
 
@@ -235,6 +239,19 @@ def validate(document):
                          'Cell %d mainbook must be {name: <a saved Mainbook>}' % i)
                 _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can run a Mainbook' % i)
                 _require('model' not in own and 'form' not in own, 'Cell %d: a cell runs a Mainbook, asks a model or carries a form, not several' % i)
+        if 'memory' in own:
+            # A memory cell: one fixed operation on the Lab's Memory folder (search, read, write, ask), done by the Lab on the
+            # host; inputs are session variables with fixed names, the result is bound to `output`. See docs/LOCAL_LAB_SETUP.md.
+            mem = own['memory']
+            if mem in (None, False, {}, ''):
+                del own['memory']
+            else:
+                _require(isinstance(mem, dict) and set(mem) <= {'op', 'output'} and mem.get('op') in MEMORY_OPS, 'Cell %d memory must be {op: search|read|write|ask, output?}' % i)
+                _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can use Memory' % i)
+                _require('model' not in own and 'form' not in own and 'mainbook' not in own, 'Cell %d: a cell uses Memory, runs a Mainbook, asks a model or carries a form, not several' % i)
+                if mem.get('output') in (None, ''):
+                    mem['output'] = MEMORY_OPS[mem['op']][1]
+                _require(isinstance(mem['output'], str) and NAME.match(mem['output']), 'Cell %d memory output must be a Python name' % i)
         if 'session' in own:
             # The label of the session this cell runs on; absent means "the active session".
             if own['session'] in (None, ''):
@@ -450,6 +467,23 @@ def mainbook_config(cell):
     return book if isinstance(book, dict) and book.get('name') else None
 
 
+def memory_config(cell):
+    own = cell.get('metadata', {}).get('mainaiger', {}) or {}
+    mem = own.get('memory')
+    return mem if isinstance(mem, dict) and mem.get('op') in MEMORY_OPS else None
+
+
+def memory_cells(doc):
+    """[(node id, op)] for the cells that use Memory."""
+    out = []
+    for node in doc['graph']['nodes']:
+        if node['kind'] == 'code':
+            mem = memory_config(doc['notebook']['cells'][node['cell_index']])
+            if mem:
+                out.append((node['id'], mem['op']))
+    return out
+
+
 def _inner_names(inner, resolve, depth):
     """What a whole Mainbook reads from the session and defines in it, from its own analysis."""
     info = analysis(inner, resolve, depth + 1)
@@ -490,6 +524,14 @@ def declared(doc, node_id, resolve=None, depth=0):
         if 'outputs' in own:
             result['outputs'] = list(own['outputs'])
         result['declared'] = 'inputs' in own or 'outputs' in own
+        return result
+    mem = memory_config(cell)
+    if mem:
+        inputs, _ = MEMORY_OPS[mem['op']]
+        result = {'inputs': list(inputs), 'outputs': [mem['output']], 'error': None, 'memory': mem['op'], 'optional': list(MEMORY_OPTIONAL.get(mem['op'], ()))}
+        if 'inputs' in own:
+            result['inputs'] = list(own['inputs'])
+        result['declared'] = 'inputs' in own
         return result
     cfg = model_config(cell)
     if cfg:

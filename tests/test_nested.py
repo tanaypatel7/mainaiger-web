@@ -126,6 +126,45 @@ class EngineTests(unittest.TestCase):
         snap = run.snapshot(); self.assertEqual(snap['nodes']['run']['status'], 'interrupted'); self.assertEqual(snap['nodes']['run']['sub']['nodes']['a']['status'], 'interrupted'); self.assertEqual(snap['nodes']['after']['status'], 'cancelled')
 
 
+class MemoryCellTests(unittest.TestCase):
+    """Memory cells: fixed host operations reading named session variables, binding one result."""
+    def setUp(self):
+        self.kernel = KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')]); self.kernel.start(timeout=20); self.ops = []
+    def tearDown(self):
+        self.kernel.stop()
+    def memory_op(self, op, params):
+        self.ops.append((op, params))
+        if op == 'search': return [{'path': 'notes/a.md', 'title': 'A note about ' + params['question'], 'status': 'stable', 'snippet': 'x', 'kind': 'fact', 'tags': [], 'score': 3}]
+        if op == 'read': return {'path': params['path'], 'title': 'A', 'body': 'body text'}
+        if op == 'write': return 'notes/' + params['title'].lower().replace(' ', '-') + '.md'
+        if op == 'ask': raise ValueError('No local model is running')
+    def test_validation_analysis_run_and_failures(self):
+        doc = chain([('q', 'question = "haptics"'), ('s', ''), ('use', 'use = [h["path"] for h in hits]\nprint(len(hits), use)'), ('r', ''), ('w', 'title = "Kept " + question\nbody = note["body"]'), ('out', '')])
+        for ident, mem in (('s', {'op': 'search'}), ('r', {'op': 'read', 'output': 'note'}), ('out', {'op': 'write', 'output': 'where'})):
+            doc['notebook']['cells'][g.node_by_id(doc, ident)['cell_index']]['metadata']['mainaiger']['memory'] = mem
+        g.node_by_id(doc, 'r'); doc['notebook']['cells'][g.node_by_id(doc, 'use')['cell_index']]['source'] += '\npath = use[0]'
+        doc = g.validate(doc)
+        self.assertEqual(g.memory_cells(doc), [('s', 'search'), ('r', 'read'), ('out', 'write')]); self.assertEqual(g.analysis(doc)['s']['outputs'], ['hits']); self.assertEqual(g.analysis(doc)['out']['inputs'], ['title', 'body'])
+        self.assertEqual(g.preflight(doc, g.plan(doc, 'all'))['missing'], [], 'data flows question → hits → use/path → note → title/body')
+        run = GraphRun(doc, g.plan(doc, 'all'), self.kernel, memory_op=self.memory_op).start(); self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error'))
+        snap = run.snapshot(); self.assertEqual([o for o, _ in self.ops], ['search', 'read', 'write']); self.assertEqual(self.ops[0][1], {'question': 'haptics'}); self.assertEqual(self.ops[2][1]['title'], 'Kept haptics'); self.assertEqual(self.ops[2][1]['body'], 'body text')
+        self.assertEqual(snap['nodes']['use']['output'], "1 ['notes/a.md']\n"); self.assertEqual(snap['nodes']['out']['output'], 'notes/kept-haptics.md'); self.assertIn('Memory write → where', snap['nodes']['out']['note'])
+        self.assertEqual(self.kernel.execute('where')['output'], "'notes/kept-haptics.md'\n")
+        # A missing input stops the run plainly; a refused op reports the reason; no op configured says so.
+        doc2 = g.validate(chain([('s', '')])); doc2['notebook']['cells'][0]['metadata']['mainaiger']['memory'] = {'op': 'search'}; doc2 = g.validate(doc2)
+        self.kernel.execute('del question')  # the session keeps variables between runs
+        run = GraphRun(doc2, g.plan(doc2, 'all'), self.kernel, memory_op=self.memory_op).start(); run.wait(30); snap = run.snapshot()
+        self.assertEqual(snap['state'], 'failed'); self.assertIn('needs the variable question', snap['nodes']['s']['error']['evalue'])
+        doc3 = g.validate(chain([('q', 'question = "x"'), ('a', '')])); doc3['notebook']['cells'][1]['metadata']['mainaiger']['memory'] = {'op': 'ask'}; doc3 = g.validate(doc3)
+        run = GraphRun(doc3, g.plan(doc3, 'all'), self.kernel, memory_op=self.memory_op).start(); run.wait(30); self.assertIn('No local model', run.snapshot()['nodes']['a']['error']['evalue'])
+        run = GraphRun(doc3, g.plan(doc3, 'all'), self.kernel).start(); run.wait(30); self.assertIn('no Memory operations', run.snapshot()['nodes']['a']['error']['evalue'])
+        for bad, message in (({'op': 'delete'}, 'memory must be'), ({'op': 'search', 'output': '1x'}, 'Python name'), ({'op': 'search', 'extra': 1}, 'memory must be')):
+            with self.subTest(bad=bad), self.assertRaisesRegex(g.GraphError, message):
+                d = chain([('s', '')]); d['notebook']['cells'][0]['metadata']['mainaiger']['memory'] = bad; g.validate(d)
+        with self.assertRaisesRegex(g.GraphError, 'not several'):
+            d = chain([('s', '')]); d['notebook']['cells'][0]['metadata']['mainaiger'].update(memory={'op': 'search'}, model={'model': 'x:1b', 'output': 'y'}); g.validate(d)
+
+
 class HttpTests(unittest.TestCase):
     def setUp(self):
         from tests.test_sessions import local_factory
@@ -170,6 +209,21 @@ class HttpTests(unittest.TestCase):
         self.assertEqual((run['state'], run['nodes']['after']['output']), ('finished', 'outer 10\n')); self.assertIn('inner 10', run['nodes']['run']['output'])
         texts = [e['text'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]; self.assertTrue(any(t.startswith('double / a: ok') for t in texts), texts); self.assertTrue(any(t.startswith('double / b: ok') for t in texts))
         doc = self.req('/api/graph', headers=cookie)[1]['document']; self.assertIn('Mainbook "double": finished', doc['notebook']['cells'][1]['outputs'][0]['text'])
+    def test_memory_cells_search_and_write_real_notes_through_the_server(self):
+        from local_lab import memory
+        auth = self.login(); cookie = {'Cookie': auth['Cookie']}
+        doc = with_book(chain([('q', 'question = "haptic glove"'), ('s', ''), ('k', 'title = "Kept: " + hits[0]["title"]\nbody = "From " + hits[0]["path"]\ntags = ["kept"]'), ('w', '')]), 'q', 'double') if False else chain([('q', 'question = "haptic glove"'), ('s', ''), ('k', 'title = "Kept: " + hits[0]["title"]\nbody = "From " + hits[0]["path"]\ntags = ["kept"]'), ('w', '')])
+        doc['notebook']['cells'][1]['metadata']['mainaiger']['memory'] = {'op': 'search'}; doc['notebook']['cells'][3]['metadata']['mainaiger']['memory'] = {'op': 'write'}; doc = g.validate(doc)
+        self.assertEqual(self.req('/api/graph', {'document': doc}, auth)[0], 200)
+        check = self.req('/api/graph/preflight', {'mode': 'all', 'nodes': [], 'include_prerequisites': False}, auth)[1]
+        self.assertEqual((check['memory'], check['memory_ready']), ([{'node': 's', 'op': 'search'}, {'node': 'w', 'op': 'write'}], False), 'no Memory folder yet')
+        rev = self.req('/api/sessions', headers=cookie)[1]['revision']; self.req('/api/sessions/start', {'confirm': True, 'revision': rev}, auth)
+        status, data, _ = self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth); self.assertEqual(status, 400); self.assertIn('Memory folder', data['error'])
+        memory.configure(self.state, str(self.root / 'Memory')); memory.create(self.state, 'Haptic glove setup', 'Calibrate each finger.', status_='stable')
+        self.req('/api/graph/run', {'mode': 'all', 'nodes': [], 'confirm': True, 'include_prerequisites': False}, auth); run = self.wait_run(cookie)
+        self.assertEqual(run['state'], 'finished', run.get('error')); self.assertIn('Haptic glove setup', run['nodes']['s']['output']); self.assertEqual(run['nodes']['w']['output'], 'notes/kept-haptic-glove-setup.md')
+        note = memory.read(self.state, 'notes/kept-haptic-glove-setup.md'); self.assertEqual((note['status'], note['tags'], note['sources']), ('draft', ['kept'], ['mainbook: the open Mainbook'])); self.assertEqual(note['body'].strip(), 'From notes/haptic-glove-setup.md')
+        kinds = [e['kind'] for e in self.req('/api/journal', headers=cookie)[1]['entries']]; self.assertIn('memory.cell.search', kinds); self.assertIn('memory.cell.write', kinds)
 
 
 if __name__ == '__main__':

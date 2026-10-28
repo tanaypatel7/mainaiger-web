@@ -135,7 +135,8 @@ What the pieces do, and which file implements them:
 - **Export Python** writes the cells reachable from Start, in trigger order,
   as one `.py` with the notes as comments. **Clear outputs** resets counts.
 - **Open example…** lists the Mainbooks in `examples/` (`signal-demo`,
-  `csv-pipeline`, `branching-stats`, `self-improve`, `self-improve-repo`);
+  `csv-pipeline`, `branching-stats`, `self-improve`, `self-improve-repo`,
+  `ask-memory`);
   `tests/test_examples.py` runs each one with the real kernel, so they cannot
   rot. **Open .ipymb / .ipynb** sends a
   plain notebook to `POST /api/graph/import` (`graph.from_notebook()`): cells
@@ -563,6 +564,41 @@ tested in headless Chromium (`NestedMainbookPanelTests`). Future: a nested
 Mainbook on another device as one unit; passing explicit inputs instead of
 sharing the session.
 
+### Memory cells (`graph.py` `MEMORY_OPS`, `graph_run.py` `_memory_cell`, `server.py` `memory_op`)
+
+A code cell can **use Memory** instead of its own code: tick "This cell uses
+Memory" in the SELECTED NODE panel and pick one of four fixed operations the
+Lab performs on this Mac (never arbitrary host code, never inside the
+container): **search** (reads the session variable `question`, stores
+`hits`), **read** (`path` → `note`), **write** (`title`, `body`, optional
+`kind`, `tags` → `note_path`; adds a draft note with the open Mainbook as its
+source) and **ask** (`question`, optional `use` → `answer`: the brief,
+memory-grounded answer of the ASK box, saved as a note). Inputs are read from
+the session as JSON, the operation runs on the host, the result is bound back
+like a model cell's answer, and each operation is a Log line
+(`memory.cell.search`, `memory.cell.read`, `memory.cell.write`,
+`memory.ask`). The run review names every Memory cell and says when a run
+may add notes; it refuses the run when no Memory folder is approved. The
+analysis treats the fixed input names as the cell's inputs, so data edges
+flow through (a form that sets `question` feeds a search; `hits` feeds the
+next cell). A cell uses Memory, runs a Mainbook, asks a model or carries a
+form — one of the four.
+
+Why fixed operations: the Lab's rule is that everything touching the system
+is a reviewed, named step. Four named operations keep that rule while
+letting a Mainbook read and grow memory — which is what makes the ASK and
+review loops composable as graphs. `examples/ask-memory.ipymb` is the ASK
+pipeline laid out as cards (Question form → Search memory → *Choose notes*,
+plain Python you edit → Ask with notes → Keep the answer → Write the note
+→ Report).
+
+**Status:** validation, analysis, the engine (inputs read, result bound,
+missing input, refused operation, no operations configured) and the real
+operations through the server (search and write against a real vault, the
+review's refusal without a folder) are tested (`tests/test_nested.py`); the
+example runs in CI with fake operations (`tests/test_examples.py`); the
+panel and a real search are tested in headless Chromium.
+
 ### Thin-slice decisions (`local_lab/decide.py`, `POST /api/models/decide`)
 
 The pattern every AI-made decision in MainAIger follows: the harness asks the
@@ -948,9 +984,8 @@ The ASK box at the top of the Memory page. Type a question and press Enter:
    watt-hours) is shown next to the estimate.
 
 Where this is on the "visual and modular" road: the three stages are
-routes you can call from anything; making the pipeline a Mainbook needs a
-host cell (cells in the sandbox cannot reach the Memory folder or Ollama),
-noted in `MEMORY_PLAN.md`.
+routes you can call from anything, and with **Memory cells** (below) the
+same pipeline is a Mainbook you can rearrange: `examples/ask-memory.ipymb`.
 
 **Status:** rates (defaults, then measured), estimates, watts, the plan's
 ranking and recommendation, reuse, the answer prompt and the saved note,

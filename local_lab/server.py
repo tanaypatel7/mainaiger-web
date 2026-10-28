@@ -157,6 +157,9 @@ class LabServer(ThreadingHTTPServer):
                 if ident in set(plan):
                     inner=self.resolve_mainbook(name);books.append({'node':ident,'name':name,'found':inner is not None,'cells':len(graph_module.code_nodes(inner)) if inner else 0,'self':name==(doc['notebook'].get('metadata',{}).get('mainaiger',{}).get('name') or '')})
             check['mainbooks']=books;check['missing_mainbooks']=[b['name'] for b in books if not b['found']]
+            # Cells that use Memory: named in the review; a write means this run may add notes to the Memory folder.
+            check['memory']=[{'node':i,'op':op} for i,op in graph_module.memory_cells(doc) if i in set(plan)]
+            check['memory_ready']=bool(lab_memory.folder(self.state_dir)) if check['memory'] else True
             # Cells may name the session they run on; data cannot cross sessions, and a named session must be running.
             check['sessions']={i:graph_module.session_of(doc,i) for i in plan if graph_module.session_of(doc,i)}
             check['cross_session']=graph_module.cross_session(doc,plan)
@@ -181,6 +184,7 @@ class LabServer(ThreadingHTTPServer):
             doc=self.graph_doc
             if check['missing_sessions']:raise KernelError('These cells name sessions that are not running: %s'%', '.join(check['missing_sessions']))
             if check.get('missing_mainbooks'):raise graph_module.GraphError('These Mainbooks are not in the Mainbooks folder: %s'%', '.join(check['missing_mainbooks']))
+            if not check.get('memory_ready',True):raise graph_module.GraphError('Cells use Memory but no Memory folder is approved yet (Memory page)')
             def record(ident,result):
                 with self.graph_lock:
                     graph_module.record_result(doc,ident,result)
@@ -201,7 +205,7 @@ class LabServer(ThreadingHTTPServer):
                 # A cell inside a nested Mainbook finished: one Log line, prefixed with the Mainbook's name; the outer cell keeps the summary.
                 self.journal.write('cell.'+result['status'],'%s / %s: %s%s'%(name,ident,result['status'],(' in %d ms'%result['elapsed_ms']) if result.get('elapsed_ms') is not None else ''),{'mainbook':name,'parent':parent,'node':ident,'status':result['status'],'elapsed_ms':result.get('elapsed_ms'),'error':(result.get('error') or {}).get('evalue')})
             self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model,on_edge=arrow,bindings=bindings,reason=reason,
-                                    load_mainbook=lambda name:lab_mainbooks.load(self.state_dir,name),on_inner=inner).start()
+                                    load_mainbook=lambda name:lab_mainbooks.load(self.state_dir,name),on_inner=inner,memory_op=self.memory_op).start()
             self.journal.write('run.start','Run %s %s: %d cell%s'%(mode,reason or 'approved',len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan,'reason':reason})
             return self.graph_run.snapshot()
     def chat(self,model,messages,timeout=300,format=None):
@@ -213,6 +217,35 @@ class LabServer(ThreadingHTTPServer):
         return r
     def decide(self,*args,**kwargs):
         return lab_decide.ask(*args,chat=self.chat,**kwargs)
+    def memory_op(self,op,params):
+        """The Memory operations a cell may ask for (local_lab/graph.py MEMORY_OPS): fixed, done here on the host, each a Log line."""
+        state=self.state_dir
+        if op=='search':
+            hits=lab_memory.search(state,str(params['question'])[:500],tier='notes',limit=8)
+            self.journal.write('memory.cell.search','A cell searched memory: %d hit%s'%(len(hits),'' if len(hits)==1 else 's'),{'question':str(params['question'])[:200],'hits':[h['path'] for h in hits]})
+            return [{k:h[k] for k in ('path','title','kind','status','tags','snippet','score')} for h in hits]
+        if op=='read':
+            note=lab_memory.read(state,str(params['path']))
+            self.journal.write('memory.cell.read','A cell read note %s'%note['path'],{'path':note['path']})
+            return {k:note[k] for k in ('path','title','kind','status','tags','body','sources','links')}
+        if op=='write':
+            tags=params.get('tags') if isinstance(params.get('tags'),list) else []
+            kind=params.get('kind') if params.get('kind') in lab_memory.KINDS and params.get('kind')!='chat' else 'fact'
+            doc_name=(self.graph_doc['notebook'].get('metadata',{}).get('mainaiger',{}).get('name') or 'the open Mainbook')
+            row=lab_memory.create(state,str(params['title'])[:120],str(params['body']),kind=kind,tags=[str(t) for t in tags][:30],sources=['mainbook: %s'%doc_name])
+            self.journal.write('memory.cell.write','A cell wrote note "%s" (%s)'%(row['title'],row['kind']),{'path':row['path'],'kind':row['kind']})
+            return row['path']
+        if op=='ask':
+            model=params.get('model') if isinstance(params.get('model'),str) else None
+            if not model:
+                rows=lab_models.installed_models();model=rows[0]['name'] if rows else None
+            if not model:raise lab_ask.AskError('No local model is running')
+            use=[u for u in params.get('use',[])[:5] if isinstance(u,str)] if isinstance(params.get('use'),list) else []
+            out=lab_ask.answer(state,str(params['question']),model,use=use,chat=self.chat)
+            if not out['ok']:raise lab_ask.AskError(out['error'])
+            self.journal.write('memory.ask','A cell asked %s%s: %d ms'%(model,(' with %d note%s'%(len(out['used']),'' if len(out['used'])==1 else 's')) if out['used'] else '',out['elapsed_ms']),{'model':model,'used':out['used'],'elapsed_ms':out['elapsed_ms'],'tokens':out['tokens'],'note':(out['note'] or {}).get('path')})
+            return {'reply':out['reply'],'model':model,'used':out['used'],'note_path':(out['note'] or {}).get('path'),'elapsed_ms':out['elapsed_ms'],'tokens':out['tokens']}
+        raise ValueError('Unknown memory operation')
     def ask_model(self,cfg,prompt):
         """How a model cell asks the local model: schema -> one checked decision (decide.ask); no schema -> plain chat."""
         if cfg.get('schema'):

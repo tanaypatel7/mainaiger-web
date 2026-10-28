@@ -125,7 +125,7 @@
     el.querySelector('.count').textContent = 'In [' + (cell.execution_count == null ? ' ' : cell.execution_count) + ']';
     el.querySelector('.stale').hidden = !(last && last.source_hash && last.source_hash !== fnv(sourceOf(cell)) && !(runNode && runNode.status === 'running'));
     el.querySelector('.node-session').textContent = own.session ? 'on ' + own.session : '';
-    el.querySelector('.node-model').textContent = own.model ? 'model ' + own.model.model + ' → ' + own.model.output : own.mainbook ? '\u25a3 Mainbook: ' + own.mainbook.name : ''; el.classList.toggle('model', !!own.model); el.classList.toggle('book', !!own.mainbook);
+    el.querySelector('.node-model').textContent = own.model ? 'model ' + own.model.model + ' → ' + own.model.output : own.mainbook ? '\u25a3 Mainbook: ' + own.mainbook.name : own.memory ? 'memory ' + own.memory.op + ' → ' + own.memory.output : ''; el.classList.toggle('model', !!own.model); el.classList.toggle('book', !!own.mainbook || !!own.memory);
     renderForm(el, id, own.form || null);
     const ta = el.querySelector('textarea'); if (ta) ta.placeholder = own.model ? 'Prompt — use {{output:Cell title}} and {{var:name}}' : '# Python — Shift+Enter runs this cell';
     const needs = missingFor(id), needsEl = el.querySelector('.node-needs'); needsEl.hidden = !needs.length; needsEl.textContent = needs.length ? 'needs: ' + needs.join(', ') : '';
@@ -334,6 +334,7 @@
       renderFormChoice(sel.id);
       renderModelChoice(sel.id);
       renderBookChoice(sel.id);
+      renderMemoryChoice(sel.id);
       renderSessionChoice(sel.id);
       renderLibraryLink(sel.id);
       const r = state.run && state.run.nodes[sel.id]; const last = r || own.last_run;
@@ -815,6 +816,27 @@
   });
   let installedModels = [];
   async function refreshModels() { try { const data = await api('/api/models'); installedModels = (data.models || []).map(m => m.name); const dl = $('model-names'); dl.textContent = ''; for (const n of installedModels) { const o = document.createElement('option'); o.value = n; dl.append(o); } } catch {} }
+  const MEM_DEFAULT_OUTPUT = {search: 'hits', read: 'note', write: 'note_path', ask: 'answer'};
+  function renderMemoryChoice(id) {
+    const own = meta(cellOf(nodeById(id))); const mem = own.memory || null;
+    $('mem-enabled').checked = !!mem; $('mem-fields').hidden = !mem;
+    if (mem) { $('mem-op').value = mem.op; if (document.activeElement !== $('mem-output')) $('mem-output').value = mem.output || MEM_DEFAULT_OUTPUT[mem.op]; }
+    const info = state.analysis[id] || {};
+    $('mem-note').textContent = mem ? `Reads ${info.inputs && info.inputs.length ? info.inputs.join(', ') : 'nothing'}${info.optional && info.optional.length ? ` (optional: ${info.optional.join(', ')})` : ''} from the session; stores ${mem.output}.` : '';
+  }
+  $('mem-op').addEventListener('change', () => { $('mem-output').value = MEM_DEFAULT_OUTPUT[$('mem-op').value] || ''; });
+  $('mem-enabled').addEventListener('change', () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    if ($('mem-enabled').checked) { $('mem-fields').hidden = false; if (!$('mem-output').value) $('mem-output').value = MEM_DEFAULT_OUTPUT[$('mem-op').value]; $('mem-op').focus(); }
+    else { delete meta(cellOf(sel)).memory; updateNode(sel.id); markDirty(); renderMemoryChoice(sel.id); save(); }
+  });
+  $('mem-apply').addEventListener('click', async () => {
+    const sel = state.selected && nodeById(state.selected.id); if (!sel || sel.kind !== 'code') return;
+    const own = meta(cellOf(sel)); if (own.model || own.form || own.mainbook) { toast('A cell uses Memory, runs a Mainbook, asks a model or carries a form, not several. Turn the others off first.'); return; }
+    const output = $('mem-output').value.trim(); if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(output)) { toast('The result name must be a Python name.'); return; }
+    own.memory = {op: $('mem-op').value, output}; if (!own.title || /^Cell \d+$/.test(own.title)) { own.title = 'Memory ' + $('mem-op').value; $('node-title').value = own.title; }
+    updateNode(sel.id); markDirty(); await save(); renderMemoryChoice(sel.id); renderInspector();
+  });
   function renderBookChoice(id) {
     const own = meta(cellOf(nodeById(id))); const book = own.mainbook || null;
     $('book-enabled').checked = !!book; $('book-fields').hidden = !book;
@@ -1032,13 +1054,15 @@
     sessBox.hidden = !sessLines.length; for (const line of sessLines) { const li = document.createElement('li'); li.textContent = line; sessList.append(li); }
     const arrowsBox = $('run-dialog-arrows'), arrowsList = $('run-dialog-arrows-list'); arrowsList.textContent = '';
     const arrowLines = [];
+    for (const mm of check.memory || []) arrowLines.push(`${titleOf(nodeById(mm.node) || {id: mm.node, kind: 'code'})} uses Memory: ${mm.op}${mm.op === 'write' ? ' \u2014 this run may add draft notes to your Memory folder' : mm.op === 'ask' ? ' \u2014 asks your local model and saves the answer as a note' : ''}`);
+    if (check.memory && check.memory.length && check.memory_ready === false) arrowLines.push('No Memory folder is approved yet (Memory page): these cells cannot run.');
     for (const b of check.mainbooks || []) arrowLines.push(`${titleOf(nodeById(b.node) || {id: b.node, kind: 'code'})} runs the Mainbook "${b.name}"${b.found ? ` (${b.cells} cell${b.cells === 1 ? '' : 's'}, in this session)` : ' \u2014 not in the Mainbooks folder'}`);
     for (const l of check.loops || []) arrowLines.push(`Loop ${l.source_title} \u2192 ${l.target_title}: runs the body again at most ${l.max_fires} time${l.max_fires === 1 ? '' : 's'}${l.when ? ` when ${l.when}` : ''}${l.inside ? '' : ' \u2014 leads outside this run, so it will not fire'}`);
     for (const c of check.conditions || []) arrowLines.push(`${c.source_title} \u2192 ${c.target_title} fires only when ${c.when}`);
     arrowsBox.hidden = !arrowLines.length; for (const line of arrowLines) { const li = document.createElement('li'); li.textContent = line; arrowsList.append(li); }
     const notes = []; if ((check.missing_sessions || []).length) notes.push('Start the named sessions in Resources first.'); if (check.from_session.length) notes.push('Already in the session: ' + [...new Set(check.from_session.map(x => x.name))].join(', ') + '.'); if (check.unresolvable.length) notes.push('Inputs nobody produces will fail at run time unless they already exist in the session.'); if (!check.session_alive) notes.push('No session is running — start one first.');
     if ((check.missing_mainbooks || []).length) notes.push('Save the missing Mainbook(s) into the Mainbooks folder first.');
-    $('run-dialog-note').textContent = notes.join(' '); $('run-dialog-confirm').disabled = !check.session_alive || !check.plan.length || (check.missing_sessions || []).length > 0 || (check.missing_mainbooks || []).length > 0;
+    $('run-dialog-note').textContent = notes.join(' '); $('run-dialog-confirm').disabled = !check.session_alive || !check.plan.length || (check.missing_sessions || []).length > 0 || (check.missing_mainbooks || []).length > 0 || check.memory_ready === false;
     $('run-dialog').showModal(); $('run-dialog-cancel').focus();
   }
   $('run-all').addEventListener('click', () => reviewRun('all', []));
@@ -1166,7 +1190,10 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); refreshModels(); renderEventSources(); refreshEvents(); takeInbox(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); refreshSessions(); refreshFiles(); refreshJournal(); refreshModels(); renderEventSources(); refreshEvents(); takeInbox();
+      // /graph?open=<Mainbook>[&run=1]: open a saved Mainbook (a memory note's Run button lands here) and, with run=1, open the run review — the approval stays yours.
+      const params = new URLSearchParams(location.search); const wanted = params.get('open');
+      if (wanted) { history.replaceState(null, '', '/graph'); try { const data = await api('/api/mainbooks/' + encodeURIComponent(wanted)); await openDocument(data.document, wanted + '.ipymb'); $('save-state').textContent = 'Saved · ' + wanted; toast(`Opened "${wanted}" from memory.`); if (params.get('run') === '1') setTimeout(() => reviewRun('all', []), 400); } catch (error) { toast(error.message); } } try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });

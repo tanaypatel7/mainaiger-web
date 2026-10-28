@@ -1,0 +1,291 @@
+{
+ "format": "mainaiger",
+ "schema_version": 2,
+ "notebook": {
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+   "kernelspec": {
+    "name": "python3",
+    "display_name": "Python 3",
+    "language": "python"
+   },
+   "mainaiger": {
+    "example": true,
+    "name": "ask-memory",
+    "title": "Ask memory as a Mainbook (search, choose, ask, keep)"
+   }
+  },
+  "cells": [
+   {
+    "id": "readme",
+    "cell_type": "markdown",
+    "metadata": {
+     "mainaiger": {
+      "title": "Ask memory, as a Mainbook"
+     }
+    },
+    "source": "# Ask memory, as a Mainbook\n\nThe same three stages as the ASK box on the Memory page, laid out as cards so you can change the rule in the middle. **Question** is a form; **Search memory** is a Memory cell (the Lab searches your notes on this Mac and stores `hits`); **Choose notes** is ordinary Python — it decides which hits to hand to the model (edit it: prefer stable notes, require a title match, cap the count, or stop the run with `raise SystemExit` when a stable note already answers); **Ask with notes** is a Memory cell that asks your local model with those notes and stores `answer`; **Keep the answer** writes it as a draft note; **Report** prints it. Needs a running session, an approved Memory folder and an installed model.\n",
+    "outputs": []
+   },
+   {
+    "id": "question",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Question",
+      "form": {
+       "fields": [
+        {
+         "name": "question",
+         "type": "text",
+         "label": "Your question",
+         "default": "What do I know about this project?"
+        }
+       ],
+       "values": {}
+      }
+     }
+    },
+    "source": "print(\"asking:\", question)\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "search",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Search memory",
+      "memory": {
+       "op": "search",
+       "output": "hits"
+      }
+     }
+    },
+    "source": "",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "choose",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Choose notes"
+     }
+    },
+    "source": "# The rule for what memory the model may see. Edit freely; it is plain Python over `hits`.\nstable = [h for h in hits if h[\"status\"] == \"stable\"]\nchosen = (stable or hits)[:3]\nuse = [h[\"path\"] for h in chosen]\nprint(\"question:\", question)\nprint(\"%d hit(s); using %d:\" % (len(hits), len(use)))\nfor h in chosen:\n    print(\" -\", h[\"title\"], \"(%s)\" % h[\"status\"])\nif not hits:\n    print(\"nothing in memory matches; the model answers from scratch\")\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "ask",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Ask with notes",
+      "memory": {
+       "op": "ask",
+       "output": "answer"
+      }
+     }
+    },
+    "source": "",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "keep",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Keep the answer"
+     }
+    },
+    "source": "title = \"Q: \" + question[:70]\nbody = answer[\"reply\"] + \"\\n\\n## Question\\n\\n\" + question + (\"\\n\\n## Notes used\\n\\n\" + \"\\n\".join(\"- \" + p for p in answer[\"used\"]) if answer[\"used\"] else \"\")\nkind = \"answer\"\ntags = [\"ask\", \"mainbook\"]\nprint(\"writing a draft answer note…\")\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "write",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Write the note",
+      "memory": {
+       "op": "write",
+       "output": "note_path"
+      }
+     }
+    },
+    "source": "",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "report",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Report"
+     }
+    },
+    "source": "print(\"=\" * 48)\nprint(answer[\"reply\"].strip())\nprint(\"=\" * 48)\nprint(\"model:\", answer[\"model\"], \"| %d ms\" % answer[\"elapsed_ms\"], \"| notes used:\", len(answer[\"used\"]), \"| saved as:\", note_path)\n",
+    "execution_count": null,
+    "outputs": []
+   }
+  ]
+ },
+ "graph": {
+  "nodes": [
+   {
+    "id": "start",
+    "kind": "start"
+   },
+   {
+    "id": "readme",
+    "kind": "markdown",
+    "cell_index": 0
+   },
+   {
+    "id": "question",
+    "kind": "code",
+    "cell_index": 1
+   },
+   {
+    "id": "search",
+    "kind": "code",
+    "cell_index": 2
+   },
+   {
+    "id": "choose",
+    "kind": "code",
+    "cell_index": 3
+   },
+   {
+    "id": "ask",
+    "kind": "code",
+    "cell_index": 4
+   },
+   {
+    "id": "keep",
+    "kind": "code",
+    "cell_index": 5
+   },
+   {
+    "id": "write",
+    "kind": "code",
+    "cell_index": 6
+   },
+   {
+    "id": "report",
+    "kind": "code",
+    "cell_index": 7
+   },
+   {
+    "id": "finish",
+    "kind": "finish"
+   }
+  ],
+  "edges": [
+   {
+    "id": "e-start-question",
+    "kind": "control",
+    "source": "start",
+    "target": "question"
+   },
+   {
+    "id": "e-question-search",
+    "kind": "control",
+    "source": "question",
+    "target": "search"
+   },
+   {
+    "id": "e-search-choose",
+    "kind": "control",
+    "source": "search",
+    "target": "choose"
+   },
+   {
+    "id": "e-choose-ask",
+    "kind": "control",
+    "source": "choose",
+    "target": "ask"
+   },
+   {
+    "id": "e-ask-keep",
+    "kind": "control",
+    "source": "ask",
+    "target": "keep"
+   },
+   {
+    "id": "e-keep-write",
+    "kind": "control",
+    "source": "keep",
+    "target": "write"
+   },
+   {
+    "id": "e-write-report",
+    "kind": "control",
+    "source": "write",
+    "target": "report"
+   },
+   {
+    "id": "e-report-finish",
+    "kind": "control",
+    "source": "report",
+    "target": "finish"
+   }
+  ]
+ },
+ "layout": {
+  "nodes": {
+   "readme": {
+    "x": 40.0,
+    "y": 40.0
+   },
+   "start": {
+    "x": 40.0,
+    "y": 520.0
+   },
+   "finish": {
+    "x": 2060.0,
+    "y": 520.0
+   },
+   "question": {
+    "x": 460.0,
+    "y": 40.0
+   },
+   "search": {
+    "x": 460.0,
+    "y": 420.0
+   },
+   "choose": {
+    "x": 860.0,
+    "y": 40.0
+   },
+   "ask": {
+    "x": 860.0,
+    "y": 420.0
+   },
+   "keep": {
+    "x": 1260.0,
+    "y": 40.0
+   },
+   "write": {
+    "x": 1260.0,
+    "y": 420.0
+   },
+   "report": {
+    "x": 1660.0,
+    "y": 40.0
+   }
+  },
+  "viewport": {
+   "x": 40,
+   "y": 30,
+   "zoom": 0.6
+  }
+ }
+}

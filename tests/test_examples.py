@@ -23,6 +23,7 @@ EXPECTED = {
     'branching-stats': {'last': 'report', 'contains': 'Report complete.', 'fired': 8, 'also': {'load': '200 samples'}},
     'self-improve': {'last': 'report', 'contains': 'Self-improvement loop: 2 attempts', 'fired': 14, 'steps': 12, 'also': {'apply': 'candidate accuracy', 'report': 'last verdict: keep'}, 'model': True,
                      'loop': ('e-judge-propose', 1, 'not_fired')},
+    'ask-memory': {'last': 'report', 'contains': 'model: fake:1b', 'fired': 8, 'steps': 7, 'memory': True, 'also': {'choose': 'using 1:', 'report': 'saved as: notes/q-what-do-i-know.md'}},
     'self-improve-repo': {'last': 'report', 'contains': 'Repository self-improvement loop: 2 attempts', 'fired': 15, 'steps': 13, 'model': 'repo',
                           'also': {'copy': 'copied', 'baseline': 'baseline: OK', 'tests': 'tests after the change: OK', 'report': 'git apply change.patch'},
                           'loop': ('e-judge-propose', 1, 'not_fired')},
@@ -113,7 +114,12 @@ class ExampleRunTests(unittest.TestCase):
                 try:
                     doc = g.validate(load_example(name))
                     fake = make_fake_model(expect['model']) if expect.get('model') else None
-                    run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake).start()
+                    def memory_op(op, params):
+                        if op == 'search': return [{'path': 'notes/project.md', 'title': 'Project notes', 'status': 'stable', 'kind': 'fact', 'tags': [], 'snippet': 'x', 'score': 4}]
+                        if op == 'ask': return {'reply': 'A local-first graph lab.', 'model': 'fake:1b', 'used': params.get('use', []), 'note_path': None, 'elapsed_ms': 12, 'tokens': {'reply': 6}}
+                        if op == 'write': return 'notes/q-what-do-i-know.md'
+                        raise ValueError(op)
+                    run = GraphRun(doc, g.plan(doc, 'all'), kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=fake, memory_op=memory_op if expect.get('memory') else None).start()
                     self.assertEqual(run.wait(300), 'finished', run.snapshot().get('error'))  # the repository example runs a test module three times; macOS CI runners are slow
                     snap = run.snapshot()
                     self.assertTrue(all(n['status'] == 'ok' for n in snap['nodes'].values()), {k: v['status'] for k, v in snap['nodes'].items()})

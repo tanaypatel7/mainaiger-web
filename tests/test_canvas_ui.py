@@ -481,6 +481,26 @@ class NestedMainbookPanelTests(RealServerCase):
     def tearDownClass(cls):
         cls.server.kernels.stop_all(); super().tearDownClass()
 
+    def test_memory_cell_from_the_inspector_searches_real_notes(self):
+        from local_lab import graph as g, memory
+        p = self.page
+        memory.configure(self.server.state_dir, str(self.root / 'Documents' / 'MainAIger Lab' / 'Memory')); memory.create(self.server.state_dir, 'Haptic glove setup', 'Calibrate each finger.', status_='stable')
+        self.server.set_graph(g.new_document()); p.goto(self.origin + '/graph'); p.wait_for_selector('.node.code'); p.wait_for_timeout(300)  # a fresh document (the tests share one server)
+        p.locator('.node[data-id="cell-1"] textarea').fill('question = "haptic glove"'); p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
+        before = set(p.evaluate("() => [...document.querySelectorAll('.node.code')].map(n => n.dataset.id)"))
+        p.click('#add-cell'); p.wait_for_function("n => document.querySelectorAll('.node.code').length === n + 1", arg=len(before))
+        mem_id = p.evaluate("() => document.querySelector('.node.selected').dataset.id"); self.assertNotIn(mem_id, before)
+        p.check('#mem-enabled'); p.wait_for_selector('#mem-fields:not([hidden])'); p.select_option('#mem-op', 'search'); self.assertEqual(p.input_value('#mem-output'), 'hits'); p.click('#mem-apply')
+        p.wait_for_function("id => document.querySelector(`.node[data-id='${id}'] .node-model`).textContent === 'memory search → hits'", arg=mem_id); p.wait_for_function("() => document.getElementById('mem-note').textContent.includes('Reads question')")
+        p.click('#add-cell'); p.wait_for_function("n => document.querySelectorAll('.node.code').length === n + 2", arg=len(before))
+        last_id = p.evaluate("() => document.querySelector('.node.selected').dataset.id"); p.locator(f'.node[data-id="{last_id}"] textarea').fill('print(hits[0]["title"], hits[0]["status"])')
+        p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        if not p.locator('#session-start').is_disabled(): p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm')
+        p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]'); self.assertIn('uses Memory: search', p.inner_text('#run-dialog-arrows-list')); p.click('#run-dialog-confirm')
+        p.wait_for_function("id => document.querySelector(`.node[data-id='${id}'] .node-output`).textContent.includes('Haptic glove setup stable')", arg=last_id, timeout=30000)
+        self.assertEqual(p.inner_text(f'.node[data-id="{mem_id}"] .status'), 'ok')
+
     def test_cell_runs_a_saved_mainbook(self):
         p = self.page
         p.locator('.node[data-id="cell-1"] textarea').fill('base = 21'); p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
@@ -611,6 +631,20 @@ class MemoryPageTests(RealServerCase):
             self.assertIn('fake:1b · 0.8 s', p.inner_text('#ask-answer-meta')); self.assertIn('12 reply tokens', p.inner_text('#ask-answer-meta')); self.assertIn('Wh', p.inner_text('#ask-answer-meta'))
             p.wait_for_function("() => document.getElementById('note-title').value.startsWith('Q: how do I set up the haptic glove')"); self.assertEqual(p.input_value('#note-kind'), 'answer'); self.assertIn('note: notes/haptic-glove-setup.md', p.inner_text('#note-sources'))
         self.assertIn('fake:1b:', p.inner_text('#costs-summary'))
+
+    def test_mainbook_note_runs_through_the_graph_page(self):
+        from local_lab import graph as g, mainbooks, memory
+        p = self.page
+        mainbooks.configure(self.server.state_dir, str(self.root / 'books'))
+        doc = g.new_document(); doc['notebook']['cells'][0]['source'] = 'print("from memory")'; doc['notebook']['metadata']['mainaiger'] = {'name': 'hello loop'}; mainbooks.save(self.server.state_dir, 'hello loop', g.validate(doc))
+        memory.configure(self.server.state_dir, str(self.root / 'Documents' / 'MainAIger Lab' / 'Memory'))
+        note = memory.create(self.server.state_dir, 'Say hello', 'Runs the hello loop.', kind='mainbook', extra={'mainbook': 'hello loop'})
+        p.goto(self.origin + '/memory'); p.wait_for_selector('#memory-main:not([hidden])'); p.wait_for_function("() => document.querySelectorAll('#note-list li').length > 0")
+        p.locator(f'#note-list li[data-path="{note["path"]}"]').click(); p.wait_for_function("() => document.getElementById('note-title').value === 'Say hello'")
+        self.assertFalse(p.locator('#note-mainbook-row').is_hidden()); self.assertEqual(p.input_value('#note-mainbook'), 'hello loop')
+        p.click('#note-run'); p.wait_for_selector('#run-dialog[open]', timeout=15000)
+        self.assertEqual(p.url, self.origin + '/graph'); self.assertEqual(p.input_value('.node[data-id="cell-1"] textarea'), 'print("from memory")'); self.assertIn('hello loop', p.inner_text('#save-state'))
+        p.click('#run-dialog-cancel')
 
 
 @unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
