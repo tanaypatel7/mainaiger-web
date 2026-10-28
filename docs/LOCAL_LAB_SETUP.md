@@ -221,6 +221,53 @@ exercised end to end in headless Chromium against the real local service
 (tested) and inside the Docker session only as far as the kernel tests cover
 (unverified on a Mac).
 
+### Environment: packages per Mainbook (`local_lab/environment.py`, `/api/environment*`)
+
+The base session image is `python:3.13.18-slim` with the standard library only.
+A Mainbook that needs more declares it, and the Lab builds one derived image:
+
+- **Declaration** — `notebook.metadata.mainaiger.environment = {packages: [...]}`,
+  validated by `graph.validate` → `environment.parse_packages`: up to 50 entries,
+  each an exact pin `name==version` (extras allowed: `pandas[excel]==2.3.2`),
+  de-duplicated and sorted. Unpinned or ranged requirements are refused so the
+  same list always builds the same image. In the UI: the ENVIRONMENT section of
+  the inspector (one package per line, **Apply list** saves it into the Mainbook).
+- **Image tag** — `mainaiger-lab-env:<first 12 hex of sha256 of the sorted list>`
+  (`environment.image_tag`): the tag names the package list and nothing else, so
+  two Mainbooks with the same list share one image and a changed list is a new
+  tag that needs its own build.
+- **Build** — `GET /api/environment` returns the packages, tag, `ready` (does
+  `docker image inspect` find it; answer cached 5 s), the Dockerfile and the
+  exact command; `POST /api/environment/build {confirm, image}` runs it in the
+  background (`environment.Build`), refusing a tag that no longer matches the
+  document (the list changed after review) or a build already running. The
+  Dockerfile is `FROM <base>` + one `pip install --no-cache-dir` line and goes
+  in over stdin (`docker build --tag <tag> -`): there is no build context, so
+  nothing from the Mac is sent. **This is the only step that uses the network**
+  (pip downloads through Docker's build network); the log is bounded to 64 kB,
+  the build is stopped after 15 minutes. In the UI: **Build environment…** shows
+  the Dockerfile and command for approval, then the log and outcome.
+- **Session** — `/api/kernel/start` refuses with a plain reason when the Mainbook
+  declares packages whose image is not built; otherwise the derived tag goes
+  into the session settings and `runner.session_command` uses it in place of
+  the base image with every other flag unchanged (`--network=none`, read-only,
+  limits). `/api/state` reports `environment` and the session command preview
+  shows the image; the Start-session dialog names it.
+
+**Honest limits:** packages are installed as root at build time and imported by
+the unprivileged session user, which works for pure-Python and wheel-based
+packages; packages that need system libraries not in the slim base image will
+fail to build (the log says so) — apt lines are deliberately not supported.
+Built images accumulate in Docker; removing old `mainaiger-lab-env:*` images is
+a manual `docker image rm` for now. Image digests of the base are still a version
+tag only (see Setup).
+
+**Status:** parsing, tag/Dockerfile/command, the background build job (success,
+failure, bounded log, timeout) and the routes including the session gate are
+tested with a fake `docker build` (`tests/test_environment.py`, 12 tests); the
+panel is exercised end to end in headless Chromium (`tests/test_canvas_ui.py`).
+A real `docker build` with real packages on a Mac is unverified.
+
 ### Canvas performance (`local_lab/ui/graph.js`)
 
 How the canvas stays smooth, and where to look if it does not:

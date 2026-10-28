@@ -436,6 +436,7 @@
   });
   async function openDocument(doc, label) {
     const view = await api('/api/graph', {document: doc}); applyView(view); state.run = null; state.dirty = false; $('save-state').textContent = 'Saved'; $('save-state').dataset.state = '';
+    refreshEnvironment();
     const fresh = !Object.keys(state.doc.layout.nodes || {}).length;  // examples and imports carry no positions
     const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x || 40, y: vp.y || 30}; state.zoom = vp.zoom || 1; buildNodes(); select(null); applyViewport(); if (fresh) arrange(); else fit(); layoutNotebook(); renderInspector(); toast('Opened ' + label);
   }
@@ -613,8 +614,51 @@
     try { const data = await api('/api/library/pull', {node: sel.id}); await afterLibraryChange(data.view, sel.id); toast(`Updated to ${link.name} v${link.latest}.`); } catch (error) { toast(error.message); }
   });
 
+  // ---------------------------------------------------------------- environment (derived image)
+  // The Mainbook declares notebook.metadata.mainaiger.environment.packages; the server turns that into
+  // a Dockerfile, an image tag and the exact docker build command (local_lab/environment.py). Building
+  // is one reviewed step; the session then uses the derived image with every limit unchanged.
+  let environment = {derived: false, ready: true, image: '', packages: [], build: null};
+  function envPackagesInDoc() { const own = state.doc && state.doc.notebook.metadata && state.doc.notebook.metadata.mainaiger; return own && own.environment && Array.isArray(own.environment.packages) ? own.environment.packages : []; }
+  async function refreshEnvironment() {
+    try { environment = await api('/api/environment'); } catch (error) { $('env-status').textContent = error.message; return; }
+    renderEnvironment();
+    if (environment.build && environment.build.state === 'running') { clearTimeout(state.envTimer); state.envTimer = setTimeout(refreshEnvironment, 1500); }
+  }
+  function renderEnvironment() {
+    if (document.activeElement !== $('env-packages')) $('env-packages').value = envPackagesInDoc().join('\n');
+    const b = environment.build, status = $('env-status');
+    $('env-build').hidden = !environment.derived || environment.ready || (b && b.state === 'running');
+    if (!environment.derived) { status.textContent = `Base image ${environment.base_image || environment.image} (standard library only). Add packages to build a derived image.`; status.dataset.state = ''; }
+    else if (b && b.state === 'running' && b.image === environment.image) { status.textContent = `Building ${environment.image}…`; status.dataset.state = 'running'; }
+    else if (environment.ready) { status.textContent = `Image ${environment.image} is built: ${environment.packages.join(', ')}. Sessions started now use it.`; status.dataset.state = 'ready'; }
+    else if (b && b.state === 'failed' && b.image === environment.image) { status.textContent = `Build failed: ${b.error}`; status.dataset.state = 'failed'; }
+    else { status.textContent = `Image ${environment.image} is not built yet; sessions cannot start until it is.`; status.dataset.state = 'missing'; }
+    const log = $('env-log'); const show = b && (b.state === 'running' || b.state === 'failed' || (b.state === 'done' && b.image === environment.image));
+    log.hidden = !show; if (show) { log.textContent = (b.log_truncated ? '…\n' : '') + (b.log || '(waiting for output)'); log.scrollTop = log.scrollHeight; }
+  }
+  $('env-apply').addEventListener('click', async () => {
+    const packages = $('env-packages').value.split(/[\n,]/).map(p => p.trim()).filter(Boolean);
+    const own = state.doc.notebook.metadata.mainaiger = state.doc.notebook.metadata.mainaiger || {};
+    if (packages.length) own.environment = {packages}; else delete own.environment;
+    markDirty(); clearTimeout(state.saveTimer); await save();
+    if (state.dirty) { renderEnvironment(); return; }  // the server said why (toast + save-state); the list stays as typed
+    await refreshEnvironment(); toast(packages.length ? 'Package list saved in this Mainbook.' : 'No packages: this Mainbook uses the base image.');
+  });
+  $('env-build').addEventListener('click', () => {
+    $('env-dockerfile').textContent = environment.dockerfile || ''; $('env-command').textContent = (environment.command || []).join(' ');
+    $('env-dialog-note').textContent = `Creates image ${environment.image}. Builds can take minutes; the log appears in the Environment section.`;
+    $('env-dialog').showModal(); $('env-cancel').focus();
+  });
+  $('env-cancel').addEventListener('click', () => $('env-dialog').close());
+  $('env-confirm').addEventListener('click', async () => {
+    $('env-dialog').close();
+    try { environment = await api('/api/environment/build', {confirm: true, image: environment.image}); renderEnvironment(); toast('Build started.'); clearTimeout(state.envTimer); state.envTimer = setTimeout(refreshEnvironment, 1500); }
+    catch (error) { toast(error.message); }
+  });
+
   // ---------------------------------------------------------------- session
-  $('session-start').addEventListener('click', () => { $('session-dialog').showModal(); $('session-cancel').focus(); });
+  $('session-start').addEventListener('click', () => { $('session-image').textContent = environment.derived ? `Image: ${environment.image} (${environment.packages.join(', ')})` + (environment.ready ? '' : ' — not built yet; build the environment first.') : `Image: ${environment.image} (base, standard library only).`; $('session-dialog').showModal(); $('session-cancel').focus(); });
   $('session-cancel').addEventListener('click', () => $('session-dialog').close());
   $('session-confirm').addEventListener('click', async () => { $('session-dialog').close(); try { const st = await api('/api/state'); state.csrf = st.csrf; state.session = await api('/api/kernel/start', {confirm: true, revision: st.revision}); toast('Session started.'); renderInspector(); refreshVariables(); } catch (error) { toast(error.message); } });
   $('session-stop').addEventListener('click', async () => { try { state.session = await api('/api/kernel/stop', {}); toast('Session stopped; variables are gone.'); renderInspector(); $('variables').hidden = true; $('variables-note').textContent = 'Start a session to inspect variables.'; } catch (error) { toast(error.message); } });
@@ -680,7 +724,7 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
+    try { const view = await api('/api/graph'); applyView(view); $('graph-main').hidden = false; refreshMainbooks(); refreshLibrary(); refreshEnvironment(); try { const ex = await api('/api/examples'); for (const e of ex.examples || []) { const o = document.createElement('option'); o.value = e.name; o.textContent = `${e.title} (${e.cells} cells)`; $('open-example').append(o); } } catch {} const vp = state.doc.layout.viewport || {}; state.pan = {x: vp.x ?? 40, y: vp.y ?? 30}; state.zoom = vp.zoom || 1; buildNodes(); applyViewport(); renderInspector(); if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) poll(); if (state.session.alive) refreshVariables(); }
     catch (error) { if (!$('locked').hidden) return; toast(error.message); }
   }
   window.addEventListener('resize', () => { drawEdges(); layoutNotebook(); });

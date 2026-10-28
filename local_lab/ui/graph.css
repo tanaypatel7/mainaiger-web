@@ -93,3 +93,7 @@ body[data-view="notebook"] .viewport{background-image:none;cursor:default}body[d
 .lib-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .viewport.drop-target{outline:2px dashed var(--purple);outline-offset:-4px}
 #node-library[data-state="behind"]{color:var(--warn)}#node-library[data-state="modified"]{color:var(--purple)}#node-library[data-state="missing"]{color:var(--err)}
+/* Environment panel */
+#env-packages{width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px;padding:7px 9px;resize:vertical;margin-top:4px}
+.env-log,.env-pre{margin:6px 0 0;max-height:30vh;overflow:auto;font-size:11.5px;white-space:pre-wrap;word-break:break-all;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:8px}
+#env-status[data-state="ready"]{color:var(--ok,#1f7a3e)}#env-status[data-state="missing"]{color:var(--warn)}#env-status[data-state="failed"]{color:var(--err)}

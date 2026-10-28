@@ -105,9 +105,8 @@ if __name__ == '__main__':
     unittest.main()
 
 
-@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
-class LibraryPanelTests(unittest.TestCase):
-    """The Library panel against the real local service (in-process), signed in with the owner key."""
+class RealServerCase(unittest.TestCase):
+    """A canvas page served by the real local service (in-process), signed in with the owner key."""
     @classmethod
     def setUpClass(cls):
         import tempfile, threading
@@ -136,6 +135,10 @@ class LibraryPanelTests(unittest.TestCase):
     def tearDown(self):
         self.page.close()
 
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class LibraryPanelTests(RealServerCase):
+    """The Library panel: approve folder, starter cells, search, insert, edit, push, pull, drag."""
     def test_approve_folder_seed_insert_edit_push_pull(self):
         p = self.page
         # 1. Not configured: the panel offers to choose a folder; approving uses the default next to Mainbooks.
@@ -187,3 +190,42 @@ class LibraryPanelTests(unittest.TestCase):
         self.assertIsNotNone(p.query_selector('.node[data-id="report"]'))
         rect = p.evaluate("() => { const r = document.querySelector('.node[data-id=\"report\"]').getBoundingClientRect(); const v = document.getElementById('viewport').getBoundingClientRect(); return {x: r.left - v.left, y: r.top - v.top}; }")
         self.assertLess(abs(rect['x'] + 160 - 700), 60); self.assertLess(abs(rect['y'] + 20 - 500), 60)
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class EnvironmentPanelTests(RealServerCase):
+    """The Environment panel: declare packages, review the build, watch it finish, start a session on the image."""
+    def test_declare_build_and_session_uses_image(self):
+        import subprocess, sys
+        from unittest.mock import patch
+        from local_lab import environment as env
+        p = self.page; ready = set(); self.server.image_ready = lambda tag: tag in ready
+        self.assertIn('Base image', p.inner_text('#env-status')); self.assertTrue(p.locator('#env-build').is_hidden())
+        # A bad list is refused by the server with the reason; nothing is built.
+        p.fill('#env-packages', 'numpy'); p.click('#env-apply'); p.wait_for_function("() => document.getElementById('toast').textContent.includes('pin an exact version')")
+        self.assertTrue(p.locator('#env-build').is_hidden())
+        # A good list is saved into the Mainbook; the image is not built yet, so Build appears and sessions are refused.
+        p.fill('#env-packages', 'scikit-learn==1.7.2\nnumpy==2.3.3'); p.click('#env-apply')
+        p.wait_for_function("() => document.getElementById('env-status').dataset.state === 'missing'")
+        tag = env.image_tag(['numpy==2.3.3', 'scikit-learn==1.7.2'])
+        self.assertIn(tag, p.inner_text('#env-status')); self.assertFalse(p.locator('#env-build').is_hidden())
+        self.assertEqual(self.server.graph_doc['notebook']['metadata']['mainaiger']['environment']['packages'], ['numpy==2.3.3', 'scikit-learn==1.7.2'])
+        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]')
+        self.assertIn('not built yet', p.inner_text('#session-image')); p.click('#session-cancel')
+        # Review: the dialog shows the Dockerfile and the exact command; approving starts the (fake) build and streams its log.
+        p.click('#env-build'); p.wait_for_selector('#env-dialog[open]')
+        self.assertIn('FROM python:', p.inner_text('#env-dockerfile')); self.assertIn('numpy==2.3.3 scikit-learn==1.7.2', p.inner_text('#env-dockerfile'))
+        self.assertIn('docker', p.inner_text('#env-command')); self.assertIn(tag, p.inner_text('#env-command'))
+        real_popen = subprocess.Popen
+        script = "import sys, time; sys.stdin.read(); print('Step 1/2 : FROM python'); sys.stdout.flush(); time.sleep(1.2); print('Successfully tagged'); sys.exit(0)"
+        with patch.object(env, 'resolve_docker', return_value=('docker', None, None)), patch.object(subprocess, 'Popen', lambda a, **k: real_popen([sys.executable, '-c', script], **k)):
+            p.click('#env-confirm')
+            p.wait_for_function("() => document.getElementById('env-status').dataset.state === 'running'")
+            p.wait_for_function("() => document.getElementById('env-log').textContent.includes('Step 1/2')")
+            p.wait_for_function("() => document.getElementById('env-status').dataset.state === 'ready'", timeout=15000)
+        self.assertIn('Successfully tagged', p.inner_text('#env-log')); self.assertTrue(p.locator('#env-build').is_hidden())
+        p.click('#session-start'); p.wait_for_selector('#session-dialog[open]')
+        self.assertIn(tag, p.inner_text('#session-image')); self.assertNotIn('not built', p.inner_text('#session-image')); p.click('#session-cancel')
+        # Clearing the list goes back to the base image.
+        p.fill('#env-packages', ''); p.click('#env-apply'); p.wait_for_function("() => document.getElementById('env-status').textContent.includes('Base image')")
+        self.assertNotIn('environment', self.server.graph_doc['notebook']['metadata']['mainaiger'])

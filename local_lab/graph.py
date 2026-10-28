@@ -72,6 +72,22 @@ def validate(document):
     doc['schema_version'] = SCHEMA_VERSION
     notebook = doc.get('notebook')
     _require(isinstance(notebook, dict) and notebook.get('nbformat') == 4, 'Notebook must be nbformat 4')
+    nb_meta = notebook.setdefault('metadata', {})
+    _require(isinstance(nb_meta, dict), 'Notebook metadata must be an object')
+    nb_own = nb_meta.setdefault('mainaiger', {})
+    _require(isinstance(nb_own, dict), 'Notebook mainaiger metadata must be an object')
+    if 'environment' in nb_own:
+        env = nb_own['environment']
+        _require(isinstance(env, dict) and set(env) <= {'packages'}, 'environment must be {packages: [...]}')
+        from . import environment as environment_module
+        try:
+            packages = environment_module.parse_packages(env.get('packages'))
+        except environment_module.EnvironmentSpecError as error:
+            raise GraphError('environment: %s' % error) from None
+        if packages:
+            nb_own['environment'] = {'packages': packages}
+        else:
+            del nb_own['environment']
     cells = notebook.get('cells')
     _require(isinstance(cells, list) and len(cells) <= MAX_NODES, 'Notebook cells must be a list of at most %d' % MAX_NODES)
     cell_ids = set()

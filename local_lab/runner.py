@@ -109,7 +109,7 @@ def session_command(settings, name, kernel_dir=KERNEL_DIR):
     In the running Lab, kernel_dir is the staged copy from stage_kernel().
     """
     return _base(settings, name) + ['--mount', 'type=bind,src='+str(kernel_dir)+',dst='+KERNEL_MOUNT+',readonly',
-                                    IMAGE, 'python', '-I', KERNEL_MOUNT+'/kernel.py']
+                                    settings.get('image') or IMAGE, 'python', '-I', KERNEL_MOUNT+'/kernel.py']
 
 
 def session_control(name):
@@ -135,8 +135,8 @@ def preview(settings):
     return command(settings, '<generated-container-name>') + ['<Python source via stdin>']
 
 
-def session_preview(settings):
-    return session_command(settings, '<generated-container-name>')
+def session_preview(settings, image=None):
+    return session_command(dict(settings, image=image) if image else settings, '<generated-container-name>')
 
 
 def execute(code, settings, popen=subprocess.Popen, run=subprocess.run, find=shutil.which):

@@ -19,6 +19,7 @@ from . import graph as graph_module
 from . import models as lab_models
 from . import mainbooks as lab_mainbooks
 from . import library as lab_library
+from . import environment as lab_environment
 from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
@@ -77,6 +78,7 @@ class LabServer(ThreadingHTTPServer):
         self.kernel=None;self.kernel_factory=kernel_factory or docker_kernel;self.kernel_lock=threading.Lock()
         # One graph document in memory (the browser opens/downloads .ipymb files) and at most one run.
         self.graph_doc=graph_module.new_document();self.graph_revision=0;self.graph_run=None;self.graph_lock=threading.RLock()
+        self.env_build=None;self.image_ready=lab_environment.image_ready
         super().__init__(address,LabHandler)
     def graph_view(self):
         with self.graph_lock:
@@ -136,9 +138,30 @@ class LabServer(ThreadingHTTPServer):
         kernel=self.kernel
         if kernel is None: return {'alive':False,'executing':False,'label':None,'count':0,'python':None,'started_at':None,'ended':None}
         return kernel.status()
+    def environment_status(self):
+        """The environment the current Mainbook declares, whether its image exists, and the last build."""
+        with self.graph_lock:
+            try:packages=lab_environment.packages_of(self.graph_doc)
+            except lab_environment.EnvironmentSpecError:packages=[]
+        info=lab_environment.describe(packages)
+        if not packages:info['ready']=True
+        else:
+            # docker image inspect is a child process; remember its answer for a few seconds because this is polled.
+            cache=getattr(self,'_image_cache',None)
+            if not cache or cache[0]!=info['image'] or time.time()-cache[2]>5:
+                cache=(info['image'],self.image_ready(info['image']),time.time());self._image_cache=cache
+            info['ready']=cache[1]
+        build=self.env_build
+        info['build']=build.snapshot() if build else None
+        if build and build.state=='done' and build.image==info['image']:info['ready']=True
+        return info
     def start_kernel(self,settings):
         with self.kernel_lock:
             if self.kernel is not None and self.kernel.alive: raise KernelError('A session is already running')
+            env=self.environment_status()
+            if env['derived']:
+                if not env['ready']:raise KernelError('This Mainbook declares packages (%s) whose image %s is not built yet. Build the environment first.'%(', '.join(env['packages']),env['image']))
+                settings=dict(settings,image=env['image'])
             kernel=self.kernel_factory(settings,self.state_dir)
             kernel.start()
             self.kernel=kernel
@@ -225,8 +248,9 @@ class LabHandler(BaseHTTPRequestHandler):
             session=self.session()
             if not session:return self.out(401,{'error':'Local owner sign-in required'})
             with self.server.lock: settings=dict(self.server.settings);revision=self.server.revision
+            env=self.server.environment_status()
             available=bool(lab_setup._find_docker()) if sys.platform=='darwin' else bool(shutil.which('docker'))
-            return self.out(200,{'csrf':session['csrf'],'workspace':settings['workspace'],'limits':{'cpus':settings['cpus'],'memory':settings['memory']},'docker_available':available,'command':preview(settings),'session_command':session_preview(settings),'revision':revision,'session':self.server.kernel_status()})
+            return self.out(200,{'csrf':session['csrf'],'workspace':settings['workspace'],'limits':{'cpus':settings['cpus'],'memory':settings['memory']},'docker_available':available,'command':preview(settings),'session_command':session_preview(settings,env['image'] if env['derived'] else None),'environment':{'image':env['image'],'derived':env['derived'],'ready':env['ready'],'packages':env['packages']},'revision':revision,'session':self.server.kernel_status()})
         if path=='/api/kernel':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             return self.out(200,self.server.kernel_status())
@@ -251,6 +275,9 @@ class LabHandler(BaseHTTPRequestHandler):
             name=__import__('urllib.parse').parse.unquote(path[len('/api/mainbooks/'):])
             try:return self.out(200,{'document':lab_mainbooks.load(self.server.state_dir,name),'name':name})
             except lab_mainbooks.MainbookError as e:return self.out(404,{'error':str(e)})
+        if path=='/api/environment':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            return self.out(200,self.server.environment_status())
         if path=='/api/library':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             query=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query).get('q',[''])[0][:200]
@@ -397,6 +424,20 @@ class LabHandler(BaseHTTPRequestHandler):
                     except OSError as e:return self.out(400,{'error':'The Mainbook could not be written: %s'%e})
                     self.server.graph_doc=result['document']
                 return self.out(200,{'name':result['name'],'path':result['path'],'bytes':result['bytes']})
+            if path=='/api/environment/build':
+                # Fixed, reviewed step: the packages come from the validated document, never from the request.
+                if set(data)!={'confirm','image'} or data['confirm'] is not True or not isinstance(data['image'],str):raise ValueError('Confirm the build of a named image')
+                env=self.server.environment_status()
+                if not env['derived']:return self.out(400,{'error':'This Mainbook declares no packages; the base image needs no build'})
+                if data['image']!=env['image']:return self.out(409,{'error':'The package list changed after review; review the environment again'})
+                with self.server.graph_lock:
+                    current=self.server.env_build
+                    if current and current.state=='running':return self.out(409,{'error':'A build is already running'})
+                    build=lab_environment.Build(env['packages'])
+                    try:build.start()
+                    except lab_environment.EnvironmentSpecError as e:return self.out(400,{'error':str(e)})
+                    self.server.env_build=build
+                return self.out(200,self.server.environment_status())
             if path=='/api/library/folder':
                 if set(data)!={'folder','confirm'} or data['confirm'] is not True:raise ValueError('Confirm the folder choice')
                 try:return self.out(200,lab_library.configure(self.server.state_dir,data['folder']))
