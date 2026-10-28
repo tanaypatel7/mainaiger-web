@@ -87,6 +87,8 @@ MAINBOOK_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,80}$')  # a saved Main
 MEMORY_OPS = {'search': (('question',), 'hits'), 'read': (('path',), 'note'), 'write': (('title', 'body'), 'note_path'), 'ask': (('question',), 'answer'),
               'review': ((), 'proposal'), 'keep': (('path', 'items'), 'kept')}
 MEMORY_OPTIONAL = {'write': ('kind', 'tags'), 'ask': ('use', 'model'), 'keep': ('model',)}
+BROWSER_NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')  # a saved browser script (local_lab/browser.py)
+BROWSER_OPTIONAL = ('params',)  # a dict of the script's parameters, read from the session when present
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
 
@@ -253,6 +255,20 @@ def validate(document):
                 if mem.get('output') in (None, ''):
                     mem['output'] = MEMORY_OPS[mem['op']][1]
                 _require(isinstance(mem['output'], str) and NAME.match(mem['output']), 'Cell %d memory output must be a Python name' % i)
+        if 'browser' in own:
+            # A browser cell: one saved browser script (a fixed, reviewed step list) run on the host by the Lab; the optional
+            # session variable `params` fills the script's parameters, the capture is bound to `output`. See docs/LOCAL_LAB_SETUP.md.
+            web = own['browser']
+            if web in (None, False, {}, ''):
+                del own['browser']
+            else:
+                _require(isinstance(web, dict) and set(web) <= {'script', 'output'} and isinstance(web.get('script'), str) and BROWSER_NAME.match(web['script']),
+                         'Cell %d browser must be {script: <a saved browser script>, output?}' % i)
+                _require(cell['cell_type'] == 'code', 'Cell %d: only code cells can drive a browser' % i)
+                _require('model' not in own and 'form' not in own and 'mainbook' not in own and 'memory' not in own, 'Cell %d: a cell drives a browser, uses Memory, runs a Mainbook, asks a model or carries a form, not several' % i)
+                if web.get('output') in (None, ''):
+                    web['output'] = 'capture'
+                _require(isinstance(web['output'], str) and NAME.match(web['output']), 'Cell %d browser output must be a Python name' % i)
         if 'session' in own:
             # The label of the session this cell runs on; absent means "the active session".
             if own['session'] in (None, ''):
@@ -474,6 +490,23 @@ def memory_config(cell):
     return mem if isinstance(mem, dict) and mem.get('op') in MEMORY_OPS else None
 
 
+def browser_config(cell):
+    own = cell.get('metadata', {}).get('mainaiger', {}) or {}
+    web = own.get('browser')
+    return web if isinstance(web, dict) and isinstance(web.get('script'), str) and web.get('script') else None
+
+
+def browser_cells(doc):
+    """[(node id, script name)] for the cells that drive a browser."""
+    out = []
+    for node in doc['graph']['nodes']:
+        if node['kind'] == 'code':
+            web = browser_config(doc['notebook']['cells'][node['cell_index']])
+            if web:
+                out.append((node['id'], web['script']))
+    return out
+
+
 def memory_cells(doc):
     """[(node id, op)] for the cells that use Memory."""
     out = []
@@ -530,6 +563,13 @@ def declared(doc, node_id, resolve=None, depth=0):
     if mem:
         inputs, _ = MEMORY_OPS[mem['op']]
         result = {'inputs': list(inputs), 'outputs': [mem['output']], 'error': None, 'memory': mem['op'], 'optional': list(MEMORY_OPTIONAL.get(mem['op'], ()))}
+        if 'inputs' in own:
+            result['inputs'] = list(own['inputs'])
+        result['declared'] = 'inputs' in own
+        return result
+    web = browser_config(cell)
+    if web:
+        result = {'inputs': [], 'outputs': [web['output']], 'error': None, 'browser': web['script'], 'optional': list(BROWSER_OPTIONAL)}
         if 'inputs' in own:
             result['inputs'] = list(own['inputs'])
         result['declared'] = 'inputs' in own

@@ -827,3 +827,62 @@ class MapToCellTests(RealServerCase):
         p.goto(self.origin + '/map'); p.wait_for_selector('#map-main:not([hidden])'); p.select_option('#map-root', 'workspace'); p.wait_for_selector('.mnode[data-id="def:tools/ops.py:scale"]')
         p.click('#map-tests'); p.wait_for_function("() => document.getElementById('map-tests-output').textContent.includes('Ran 1 test')", timeout=30000)
         self.assertIn('OK', p.inner_text('#map-tests-output'))
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class BrowserPageTests(RealServerCase):
+    """The Browser page: a script from a template, the reviewed run against the Lab's own page, the capture into chats; the Graph inspector's BROWSER section."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); super().tearDownClass()
+    def test_script_run_capture_import_and_browser_cell(self):
+        from local_lab import memory, memory_import
+        p = self.page
+        memory.configure(self.server.state_dir, str(self.root / 'Documents' / 'MainAIger Lab' / 'Memory'))
+        p.goto(self.origin + '/browser'); p.wait_for_selector('#browser-main:not([hidden])'); p.wait_for_function("() => document.getElementById('browser-stats').textContent !== 'Reading…'")
+        self.assertIn('Playwright', p.inner_text('#runner-state')); self.assertTrue(p.locator('#script-new').is_enabled())
+        # New from a template: the name comes from a prompt; the JSON is edited to point at the Lab itself (a site on 127.0.0.1).
+        p.once('dialog', lambda d: d.accept('lab-home')); p.select_option('#script-template', 'page-capture'); p.click('#script-new'); p.wait_for_selector('#script-editor:not([hidden])')
+        self.assertEqual(p.inner_text('#script-name'), 'lab-home'); self.assertIn('"example.com"', p.input_value('#script-json'))
+        p.fill('#script-json', '{"title": "The Lab front page", "allow": ["127.0.0.1"], "start": "%s/", "budget_s": 60, "steps": [{"do": "wait", "selector": "body"}, {"do": "capture", "as": "home"}]}' % self.origin)
+        p.click('#script-save'); p.wait_for_function("() => document.getElementById('script-result').textContent.startsWith('Saved: 2 steps')")
+        p.wait_for_function("() => document.querySelectorAll('#script-list li[data-name=\"lab-home\"]').length === 1"); self.assertIn('may visit 127.0.0.1', p.inner_text('#script-list li[data-name="lab-home"] .preview'))
+        # A bad script is refused with the step named, and nothing is saved.
+        p.fill('#script-json', '{"title": "x", "allow": ["127.0.0.1"], "steps": [{"do": "eval", "js": "alert(1)"}]}'); p.click('#script-save'); p.wait_for_function("() => document.getElementById('script-result').textContent.includes('Step 1 must be')")
+        p.click('#script-list li[data-name="lab-home"]'); p.wait_for_function("() => document.getElementById('script-json').value.includes('The Lab front page')")
+        # The reviewed run: sites and steps are listed; confirm; the page polls to the result.
+        p.click('#script-run'); p.wait_for_selector('#run-dialog[open]'); self.assertEqual(p.inner_text('#run-dialog-allow'), '127.0.0.1'); self.assertIn('read the page as "home"', p.inner_text('#run-dialog-steps')); self.assertFalse(p.is_checked('#run-dialog-headed'))
+        p.click('#run-confirm'); p.wait_for_function("() => document.getElementById('run-state').textContent.includes('lab-home: finished')", timeout=60000)
+        self.assertIn('1 page captured', p.inner_text('#run-summary')); self.assertIn('MainAIger', p.inner_text('#run-pages li b')); self.assertTrue(p.locator('#run-blocked').is_hidden())
+        p.wait_for_function("() => document.querySelectorAll('#captures-list li').length === 1"); self.assertIn('1 page', p.inner_text('#captures-list li .preview'))
+        # Import the capture: one chat note, visible to the review loop; a second import adds nothing.
+        p.click('#run-import'); p.wait_for_selector('#import-dialog[open]'); self.assertIn('1 page from browser/captures/lab-home-', p.inner_text('#import-dialog-text')); p.click('#import-confirm')
+        p.wait_for_function("() => document.getElementById('toast').textContent.startsWith('1 chat note added')"); p.wait_for_function("() => document.querySelector('#captures-list li .preview').textContent.includes('1 chat note imported')")
+        chats = memory.listing(self.server.state_dir, tier='chats'); self.assertEqual(len(chats), 1); self.assertEqual(memory.read(self.server.state_dir, chats[0]['path'])['front']['source'], 'browser')
+        self.assertEqual(memory_import.review_status(self.server.state_dir)['pending'], 1)
+        p.click('#captures-list li button[data-folder]'); p.wait_for_selector('#import-dialog[open]'); p.click('#import-confirm'); p.wait_for_function("() => document.getElementById('toast').textContent.startsWith('0 chat notes added, 1 already there')")
+        # A profile now exists; forgetting it is a reviewed step too.
+        p.wait_for_function("() => !document.getElementById('profile-clear').disabled"); p.click('#profile-clear'); p.wait_for_selector('#profile-dialog[open]'); p.click('#profile-confirm'); p.wait_for_function("() => document.getElementById('profile-clear').disabled")
+        # On the Graph page: a cell drives the script; the run review names the sites.
+        from local_lab import graph as g
+        self.server.set_graph(g.new_document()); p.goto(self.origin + '/graph'); p.wait_for_selector('.node.code'); p.wait_for_timeout(300)
+        p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
+        p.check('#web-enabled'); p.wait_for_selector('#web-fields:not([hidden])'); p.wait_for_function("() => [...document.querySelectorAll('#web-script option')].some(o => o.value === 'lab-home')")
+        p.select_option('#web-script', 'lab-home'); self.assertEqual(p.input_value('#web-output'), 'capture'); p.click('#web-apply')
+        p.wait_for_function("() => document.querySelector('.node[data-id=\"cell-1\"] .node-model').textContent === 'browser lab-home → capture'"); p.wait_for_function("() => document.getElementById('web-note').textContent.includes('may visit 127.0.0.1')"); self.assertEqual(p.inner_text('.node[data-id="cell-1"] .node-head b'), 'Browser lab-home')
+        p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        if not p.locator('#session-start').is_disabled(): p.click('#session-start'); p.wait_for_selector('#session-dialog[open]'); p.click('#session-confirm')
+        p.wait_for_function("() => document.getElementById('session-state').textContent.includes('ready')")
+        p.click('#run-all'); p.wait_for_selector('#run-dialog[open]'); lines = p.inner_text('#run-dialog-arrows-list'); self.assertIn('drives a browser on this Mac with "lab-home": may visit 127.0.0.1; 2 steps', lines); self.assertIn('fragile by nature', lines)
+        self.assertFalse(p.locator('#run-dialog-confirm').is_disabled()); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => /finished|failed/.test(document.getElementById('run-summary').textContent)", timeout=90000)
+        self.assertEqual(p.inner_text('.node[data-id="cell-1"] .status'), 'ok'); out = p.inner_text('.node[data-id="cell-1"] .node-output'); self.assertIn('"pages"', out); self.assertIn('browser/captures/lab-home-', out)
+        self.assertTrue(any('Browser script lab-home started' in k for k in p.evaluate("() => [...document.querySelectorAll('#log-list li')].map(li => li.textContent)")), 'the run is in the Log')

@@ -29,6 +29,7 @@ from . import memory as lab_memory
 from . import ideas as lab_ideas
 from . import memory_import as lab_import
 from . import ask as lab_ask
+from . import browser as lab_browser
 from . import costs as lab_costs
 from .journal import Journal
 from .sessions import SessionRegistry
@@ -84,6 +85,7 @@ class LabServer(ThreadingHTTPServer):
     def __init__(self,address,state,key,executor=execute,kernel_factory=None):
         if address[0]!='127.0.0.1': raise ValueError('Lab listens on loopback only')
         self.state_dir=Path(state);self.key=key;self.executor=executor
+        self.browser_job=None  # {'thread','script','started','result'}: one browser run at a time, from the page or a cell
         self.settings={'workspace':None,'cpus':'0.5','memory':'256m'}
         self.sessions={};self.failures=[];self.running=False;self.setup_running=False;self.revision=0;self.lock=threading.RLock();self.slots=threading.BoundedSemaphore(16)
         self.setup_job={'running':False,'action':None,'phase':'idle','bytes':0,'total':None,'result':None}
@@ -160,6 +162,14 @@ class LabServer(ThreadingHTTPServer):
             # Cells that use Memory: named in the review; a write means this run may add notes to the Memory folder.
             check['memory']=[{'node':i,'op':op} for i,op in graph_module.memory_cells(doc) if i in set(plan)]
             check['memory_ready']=bool(lab_memory.folder(self.state_dir)) if check['memory'] else True
+            # Cells that drive a browser: named in the review with the sites each script may visit; refused without Playwright or a Memory folder.
+            web=[]
+            for ident,name in graph_module.browser_cells(doc):
+                if ident in set(plan):
+                    try:sc=lab_browser.read_script(self.state_dir,name);web.append({'node':ident,'script':name,'found':True,'allow':sc['allow'],'params':sc['params'],'headed':sc['headed'],'budget_s':sc['budget_s'],'steps':len(sc['steps'])})
+                    except (lab_browser.BrowserError,lab_memory.MemoryError) as e:web.append({'node':ident,'script':name,'found':False,'error':str(e),'allow':[],'params':[],'headed':False,'budget_s':0,'steps':0})
+            check['browser']=web
+            check['browser_ready']=(bool(lab_memory.folder(self.state_dir)) and lab_browser.available()['ready'] and all(w['found'] for w in web)) if web else True
             # Cells may name the session they run on; data cannot cross sessions, and a named session must be running.
             check['sessions']={i:graph_module.session_of(doc,i) for i in plan if graph_module.session_of(doc,i)}
             check['cross_session']=graph_module.cross_session(doc,plan)
@@ -185,6 +195,7 @@ class LabServer(ThreadingHTTPServer):
             if check['missing_sessions']:raise KernelError('These cells name sessions that are not running: %s'%', '.join(check['missing_sessions']))
             if check.get('missing_mainbooks'):raise graph_module.GraphError('These Mainbooks are not in the Mainbooks folder: %s'%', '.join(check['missing_mainbooks']))
             if not check.get('memory_ready',True):raise graph_module.GraphError('Cells use Memory but no Memory folder is approved yet (Memory page)')
+            if not check.get('browser_ready',True):raise graph_module.GraphError(self.browser_blocker(check['browser']))
             def record(ident,result):
                 with self.graph_lock:
                     graph_module.record_result(doc,ident,result)
@@ -205,7 +216,7 @@ class LabServer(ThreadingHTTPServer):
                 # A cell inside a nested Mainbook finished: one Log line, prefixed with the Mainbook's name; the outer cell keeps the summary.
                 self.journal.write('cell.'+result['status'],'%s / %s: %s%s'%(name,ident,result['status'],(' in %d ms'%result['elapsed_ms']) if result.get('elapsed_ms') is not None else ''),{'mainbook':name,'parent':parent,'node':ident,'status':result['status'],'elapsed_ms':result.get('elapsed_ms'),'error':(result.get('error') or {}).get('evalue')})
             self.graph_run=GraphRun(doc,plan,kernel,mode=mode,on_result=record,kernel_for=self.kernels.kernel_for,on_finish=finished,ask_model=self.ask_model,on_edge=arrow,bindings=bindings,reason=reason,
-                                    load_mainbook=lambda name:lab_mainbooks.load(self.state_dir,name),on_inner=inner,memory_op=self.memory_op).start()
+                                    load_mainbook=lambda name:lab_mainbooks.load(self.state_dir,name),on_inner=inner,memory_op=self.memory_op,browser_op=self.browser_op).start()
             self.journal.write('run.start','Run %s %s: %d cell%s'%(mode,reason or 'approved',len(plan),'' if len(plan)==1 else 's'),{'run':self.graph_run.id,'mode':mode,'plan':plan,'reason':reason})
             return self.graph_run.snapshot()
     def chat(self,model,messages,timeout=300,format=None):
@@ -257,6 +268,39 @@ class LabServer(ThreadingHTTPServer):
             out=lab_import.keep(state,str(params['path']),items,model=params.get('model') if isinstance(params.get('model'),str) else None)
             self.journal.write('memory.review.keep','A cell kept %d item%s from %s'%(len(out['written']),'' if len(out['written'])==1 else 's',params['path']),{'chat':params['path'],'written':[w['path'] for w in out['written']]});return out
         raise ValueError('Unknown memory operation')
+    def browser_blocker(self,web):
+        missing=[w['script'] for w in web if not w.get('found')]
+        if missing:return 'These browser scripts are not in the Memory folder: %s (Browser page)'%', '.join(missing)
+        if not lab_memory.folder(self.state_dir):return 'Cells drive a browser but no Memory folder is approved yet (Memory page)'
+        return 'Cells drive a browser but Playwright is not installed for this Lab\'s Python (Browser page shows the two commands)'
+    def browser_op(self,script,params):
+        """How a browser cell runs its script: the same reviewed runner as the Browser page, one run at a time, each a Log line."""
+        job=self.start_browser(script,params if isinstance(params,dict) else {},headed=None,reason='cell')
+        job['thread'].join()
+        out=job['result']
+        if out is None:raise lab_browser.BrowserError('The browser run did not report a result')
+        if not out['ok']:raise lab_browser.BrowserError(out['error'] or 'The browser run failed')
+        return {k:out[k] for k in ('ok','script','title','folder','pages','vars','blocked','elapsed_ms','params','headed')}
+    def start_browser(self,script,params,headed=None,reason='page'):
+        """Start one browser script in a thread; refuses while another runs. The result lands in self.browser_job['result']."""
+        with self.lock:
+            job=self.browser_job
+            if job and job['thread'].is_alive():raise lab_browser.BrowserError('A browser run is already going (%s); wait for it'%job['script'])
+            sc=lab_browser.read_script(self.state_dir,script);lab_browser._check_params(sc,params)
+            if not lab_browser.available()['ready']:raise lab_browser.BrowserError('Playwright is not installed for this Lab\'s Python; the Browser page shows the two commands')
+            job={'script':script,'started':time.time(),'result':None,'reason':reason,'headed':sc['headed'] if headed is None else bool(headed),'allow':sc['allow']}
+            def go():
+                try:job['result']=lab_browser.run(self.state_dir,script,params=params,headed=headed,journal=self.journal)
+                except (lab_browser.BrowserError,lab_memory.MemoryError,OSError) as e:
+                    job['result']={'ok':False,'error':str(e),'pages':[],'vars':{},'log':[],'blocked':[],'elapsed_ms':0,'script':script,'folder':None}
+            job['thread']=threading.Thread(target=go,daemon=True);self.browser_job=job;job['thread'].start()
+            self.journal.write('browser.start','Browser script %s started%s (%s): may visit %s'%(script,' headed' if job['headed'] else '',reason,', '.join(sc['allow'])),{'script':script,'params':params,'headed':job['headed'],'allow':sc['allow'],'reason':reason})
+            return job
+    def browser_status(self):
+        job=self.browser_job
+        if not job:return {'state':'idle','job':None}
+        running=job['thread'].is_alive()
+        return {'state':'running' if running else 'finished','job':{'script':job['script'],'started':job['started'],'reason':job['reason'],'headed':job['headed'],'allow':job['allow'],'elapsed_ms':int((time.time()-job['started'])*1000) if running else (job['result'] or {}).get('elapsed_ms'),'result':None if running else job['result']}}
     def ask_model(self,cfg,prompt):
         """How a model cell asks the local model: schema -> one checked decision (decide.ask); no schema -> plain chat."""
         if cfg.get('schema'):
@@ -370,7 +414,7 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():return self.out(403,{'error':'Unexpected host'})
         path=urlsplit(self.path).path
-        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8'),'/map':('map.html','text/html; charset=utf-8'),'/map.js':('map.js','text/javascript; charset=utf-8'),'/map.css':('map.css','text/css; charset=utf-8'),'/memory':('memory.html','text/html; charset=utf-8'),'/memory.js':('memory.js','text/javascript; charset=utf-8'),'/memory.css':('memory.css','text/css; charset=utf-8')}
+        assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/setup.js':('setup.js','text/javascript; charset=utf-8'),'/notebook.js':('notebook.js','text/javascript; charset=utf-8'),'/session.js':('session.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/graph':('graph.html','text/html; charset=utf-8'),'/graph.js':('graph.js','text/javascript; charset=utf-8'),'/graph.css':('graph.css','text/css; charset=utf-8'),'/models':('models.html','text/html; charset=utf-8'),'/models.js':('models.js','text/javascript; charset=utf-8'),'/devices':('devices.html','text/html; charset=utf-8'),'/devices.js':('devices.js','text/javascript; charset=utf-8'),'/map':('map.html','text/html; charset=utf-8'),'/map.js':('map.js','text/javascript; charset=utf-8'),'/map.css':('map.css','text/css; charset=utf-8'),'/memory':('memory.html','text/html; charset=utf-8'),'/memory.js':('memory.js','text/javascript; charset=utf-8'),'/memory.css':('memory.css','text/css; charset=utf-8'),'/browser':('browser.html','text/html; charset=utf-8'),'/browser.js':('browser.js','text/javascript; charset=utf-8'),'/browser.css':('browser.css','text/css; charset=utf-8')}
         if path in assets:
             name,kind=assets[path];return self.out(200,raw=(ASSETS/name).read_bytes(),kind=kind)
         if path=='/api/state':
@@ -427,6 +471,24 @@ class LabHandler(BaseHTTPRequestHandler):
             except lab_memory.MemoryError as e:return self.out(409 if 'Choose a Memory folder' in str(e) else 400,{'error':str(e)})
             except OSError as e:return self.out(500,{'error':'The Memory folder could not be read: %s'%e})
             return self.out(404,{'error':'Unknown memory route'})
+        if path=='/api/browser' or path.startswith('/api/browser/'):
+            # Browser scripts: fixed step lists in the Memory folder, run by Playwright on this machine (local_lab/browser.py).
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            q=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query);one=lambda k,d=None:q.get(k,[d])[0]
+            try:
+                if path=='/api/browser':
+                    folder=lab_memory.folder(self.server.state_dir)
+                    return self.out(200,{'available':lab_browser.available(refresh=one('refresh')=='1'),'folder':folder,'scripts':lab_browser.listing(self.server.state_dir) if folder else [],
+                                         'captures':lab_browser.captures(self.server.state_dir) if folder else [],'templates':{k:v for k,v in lab_browser.TEMPLATES.items()},'steps':sorted(lab_browser.STEPS),
+                                         'profile':(Path(self.server.state_dir)/lab_browser.PROFILE).is_dir(),'run':self.server.browser_status()})
+                if path=='/api/browser/script':return self.out(200,{'name':one('name',''),'script':lab_browser.read_script(self.server.state_dir,one('name',''))})
+                if path=='/api/browser/run':return self.out(200,self.server.browser_status())
+                if path=='/api/browser/capture':return self.out(200,{'capture':lab_browser.read_capture(self.server.state_dir,one('folder',''))})
+                if path=='/api/browser/page':return self.out(200,{'page':lab_browser.read_page(self.server.state_dir,one('folder',''),one('file',''))})
+            except lab_browser.BrowserError as e:return self.out(400,{'error':str(e)})
+            except lab_memory.MemoryError as e:return self.out(409,{'error':str(e)})
+            except OSError as e:return self.out(500,{'error':'The Memory folder could not be read: %s'%e})
+            return self.out(404,{'error':'Unknown browser route'})
         if path=='/api/graph/inbox':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             with self.server.graph_lock:return self.out(200,{'cells':list(self.server.cell_inbox)})
@@ -916,6 +978,33 @@ class LabHandler(BaseHTTPRequestHandler):
                 except lab_memory.MemoryError as e:return self.out(409 if ('changed since' in str(e) or 'Choose a Memory folder' in str(e)) else 400,{'error':str(e)})
                 except OSError as e:return self.out(500,{'error':'The Memory folder could not be written: %s'%e})
                 return self.out(404,{'error':'Unknown memory route'})
+            if path.startswith('/api/browser/'):
+                # Scripts are files in the approved Memory folder (saving is like saving a note); a run is a reviewed step: the dialog
+                # shows the sites and steps first and sends confirm. Every save, run, import and profile reset is a Log line.
+                try:
+                    if path=='/api/browser/script':
+                        if set(data)!={'name','script'} or not isinstance(data['name'],str):raise ValueError('Send {name, script}')
+                        row=lab_browser.save_script(self.server.state_dir,data['name'],data['script'])
+                        self.server.journal.write('browser.script','Browser script %s saved: %d step%s, may visit %s'%(row['name'],row['steps'],'' if row['steps']==1 else 's',', '.join(row['allow'])),{'name':row['name'],'allow':row['allow'],'steps':row['steps'],'params':row['params']});return self.out(200,row)
+                    if path=='/api/browser/script/delete':
+                        if set(data)!={'name'} or not isinstance(data['name'],str):raise ValueError('Send {name}')
+                        lab_browser.delete_script(self.server.state_dir,data['name']);self.server.journal.write('browser.script.deleted','Browser script %s deleted'%data['name'],{'name':data['name']});return self.out(200,{'deleted':data['name']})
+                    if path=='/api/browser/run':
+                        if set(data)-{'name','params','headed','confirm'} or data.get('confirm') is not True or not isinstance(data.get('name'),str):raise ValueError('Review the sites and steps, then confirm')
+                        job=self.server.start_browser(data['name'],data.get('params') if isinstance(data.get('params'),dict) else {},headed=data.get('headed') if isinstance(data.get('headed'),bool) else None)
+                        return self.out(202,self.server.browser_status())
+                    if path=='/api/browser/import':
+                        if set(data)!={'folder','confirm'} or data['confirm'] is not True or not isinstance(data['folder'],str):raise ValueError('Confirm the import')
+                        out=lab_browser.import_capture(self.server.state_dir,data['folder'])
+                        self.server.journal.write('browser.import','Capture %s → %d chat note%s (%d already there)'%(data['folder'],out['imported'],'' if out['imported']==1 else 's',out['skipped']),{'folder':data['folder'],'imported':out['imported'],'skipped':out['skipped'],'errors':out['errors']});return self.out(200,out)
+                    if path=='/api/browser/profile/clear':
+                        if set(data)!={'confirm'} or data['confirm'] is not True:raise ValueError('Confirm forgetting the browser logins')
+                        if self.server.browser_job and self.server.browser_job['thread'].is_alive():raise lab_browser.BrowserError('A browser run is going; wait for it')
+                        existed=lab_browser.clear_profile(self.server.state_dir);self.server.journal.write('browser.profile.cleared','Browser logins forgotten'+('' if existed else ' (there were none)'),{'existed':existed});return self.out(200,{'cleared':existed})
+                except lab_browser.BrowserError as e:return self.out(409 if 'already going' in str(e) or 'is going' in str(e) else 400,{'error':str(e)})
+                except lab_memory.MemoryError as e:return self.out(409,{'error':str(e)})
+                except OSError as e:return self.out(500,{'error':'The Memory folder could not be written: %s'%e})
+                return self.out(404,{'error':'Unknown browser route'})
             if path=='/api/codemap/cell':
                 # A function on the Map becomes a cell: a form for its parameters in front of a call. Queued for the Graph page.
                 if set(data)!={'root','id'} or not isinstance(data['root'],str) or not isinstance(data['id'],str):raise ValueError('Send {root, id}')

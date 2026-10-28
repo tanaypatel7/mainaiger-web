@@ -587,8 +587,8 @@ answer, and each operation is a Log line (`memory.cell.search`,
 Memory cell and says when a run may add notes; it refuses the run when no
 Memory folder is approved. The analysis treats the fixed input names as the
 cell's inputs, so data edges flow through (a form that sets `question` feeds
-a search; `hits` feeds the next cell). A cell uses Memory, runs a Mainbook,
-asks a model or carries a form — one of the four.
+a search; `hits` feeds the next cell). A cell uses Memory, drives a browser,
+runs a Mainbook, asks a model or carries a form — one of the five.
 
 Why fixed operations: the Lab's rule is that everything touching the system
 is a reviewed, named step. Six named operations keep that rule while
@@ -1053,13 +1053,82 @@ Chromium. **Unverified:** the parsers were written from the documented
 export shapes, not from a real export file — drop one in and the first
 real import will tell.
 
-**Status:** the format (front matter round trip, links), folder approval
-rules, create/read/update/append/delete, the chat tier's read-only rule, path
-safety, the link graph (title or id, case-insensitive, unresolved listed),
-the index following file changes and the scan fallback are tested
-(`tests/test_memory.py`), the routes too; the page is tested in headless
-Chromium (`MemoryPageTests`). Next: chat import (M4), the ask box with cost
-estimates (M3).
+**Status (memory store):** the format (front matter round trip, links),
+folder approval rules, create/read/update/append/delete, the chat tier's
+read-only rule, path safety, the link graph (title or id, case-insensitive,
+unresolved listed), the index following file changes and the scan fallback
+are tested (`tests/test_memory.py`), the routes too; the page is tested in
+headless Chromium (`MemoryPageTests`).
+
+### Browser scripts: a browser on this Mac as a reviewed step (`local_lab/browser.py`, `browser_runner.py`, `/browser`, `/api/browser/*`)
+
+For sites without an export (and for your own tools), MainAIger can drive a
+real browser on this Mac — but only through a **browser script**: a short,
+fixed list of steps kept as a JSON file in your Memory folder
+(`browser/scripts/<name>.json`). The whole grammar is `validate_script`:
+`allow` (the sites it may visit), `start` (first page), `params` (names
+filled in at run time as `{{name}}`), `headed` (show the window), `budget_s`
+(time limit, 10–1800 s) and `steps` — **goto**, **wait** (a selector or
+seconds), **click**, **fill**, **press**, **scroll**, **capture** (the page's
+text, or one element's, saved as a page), **links** (collect hrefs into a
+list) and **each** (repeat inner steps for every link, `{{item}}` and
+`{{index}}`, one level only). A step may be `optional`. Nothing else exists:
+no JavaScript, no arbitrary code, no downloads.
+
+**Rules the runner enforces whatever the script says.** The browser only
+*navigates* to hosts in `allow` (a `goto` elsewhere is refused with the
+reason; a click that tries to leave is aborted and reported as *blocked*;
+pages may still load their own assets from anywhere). One time budget for
+the run, every wait with a timeout, at most 200 pages, 500 kB of text per
+page, 500 links per list. Playwright keeps a persistent profile in the Lab's
+private state folder (`browser-profile`, mode 0700), so a **headed** run in
+which you log in by hand makes later headless runs work until the site logs
+you out; *Forget logins…* deletes it (a reviewed step).
+
+**How a run goes.** The Browser page lists the scripts (New from a
+template: *page-capture*, *list-and-each*, *login-by-hand*), a JSON editor
+that refuses invalid scripts with the step named, and *Run…*: the dialog
+shows the sites, the steps in words, the parameters to fill and the headed
+switch, then confirms. The Lab starts `browser_runner.py` in a subprocess
+with its own Python (Playwright must be installed for *that* Python; the
+page says whether it is and prints the two commands when not), polls while
+it runs (one run at a time), and shows the result: pages captured, every
+step with its time, what was blocked. Captures land in
+`browser/captures/<name>-<stamp>/` (`capture.json` + `pages/NNN-title.md`
+with title, URL and time in front matter). **Import pages as chat notes…**
+turns each page into a read-only note under `chats/browser/` with its URL
+as the id (importing twice adds nothing), so the review loop (Memory page,
+or `examples/review-chats.ipymb`) mines them like an exported chat. Every
+save, start, run, import and profile reset is a Log line.
+
+**In a Mainbook.** Tick *This cell drives a browser* on a code cell and
+pick a script: the cell reads an optional `params` dict from the session,
+runs the script as the same reviewed step (the run review names the sites,
+the budget, headed or not, and says *fragile by nature*), and binds the
+capture — `{ok, script, folder, pages: [{title, url, chars, file}], vars,
+blocked, elapsed_ms}` — to a variable the next cell reads. It refuses the
+run when the script is missing, no Memory folder is approved or Playwright
+is not installed for the Lab's Python. A cell drives a browser, uses
+Memory, runs a Mainbook, asks a model or carries a form — one of the five.
+
+**Honest limits (also on the page):** sites change their pages, log-ins and
+bot checks break scripts, and some sites' terms restrict automated access.
+This is for sites without an export and for your own tools; the official
+export stays the path for ChatGPT and Claude. *Fragile by nature.*
+
+**Status:** the grammar (every refusal), the store, parameters, the
+availability probe, a real headless run against a local site (links
+collected, duplicates and the other host dropped, a click that tries to
+leave refused and reported, pages captured with front matter, a parameter
+pointing elsewhere refused, a missing selector failing plainly, an optional
+step skipped), captures into chat notes (idempotent) and the profile reset
+are tested (`tests/test_browser.py`); the routes, a run from the page and a
+browser cell inside a graph run through the server too; the engine with a
+fake runner (`tests/test_nested.py`); the page and the Graph inspector end
+to end in headless Chromium (`BrowserPageTests`, a script that captures the
+Lab's own front page). All of it against local pages: **no real site has
+been scripted yet**, and the macOS Lab needs `pip install playwright` +
+`playwright install chromium` for its Python before the first run.
 
 ## Settings
 

@@ -146,7 +146,7 @@ Mainbooks → runs, all in the Log.
 session: model and engine written today, server and canvas next) + the
 Memory page's "Run" button on such notes.
 
-## 6. Getting chats out of ChatGPT and Claude (M6)
+## 6. Getting chats out of ChatGPT and Claude (M6) — route 1 built with M4; route 2 **built (28 Oct 2026)** as browser scripts + browser cells, see `LOCAL_LAB_SETUP.md` "Browser scripts" (local pages only so far; *fragile by nature*)
 
 Two routes, in this order:
 
@@ -162,6 +162,12 @@ Two routes, in this order:
    terms restrict automated access — so this is for sites without an export
    and for your own self-hosted tools, with the official export staying the
    path for ChatGPT and Claude. Label when built: *fragile by nature*.
+   *As built:* not recorded scripts but a small fixed grammar (goto, wait,
+   click, fill, press, scroll, capture, links, each) validated on save; the
+   browser only navigates within the script's `allow` list; captures go to
+   `browser/captures` and become chat notes on request; a persistent
+   profile keeps logins after a headed run; the Browser page and a
+   browser cell on the Graph page both go through the same reviewed run.
 
 ## 7. Order and what I need from you
 

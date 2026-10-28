@@ -191,6 +191,40 @@ class MemoryCellTests(unittest.TestCase):
             d = chain([('s', '')]); d['notebook']['cells'][0]['metadata']['mainaiger'].update(memory={'op': 'search'}, model={'model': 'x:1b', 'output': 'y'}); g.validate(d)
 
 
+class BrowserCellTests(unittest.TestCase):
+    """Browser cells: a saved script name, the optional `params` dict from the session, the capture bound to `output`."""
+    def setUp(self):
+        self.kernel = KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')]); self.kernel.start(timeout=20); self.calls = []
+    def tearDown(self):
+        self.kernel.stop()
+    def browser_op(self, script, params):
+        self.calls.append((script, params))
+        if script == 'broken': raise ValueError('Refused: evil.net is not in the allowed sites')
+        return {'ok': True, 'script': script, 'pages': [{'as': 'p', 'title': 'Page for ' + str((params or {}).get('q')), 'url': 'http://x/', 'chars': 10, 'file': 'pages/001-p.md'}], 'folder': 'browser/captures/x', 'vars': {}, 'blocked': [], 'elapsed_ms': 5}
+    def test_validation_analysis_and_run(self):
+        doc = chain([('p', 'params = {"q": "haptics"}'), ('web', ''), ('after', 'print(capture["pages"][0]["title"], capture["folder"])')])
+        doc['notebook']['cells'][1]['metadata']['mainaiger']['browser'] = {'script': 'my-site'}; doc = g.validate(doc)
+        self.assertEqual(g.browser_cells(doc), [('web', 'my-site')]); self.assertEqual(doc['notebook']['cells'][1]['metadata']['mainaiger']['browser'], {'script': 'my-site', 'output': 'capture'})
+        a = g.analysis(doc); self.assertEqual((a['web']['inputs'], a['web']['optional'], a['web']['outputs'], a['web']['browser']), ([], ['params'], ['capture'], 'my-site'))
+        self.assertIn({'source': 'web', 'target': 'after', 'name': 'capture'}, [{k: e[k] for k in ('source', 'target', 'name')} for e in g.data_edges(doc)])
+        run = GraphRun(doc, g.plan(doc, 'all'), self.kernel, browser_op=self.browser_op).start(); self.assertEqual(run.wait(60), 'finished', run.snapshot().get('error')); snap = run.snapshot()
+        self.assertEqual(self.calls, [('my-site', {'q': 'haptics'})]); self.assertEqual(snap['nodes']['after']['output'], 'Page for haptics browser/captures/x\n'); self.assertIn('Browser my-site → capture', snap['nodes']['web']['note'])
+        self.kernel.execute('del params'); alone = g.validate(chain([('web', '')])); alone['notebook']['cells'][0]['metadata']['mainaiger']['browser'] = {'script': 'my-site'}; alone = g.validate(alone)
+        run = GraphRun(alone, g.plan(alone, 'all'), self.kernel, browser_op=self.browser_op).start(); self.assertEqual(run.wait(60), 'finished'); self.assertEqual(self.calls[-1], ('my-site', None), 'params is optional: the op decides whether the script needs it')
+        doc2 = g.validate(chain([('web', '')])); doc2['notebook']['cells'][0]['metadata']['mainaiger']['browser'] = {'script': 'broken', 'output': 'cap'}; doc2 = g.validate(doc2)
+        run = GraphRun(doc2, g.plan(doc2, 'all'), self.kernel, browser_op=self.browser_op).start(); run.wait(30); snap = run.snapshot()
+        self.assertEqual((snap['state'], snap['nodes']['web']['error']['ename']), ('failed', 'BrowserError')); self.assertIn('not in the allowed sites', snap['nodes']['web']['error']['evalue'])
+        run = GraphRun(doc2, g.plan(doc2, 'all'), self.kernel).start(); run.wait(30); self.assertIn('no browser runner', run.snapshot()['nodes']['web']['error']['evalue'])
+        for bad, message in (({'script': 'My Site'}, 'browser must be'), ({'script': 'ok', 'output': '1x'}, 'Python name'), ({'script': 'ok', 'js': 1}, 'browser must be'), ({}, None)):
+            d = chain([('w', '')]); d['notebook']['cells'][0]['metadata']['mainaiger']['browser'] = bad
+            if message is None:
+                self.assertNotIn('browser', g.validate(d)['notebook']['cells'][0]['metadata']['mainaiger'], 'an empty config is dropped')
+            else:
+                with self.subTest(bad=bad), self.assertRaisesRegex(g.GraphError, message): g.validate(d)
+        with self.assertRaisesRegex(g.GraphError, 'not several'):
+            d = chain([('w', '')]); d['notebook']['cells'][0]['metadata']['mainaiger'].update(browser={'script': 'ok'}, memory={'op': 'search'}); g.validate(d)
+
+
 class HttpTests(unittest.TestCase):
     def setUp(self):
         from tests.test_sessions import local_factory

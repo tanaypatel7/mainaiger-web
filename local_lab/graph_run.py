@@ -46,7 +46,7 @@ class ConditionError(Exception):
 
 class GraphRun:
     def __init__(self, document, plan_ids, kernel, mode='all', on_result=None, kernel_for=None, on_finish=None, ask_model=None, on_edge=None, bindings=None, reason=None,
-                 load_mainbook=None, on_inner=None, depth=0, ancestry=(), budget=None, memory_op=None):
+                 load_mainbook=None, on_inner=None, depth=0, ancestry=(), budget=None, memory_op=None, browser_op=None):
         self.id = 'run-' + secrets.token_hex(4)
         self.document, self.plan, self.kernel, self.mode = document, list(plan_ids), kernel, mode
         self.on_result = on_result
@@ -57,6 +57,7 @@ class GraphRun:
         self.inner = None
         # memory_op(op, params) performs one Memory operation on the host (search, read, write, ask) and returns a JSON-able result.
         self.memory_op = memory_op
+        self.browser_op = browser_op
         # bindings: variables an event binds in the active session before the first cell (local_lab/events.py);
         # reason: why this run started ("fired by timer"), shown in the snapshot and the journal.
         self.bindings = dict(bindings) if bindings else None
@@ -250,7 +251,7 @@ class GraphRun:
             return failed('Mainbook "%s" could not be loaded: %s' % (name, error))
         if not plan:
             return failed('Mainbook "%s" has no code cells reachable from Start' % name)
-        inner = GraphRun(inner_doc, plan, self.kernel, mode='all', kernel_for=self.kernel_for, ask_model=self.ask_model, on_edge=self.on_edge, memory_op=self.memory_op,
+        inner = GraphRun(inner_doc, plan, self.kernel, mode='all', kernel_for=self.kernel_for, ask_model=self.ask_model, on_edge=self.on_edge, memory_op=self.memory_op, browser_op=self.browser_op,
                          on_result=(lambda i, r: self.on_inner(ident, name, i, r)) if self.on_inner else None,
                          load_mainbook=self.load_mainbook, on_inner=self.on_inner, depth=self.depth + 1, ancestry=self.ancestry + (name,), budget=self.budget)
         self.inner = inner
@@ -279,15 +280,29 @@ class GraphRun:
         return result
 
     def _memory_cell(self, ident, mem, label):
-        """Read the op's input variables from the session (as JSON), do the op on the host, bind the result."""
-        started = time.time()
-        def failed(message, kind='MemoryError'):
-            return {'status': 'error', 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': int((time.time() - started) * 1000),
-                    'error': {'ename': kind, 'evalue': message, 'traceback': []}, 'memory': mem['op']}
-        if self.memory_op is None:
-            return failed('This Lab has no Memory operations configured')
+        """A Memory operation: read its input variables from the session, do it on the host, bind the result."""
         inputs, _ = graph_module.MEMORY_OPS[mem['op']]
         optional = graph_module.MEMORY_OPTIONAL.get(mem['op'], ())
+        if self.memory_op is None:
+            return self._host_failed(time.time(), 'This Lab has no Memory operations configured', 'MemoryError', {'memory': mem['op']})
+        return self._host_cell(label, 'Memory %s' % mem['op'], inputs, optional, lambda params: self.memory_op(mem['op'], params), mem['output'], {'memory': mem['op']}, 'MemoryError')
+
+    def _browser_cell(self, ident, cfg, label):
+        """A browser script on the host (local_lab/browser.py): the optional `params` dict is read from the session, the capture is bound."""
+        if self.browser_op is None:
+            return self._host_failed(time.time(), 'This Lab has no browser runner configured', 'BrowserError', {'browser': cfg['script']})
+        return self._host_cell(label, 'Browser %s' % cfg['script'], (), graph_module.BROWSER_OPTIONAL, lambda params: self.browser_op(cfg['script'], params.get('params')), cfg['output'], {'browser': cfg['script']}, 'BrowserError')
+
+    @staticmethod
+    def _host_failed(started, message, kind, tag):
+        return dict({'status': 'error', 'count': None, 'output': '', 'truncated': False, 'elapsed_ms': int((time.time() - started) * 1000),
+                     'error': {'ename': kind, 'evalue': message, 'traceback': []}}, **tag)
+
+    def _host_cell(self, label, what, inputs, optional, call, output, tag, error_kind):
+        """Read the named input variables from the session (as JSON), call the host operation, bind the result to `output`."""
+        started = time.time()
+        def failed(message, kind=error_kind):
+            return self._host_failed(started, message, kind, tag)
         try:
             kernel = self.kernel_for(label) if self.kernel_for else self.kernel
         except KernelError as error:
@@ -308,13 +323,13 @@ class GraphRun:
             return failed('The inputs are not JSON-serialisable')
         missing = [n for n in inputs if n not in params]
         if missing:
-            return failed('Memory %s needs the variable%s %s in the session (define %s in an earlier cell or a form)' % (mem['op'], '' if len(missing) == 1 else 's', ', '.join(missing), 'it' if len(missing) == 1 else 'them'), 'PromptError')
+            return failed('%s needs the variable%s %s in the session (define %s in an earlier cell or a form)' % (what, '' if len(missing) == 1 else 's', ', '.join(missing), 'it' if len(missing) == 1 else 'them'), 'PromptError')
         try:
-            value = self.memory_op(mem['op'], params)
+            value = call(params)
         except Exception as error:  # the Lab reports the reason; the run stops here
             return failed(str(error))
         literal = json.dumps(value, ensure_ascii=False)
-        code = '%s = __import__("json").loads(%r)\n' % (mem['output'], literal)
+        code = '%s = __import__("json").loads(%r)\n' % (output, literal)
         try:
             bound = kernel.execute(code)
         except KernelError as error:
@@ -324,8 +339,8 @@ class GraphRun:
         shown = value if isinstance(value, str) else json.dumps(value, indent=1, ensure_ascii=False)
         if len(shown) > 4000:
             shown = shown[:4000] + '\n…'
-        return {'status': 'ok', 'count': bound.get('count'), 'output': shown, 'truncated': False, 'error': None, 'elapsed_ms': int((time.time() - started) * 1000),
-                'memory': mem['op'], 'note': 'Memory %s → %s in the session.' % (mem['op'], mem['output'])}
+        return dict({'status': 'ok', 'count': bound.get('count'), 'output': shown, 'truncated': False, 'error': None, 'elapsed_ms': int((time.time() - started) * 1000),
+                     'note': '%s → %s in the session.' % (what, output)}, **tag)
 
     def _execute(self, ident):
         """Run one cell (code, form, model, nested Mainbook or Memory) in its session; returns the result dict."""
@@ -335,6 +350,7 @@ class GraphRun:
         form = graph_module.form_config(self._cell(ident))
         book = graph_module.mainbook_config(self._cell(ident))
         mem = graph_module.memory_config(self._cell(ident))
+        web = graph_module.browser_config(self._cell(ident))
         if form:
             # Bind the form's values first; the cell's own code (if any) runs after them in the same request.
             source = graph_module.form_prelude(form) + source
@@ -342,6 +358,8 @@ class GraphRun:
             result = self._mainbook_cell(ident, book)
         elif mem:
             result = self._memory_cell(ident, mem, label)
+        elif web:
+            result = self._browser_cell(ident, web, label)
         elif cfg:
             result = self._model_cell(ident, cfg, source, label)
         elif not source.strip():
