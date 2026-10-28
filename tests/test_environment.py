@@ -104,7 +104,8 @@ class BuildJobTests(unittest.TestCase):
         def run(args, **kw):
             calls.append(args); return subprocess.CompletedProcess(args, 0)
         self.assertTrue(env.image_ready('mainaiger-lab-env:abc', run=run))
-        self.assertEqual(calls[0][1:], ['image', 'inspect', '--format', '{{.Id}}', 'mainaiger-lab-env:abc'])
+        self.assertEqual(calls[0][-5:], ['image', 'inspect', '--format', '{{.Id}}', 'mainaiger-lab-env:abc'])  # on a Mac the prefix also carries --context desktop-linux
+        self.assertNotIn('pull', calls[0])
         self.assertFalse(env.image_ready('x', run=lambda *a, **k: subprocess.CompletedProcess(a, 1)))
         self.assertFalse(env.image_ready('x', run=lambda *a, **k: (_ for _ in ()).throw(OSError('no docker'))))
 
