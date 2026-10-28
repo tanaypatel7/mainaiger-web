@@ -25,6 +25,8 @@ from . import decide as lab_decide
 from . import network as lab_network
 from .journal import Journal
 from .sessions import SessionRegistry
+from .devices import DeviceManager, DeviceError
+from . import remote as lab_remote
 from .graph_run import GraphRun
 
 ASSETS=Path(__file__).parent/'ui'
@@ -87,6 +89,7 @@ class LabServer(ThreadingHTTPServer):
         self.graph_doc=graph_module.new_document();self.graph_revision=0;self.graph_run=None;self.graph_lock=threading.RLock()
         self.env_build=None;self.image_ready=lab_environment.image_ready
         super().__init__(address,LabHandler)
+        self.devices=DeviceManager(state,local_port=self.server_port,journal=self.journal)
     @property
     def kernel(self):
         """The active session's kernel (or None). Routes that predate multiple sessions use this."""
@@ -129,19 +132,22 @@ class LabServer(ThreadingHTTPServer):
             if include_prerequisites and check['prerequisites']:
                 plan=[i for i in graph_module.order(doc) if i in set(plan)|set(check['prerequisites'])]
                 check=graph_module.preflight(doc,plan,present)
-            check['mode']=mode;check['session_alive']=bool(kernel is not None and kernel.alive)
+            check['mode']=mode
             # Cells may name the session they run on; data cannot cross sessions, and a named session must be running.
             check['sessions']={i:graph_module.session_of(doc,i) for i in plan if graph_module.session_of(doc,i)}
             check['cross_session']=graph_module.cross_session(doc,plan)
             check['missing_sessions']=sorted({l for l in check['sessions'].values() if not (self.kernels.by_label(l) and self.kernels.by_label(l)['kernel'].alive)})
+            needs_active=any(graph_module.node_by_id(doc,i)['kind']=='code' and i not in check['sessions'] for i in plan)
+            check['needs_active_session']=needs_active
+            check['session_alive']=bool(kernel is not None and kernel.alive) if needs_active else not check['missing_sessions']
             return plan,check
     def start_graph_run(self,mode,nodes,include_prerequisites):
         kernel=self.kernel
-        if kernel is None or not kernel.alive:raise KernelError('Start a session before running the graph')
         with self.graph_lock:
             if self.graph_running():raise KernelError('A graph run is already in progress')
-            if kernel.executing:raise KernelError('A cell is already running; interrupt it or wait')
             plan,check=self.graph_plan(mode,nodes,include_prerequisites)
+            if check['needs_active_session'] and (kernel is None or not kernel.alive):raise KernelError('Start a session before running the graph (cells that name no session use the active one)')
+            if kernel is not None and kernel.alive and kernel.executing:raise KernelError('A cell is already running; interrupt it or wait')
             if not plan:raise graph_module.GraphError('Nothing to run: no code nodes are reachable in this plan')
             doc=self.graph_doc
             if check['missing_sessions']:raise KernelError('These cells name sessions that are not running: %s'%', '.join(check['missing_sessions']))
@@ -199,7 +205,9 @@ class LabServer(ThreadingHTTPServer):
             status=self.kernels.stop(ident)
             return status if status is not None else self.kernel_status()
     def server_close(self):
-        try: self.kernels.stop_all()
+        try:
+            self.kernels.stop_all()
+            self.devices.close()
         finally: super().server_close()
     def start_setup_job(self, action, runner=None):
         """Run one long setup operation in the background; `runner(progress)` returns {'ok','output'}."""
@@ -303,6 +311,7 @@ class LabHandler(BaseHTTPRequestHandler):
             except lab_mainbooks.MainbookError as e:return self.out(404,{'error':str(e)})
         if path=='/api/sessions':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            self.server.kernels.sync_remote(self.server.devices)
             with self.server.lock: settings=dict(self.server.settings);revision=self.server.revision
             env=self.server.environment_status()
             return self.out(200,{'sessions':self.server.kernels.list(),'active':self.server.kernels.active_id,'max':__import__('local_lab.sessions',fromlist=['MAX_SESSIONS']).MAX_SESSIONS,
@@ -366,6 +375,21 @@ class LabHandler(BaseHTTPRequestHandler):
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             run=self.server.graph_run
             return self.out(200,{'run':run.snapshot() if run else None,'session':self.server.kernel_status(),'revision':self.server.graph_revision})
+        if path=='/api/devices':
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            return self.out(200,{'devices':self.server.devices.list(),'local_port':self.server.server_port,
+                                 'install':['git clone https://github.com/tanaypatel7/mainaiger-web ~/mainaiger-web','cd ~/mainaiger-web && git checkout feature/persistent-kernel','python3 -m local_lab --port 8795','# the Lab prints the owner key path; copy that file to this Mac with scp and chmod 600 it']})
+        if path in ('/api/devices/files','/api/devices/files/read','/api/devices/journal'):
+            if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
+            q=__import__('urllib.parse').parse.parse_qs(urlsplit(self.path).query);name=q.get('name',[''])[0]
+            try:
+                lab=self.server.devices.lab(name)
+                if path=='/api/devices/journal':data=lab.journal(int(q.get('after',['0'])[0]),int(q.get('limit',['100'])[0]))
+                elif path=='/api/devices/files':data=lab.files(q.get('root',[''])[0] or None,q.get('path',[''])[0])
+                else:data=lab.read_file(q.get('root',[''])[0],q.get('path',[''])[0])
+            except (DeviceError,lab_remote.RemoteError,ValueError) as e:return self.out(409,{'error':str(e)})
+            data['device']=name
+            return self.out(200,data)
         if path=='/api/network':
             if not self.session():return self.out(401,{'error':'Local owner sign-in required'})
             data=lab_network.overview();data['sessions']=self.server.kernels.list();data['journal_seq']=self.server.journal.seq
@@ -473,6 +497,43 @@ class LabHandler(BaseHTTPRequestHandler):
                 if label is not None and not isinstance(label,str):raise ValueError('label must be text')
                 try:return self.out(200,self.server.start_kernel(settings,label=label or None))
                 except KernelError as e:return self.out(409,{'error':str(e)})
+            if path=='/api/sessions/execute':
+                # Run code in one specific session (local or on a device). Used by other Labs that reach this one, and by tests.
+                if set(data)-{'id','code','confirm'} or data.get('confirm') is not True or not isinstance(data.get('id'),str) or not isinstance(data.get('code'),str):raise ValueError('Send {id, code, confirm}')
+                row=self.server.kernels.get(data['id'])
+                if row is None or not row['kernel'].alive:return self.out(409,{'error':'No running session with that id'})
+                try:result=row['kernel'].execute(data['code'])
+                except KernelBusy as e:return self.out(409,{'error':str(e)})
+                except (KernelError,ValueError) as e:return self.out(409,{'error':str(e)})
+                self.server.journal.write('session.execute','Code run in "%s" through the API: %s'%(row['label'],result.get('status')),{'id':row['id'],'label':row['label'],'status':result.get('status'),'bytes':len(data['code'])})
+                return self.out(200,{'session':self.server.kernels.row_status(row),'result':result})
+            if path=='/api/sessions/variables':
+                if set(data)!={'id'} or not isinstance(data['id'],str):raise ValueError('Send {id}')
+                row=self.server.kernels.get(data['id'])
+                if row is None or not row['kernel'].alive:return self.out(409,{'error':'No running session with that id'})
+                if row['kernel'].executing:return self.out(409,{'error':'A cell is still running'})
+                try:return self.out(200,{'variables':row['kernel'].variables()})
+                except KernelError as e:return self.out(409,{'error':str(e)})
+            if path=='/api/devices/pair':
+                if set(data)-{'name','host','port','key_file','tunnel','confirm'} or data.get('confirm') is not True or not {'name','host','port','key_file'}<=set(data):raise ValueError('Send {name, host, port, key_file, tunnel, confirm}')
+                try:return self.out(200,self.server.devices.pair(data['name'],data['host'],data['port'],data['key_file'],data.get('tunnel','lab')))
+                except (DeviceError,OSError) as e:return self.out(400,{'error':str(e)})
+            if path=='/api/devices/connect':
+                if set(data)!={'name','confirm'} or data['confirm'] is not True or not isinstance(data['name'],str):raise ValueError('Confirm the connection')
+                try:return self.out(200,self.server.devices.connect(data['name']))
+                except DeviceError as e:return self.out(409,{'error':str(e)})
+            if path in ('/api/devices/disconnect','/api/devices/forget'):
+                if set(data)!={'name'} or not isinstance(data['name'],str):raise ValueError('Send {name}')
+                try:
+                    if path.endswith('/forget'):self.server.devices.forget(data['name'])
+                    else:self.server.devices.disconnect(data['name'])
+                    self.server.kernels.sync_remote(self.server.devices)
+                    return self.out(200,{'ok':True})
+                except DeviceError as e:return self.out(409,{'error':str(e)})
+            if path=='/api/devices/session/start':
+                if set(data)-{'name','label','cpus','memory','confirm'} or data.get('confirm') is not True or not isinstance(data.get('name'),str):raise ValueError('Confirm the session on the device')
+                try:return self.out(200,self.server.kernels.start_remote(self.server.devices,data['name'],data.get('label') or None,data.get('cpus'),data.get('memory')))
+                except (DeviceError,KernelError) as e:return self.out(409,{'error':str(e)})
             if path=='/api/sessions/command':
                 # A terminal line, run inside the chosen session's container (no network, read-only workspace, limits), never on this device.
                 if set(data)-{'id','command','confirm'} or data.get('confirm') is not True or not isinstance(data.get('command'),str):raise ValueError('Send {command, confirm, id?}')

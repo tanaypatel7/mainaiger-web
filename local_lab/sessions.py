@@ -17,6 +17,7 @@ import threading
 import time
 
 from .kernel_session import KernelError
+from . import remote as remote_module
 
 MAX_SESSIONS = 4
 LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}$')
@@ -48,7 +49,7 @@ class SessionRegistry:
     def row_status(self, row):
         status = row['kernel'].status()
         status['container'] = status.pop('label', None)  # the kernel's own label is the container/process name
-        return {**status, 'id': row['id'], 'label': row['label'], 'device': DEVICE, 'image': row['image'],
+        return {**status, 'id': row['id'], 'label': row['label'], 'device': row.get('device', DEVICE), 'image': row['image'],
                 'cpus': row['settings']['cpus'], 'memory': row['settings']['memory'], 'workspace': row['settings']['workspace'],
                 'created_at': row['created_at'], 'active': row['id'] == self.active_id}
 
@@ -158,6 +159,64 @@ class SessionRegistry:
             if self.active_id == ident:
                 self.active_id = next((r['id'] for r in self.rows.values() if r['kernel'].alive), None)
         return True
+
+    # ---- sessions on other devices ---------------------------------------------
+    def attach(self, device, lab, remote_row):
+        """Show a session that runs on a paired device in this table, as '<device>/<label>'."""
+        with self.lock:
+            for row in self.rows.values():
+                if row.get('device') == device and row.get('remote_id') == remote_row['id']:
+                    row['kernel'].refresh(remote_row)
+                    return self.row_status(row)
+            kernel = remote_module.RemoteKernel(lab, device, remote_row)
+            row = {'id': 'r-%s-%s' % (device, remote_row['id']), 'label': kernel.label, 'device': device, 'remote_id': remote_row['id'],
+                   'settings': {'cpus': remote_row.get('cpus'), 'memory': remote_row.get('memory'), 'workspace': remote_row.get('workspace')},
+                   'image': remote_row.get('image') or 'base', 'kernel': kernel, 'created_at': remote_row.get('created_at') or time.time()}
+            self.rows[row['id']] = row
+            return self.row_status(row)
+
+    def sync_remote(self, devices):
+        """Refresh the rows of every connected device; rows of devices that dropped are marked ended."""
+        connected = set(devices.connected())
+        for name in connected:
+            try:
+                lab = devices.lab(name)
+                rows = lab.sessions()['sessions']
+            except Exception as error:
+                self._mark_device_gone(name, str(error))
+                continue
+            seen = set()
+            for remote_row in rows:
+                self.attach(name, lab, remote_row)
+                seen.add(remote_row['id'])
+            with self.lock:
+                for row in self.rows.values():
+                    if row.get('device') == name and row.get('remote_id') not in seen:
+                        row['kernel'].alive = False
+                        row['kernel'].ended = row['kernel'].ended or 'The session is gone on the device'
+        with self.lock:
+            gone = [r for r in self.rows.values() if r.get('device') not in (None, DEVICE) and r['device'] not in connected]
+        for row in gone:
+            row['kernel'].alive = False
+            row['kernel'].ended = row['kernel'].ended or 'Device not connected'
+
+    def _mark_device_gone(self, name, reason):
+        with self.lock:
+            for row in self.rows.values():
+                if row.get('device') == name:
+                    row['kernel'].alive = False
+                    row['kernel'].ended = row['kernel'].ended or ('Device unreachable: ' + reason)
+
+    def start_remote(self, devices, name, label=None, cpus=None, memory=None):
+        lab = devices.lab(name)
+        try:
+            remote_row = lab.start_session(label=label, cpus=cpus, memory=memory)
+        except remote_module.RemoteError as error:
+            raise KernelError('%s: %s' % (name, error))
+        status = self.attach(name, lab, remote_row)
+        self._log('session.start', 'Session "%s" started on device %s (%s CPU, %s)' % (status['label'], name, remote_row.get('cpus'), remote_row.get('memory')),
+                  {'id': status['id'], 'label': status['label'], 'device': name})
+        return status
 
     # ---- shell commands inside a session --------------------------------------
     @staticmethod

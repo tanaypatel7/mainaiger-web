@@ -390,3 +390,55 @@ class FormCellPanelTests(RealServerCase):
         out = p.inner_text('.node[data-id="cell-1"] .node-output'); self.assertEqual(out.splitlines()[0], 'hello Tanay 10 slow True'); self.assertIn('Form values bound', out)
         # Reload: the values persist on the card.
         p.reload(); p.wait_for_selector('.node[data-id="cell-1"] .node-form:not([hidden])'); self.assertEqual(p.input_value('#form-cell-1-name'), 'Tanay'); self.assertTrue(p.is_checked('#form-cell-1-loud'))
+
+
+@unittest.skipUnless(HAVE_BROWSER, 'Playwright Chromium not installed')
+class DevicesPageTests(RealServerCase):
+    """Pair a second in-process Lab on the Devices page, start a session there, see it in Resources, run a cell on it."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import os, sys, threading
+        from local_lab.kernel_session import KernelSession
+        from local_lab.runner import KERNEL_DIR
+        from local_lab.server import LabServer, initialize_state
+        def factory(settings, state_dir):
+            return KernelSession([sys.executable, '-I', str(KERNEL_DIR / 'kernel.py')], label='local')
+        cls.server.kernel_factory = factory; cls.server.kernels.factory = factory
+        rstate, rkey = initialize_state(cls.root / 'remote-private')
+        cls.remote = LabServer(('127.0.0.1', 0), rstate, rkey, kernel_factory=factory); threading.Thread(target=cls.remote.serve_forever, daemon=True).start()
+        cls.key_file = cls.root / 'nexus.key'; cls.key_file.write_text(rkey); os.chmod(cls.key_file, 0o600)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.kernels.stop_all(); cls.remote.kernels.stop_all(); cls.remote.shutdown(); cls.remote.server_close(); super().tearDownClass()
+
+    def test_pair_connect_session_and_run_on_device(self):
+        p = self.page
+        p.goto(self.origin + '/devices'); p.wait_for_selector('#devices-main:not([hidden])'); p.wait_for_function("() => document.getElementById('paired-state').textContent === 'None'")
+        self.assertIn('python3 -m local_lab', p.text_content('#install-output'))
+        p.click('#pair'); p.wait_for_selector('#pair-dialog[open]')
+        p.fill('#pair-name', 'nexus'); p.fill('#pair-host', 'nexus'); p.fill('#pair-port', str(self.remote.server_port)); p.fill('#pair-key', '/nope.key'); p.click('#pair-confirm')
+        p.wait_for_function("() => document.getElementById('pair-note').textContent.includes('plain file')")
+        p.fill('#pair-key', str(self.key_file)); p.select_option('#pair-tunnel', 'manual'); p.click('#pair-confirm')
+        p.wait_for_function("() => document.querySelectorAll('#paired tbody tr').length === 1")
+        self.assertIn('not connected', p.inner_text('#paired tbody tr'))
+        p.locator('#paired button[data-act="connect"]').click(); p.wait_for_selector('#connect-dialog[open]'); self.assertIn('manual forward', p.inner_text('#connect-command')); p.click('#connect-confirm')
+        p.wait_for_function("() => document.querySelector('#paired tbody tr').textContent.includes('connected')")
+        p.locator('#paired button[data-act="session"]').click(); p.wait_for_selector('#remote-session-dialog[open]'); p.fill('#remote-session-label', 'main'); p.click('#remote-session-confirm')
+        p.wait_for_function("() => document.getElementById('paired-note').textContent.includes('nexus/main')")
+        # The Graph page shows the device session in Resources; a cell can run on it.
+        p.goto(self.origin + '/graph'); p.wait_for_selector('.node.code'); p.wait_for_function("() => document.querySelectorAll('#sessions-table tbody tr').length === 1")
+        row = p.evaluate("() => [...document.querySelector('#sessions-table tbody tr').children].slice(0, 2).map(td => td.textContent)"); self.assertEqual(row, ['nexus/main', 'nexus'], 'a device session is listed but never made active by itself')
+        p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
+        self.assertIn('nexus/main', p.evaluate("() => [...document.querySelectorAll('#node-session option')].map(o => o.value)"))
+        p.select_option('#node-session', 'nexus/main'); p.wait_for_function("() => document.getElementById('save-state').textContent === 'Saved'")
+        p.click('#run-all')
+        try: p.wait_for_selector('#run-dialog[open]', timeout=8000)
+        except Exception: self.fail('run review did not open: toast=%r save=%r' % (p.inner_text('#toast'), p.inner_text('#save-state')))
+        self.assertIn('runs on "nexus/main"', p.inner_text('#run-dialog-sessions-list')); p.click('#run-dialog-confirm')
+        p.wait_for_function("() => /finished|failed/.test(document.getElementById('run-summary').textContent)", timeout=30000)
+        self.assertEqual(p.inner_text('.node[data-id="cell-1"] .status'), 'ok'); self.assertEqual(len(self.remote.kernels.list()), 1); self.assertEqual(self.remote.kernels.list()[0]['count'], 1, 'the cell ran on the remote Lab')
+        # Terminal on the device session.
+        p.wait_for_function("() => document.getElementById('term-session').options.length >= 1"); p.fill('#term-input', 'echo via-device'); p.press('#term-input', 'Enter')
+        p.wait_for_function("() => document.getElementById('term-output').textContent.includes('via-device')")

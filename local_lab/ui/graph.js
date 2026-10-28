@@ -679,7 +679,7 @@
     $('sessions-note').textContent = resources.sessions.length ? `${resources.sessions.filter(s => s.alive).length} running of at most ${resources.max}. The active one runs cells that do not name a session.` : 'No sessions yet. Start one from the header (Start session) or here with its own limits.';
     for (const s of resources.sessions) {
       const tr = document.createElement('tr'); tr.dataset.id = s.id; tr.classList.toggle('active', !!s.active);
-      const cells = [s.label + (s.active ? ' ★' : ''), s.device === 'this-device' ? 'this Mac' : s.device, s.cpus, s.memory];
+      const cells = [s.label + (s.active ? ' ★' : ''), s.device === 'this-device' ? 'this Mac' : s.device, s.cpus || '?', s.memory || '?'];
       for (const text of cells) { const td = document.createElement('td'); td.textContent = text; tr.append(td); }
       const st = document.createElement('td'); const span = document.createElement('span'); span.className = 'status'; span.dataset.s = sessionState(s); span.textContent = s.alive ? (s.executing ? 'running a cell' : 'ready') : (s.ended ? 'stopped' : 'not started'); span.title = s.ended || (s.image && s.image !== 'base' ? 'image ' + s.image : 'base image'); st.append(span); tr.append(st);
       const act = document.createElement('td'); act.className = 'row-actions';
@@ -695,8 +695,12 @@
     if (act === 'stop' && !window.confirm('Stop this session? Its variables are gone.')) return;
     try { await api('/api/sessions/' + act, {id}); await refreshSessions(); if (act !== 'forget') { const s = await api('/api/kernel'); state.session = s; } renderInspector(); refreshJournal(); if (act === 'select') refreshVariables(); } catch (error) { toast(error.message); }
   });
+  let pairedDevices = [];
+  async function refreshDevicesList() { try { pairedDevices = (await api('/api/devices')).devices; } catch { pairedDevices = []; } }
   $('session-new').addEventListener('click', async () => {
-    await refreshSessions();
+    await refreshSessions(); await refreshDevicesList();
+    const dev = $('session-device'); dev.textContent = ''; const here = document.createElement('option'); here.value = ''; here.textContent = 'This Mac'; dev.append(here);
+    for (const d of pairedDevices.filter(x => x.connected)) { const o = document.createElement('option'); o.value = d.name; o.textContent = d.name + ' (' + d.host + ')'; dev.append(o); }
     const fill = (sel, values, chosen) => { sel.textContent = ''; for (const v of values) { const o = document.createElement('option'); o.value = v; o.textContent = v; o.selected = v === chosen; sel.append(o); } };
     fill($('session-cpus'), resources.options.cpus, resources.defaults.cpus); fill($('session-memory'), resources.options.memory, resources.defaults.memory);
     $('session-label').value = ''; $('session-new-note').textContent = '';
@@ -706,9 +710,10 @@
   $('session-new-cancel').addEventListener('click', () => $('session-new-dialog').close());
   $('session-new-confirm').addEventListener('click', async () => {
     try {
-      const body = {confirm: true, revision: resources.revision, cpus: $('session-cpus').value, memory: $('session-memory').value};
-      const label = $('session-label').value.trim(); if (label) body.label = label;
-      const row = await api('/api/sessions/start', body); $('session-new-dialog').close(); toast(`Session "${row.label}" started.`);
+      const label = $('session-label').value.trim(); const device = $('session-device').value; let row;
+      if (device) { const body = {name: device, confirm: true, cpus: $('session-cpus').value, memory: $('session-memory').value}; if (label) body.label = label; row = await api('/api/devices/session/start', body); }
+      else { const body = {confirm: true, revision: resources.revision, cpus: $('session-cpus').value, memory: $('session-memory').value}; if (label) body.label = label; row = await api('/api/sessions/start', body); }
+      $('session-new-dialog').close(); toast(`Session "${row.label}" started${device ? ' on ' + device : ''}.`);
       await refreshSessions(); state.session = await api('/api/kernel'); renderInspector(); refreshJournal(); if (row.active) refreshVariables();
     } catch (error) { $('session-new-note').textContent = error.message; }
   });
@@ -813,16 +818,25 @@
 
   // ---------------------------------------------------------------- files (read-only)
   let filesState = {root: '', path: '', roots: {}};
+  function filesApi(path) {
+    // Roots are "workspace" (this Mac) or "nexus:workspace" (a connected device); device roots go through /api/devices/files.
+    const [device, root] = filesState.root.includes(':') ? filesState.root.split(':') : [null, filesState.root];
+    const q = `root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`;
+    return device ? api(`/api/devices/${filesState.readMode ? 'files/read' : 'files'}?name=${encodeURIComponent(device)}&${q}`) : api(`/api/files${filesState.readMode ? '/read' : ''}?${q}`);
+  }
   async function refreshFiles(root, path) {
     try {
-      const base = await api('/api/files'); filesState.roots = base.roots;
-      const sel = $('files-root'); const names = Object.keys(base.roots); sel.textContent = '';
-      for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n === 'workspace' ? 'Workspace (read-only in sessions)' : n === 'mainbooks' ? 'Mainbooks' : 'Library'; sel.append(o); }
+      const base = await api('/api/files'); filesState.roots = {...base.roots};
+      await refreshDevicesList();
+      for (const d of pairedDevices.filter(x => x.connected)) { try { const r = await api('/api/devices/files?name=' + encodeURIComponent(d.name)); for (const [k, v] of Object.entries(r.roots || {})) filesState.roots[d.name + ':' + k] = d.name + ': ' + v; } catch {} }
+      const sel = $('files-root'); const names = Object.keys(filesState.roots); sel.textContent = '';
+      const nice = n => n.includes(':') ? n.split(':')[0] + ' · ' + nice(n.split(':')[1]) : (n === 'workspace' ? 'Workspace (read-only in sessions)' : n === 'mainbooks' ? 'Mainbooks' : 'Library');
+      for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = nice(n); sel.append(o); }
       if (!names.length) { $('files-list').textContent = ''; $('files-path').textContent = ''; $('files-note').hidden = false; $('files-up').disabled = true; return; }
       $('files-note').hidden = true;
       filesState.root = root && names.includes(root) ? root : (filesState.root && names.includes(filesState.root) ? filesState.root : names[0]); sel.value = filesState.root;
       filesState.path = path !== undefined ? path : (root === filesState.root ? filesState.path : '');
-      const data = await api('/api/files?root=' + encodeURIComponent(filesState.root) + '&path=' + encodeURIComponent(filesState.path));
+      filesState.readMode = false; const data = await filesApi(filesState.path);
       filesState.path = data.path; $('files-path').textContent = (filesState.roots[filesState.root] || '') + (data.path ? '/' + data.path : ''); $('files-up').disabled = !data.path;
       const list = $('files-list'); list.textContent = '';
       for (const e of data.entries) {
@@ -840,7 +854,7 @@
     const li = event.target.closest('li[data-path]'); if (!li) return;
     if (li.dataset.kind === 'dir') { refreshFiles(filesState.root, li.dataset.path); return; }
     try {
-      const data = await api('/api/files/read?root=' + encodeURIComponent(filesState.root) + '&path=' + encodeURIComponent(li.dataset.path));
+      filesState.readMode = true; const data = await filesApi(li.dataset.path); filesState.readMode = false;
       $('file-dialog-title').textContent = data.path; $('file-dialog-meta').textContent = `${data.size} bytes` + (data.binary ? ' · binary file, no preview' : data.truncated ? ' · first 200 kB shown' : '');
       $('file-dialog-text').textContent = data.binary ? '' : data.text; const openable = !data.binary && !data.truncated && /\.(ipymb|ipynb)$/i.test(data.path);
       $('file-dialog-open').hidden = !openable; $('file-dialog-open').dataset.path = data.path; $('file-dialog').showModal(); $('file-dialog-close').focus();

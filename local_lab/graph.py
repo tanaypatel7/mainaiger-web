@@ -72,7 +72,7 @@ def form_prelude(form):
 
 MODEL_NAME = re.compile(r'^[a-z0-9][a-z0-9._/-]{0,80}(:[a-z0-9][a-z0-9._-]{0,40})?$')
 PLACEHOLDER = re.compile(r'\{\{\s*(var|output)\s*:\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}')
-SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}$')
+SESSION_LABEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,30}(/[A-Za-z0-9][A-Za-z0-9 _-]{0,30})?$')  # "label" or "device/label"
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 BUILTINS = set(dir(builtins))
 

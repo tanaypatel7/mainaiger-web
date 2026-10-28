@@ -459,7 +459,77 @@ decision step of the self-improvement loop in `docs/AI_HARNESS.md`.
 reason, attempt cap and the route are tested against a fake Ollama
 (`tests/test_decide.py`); a real model's answers are unverified here.
 
-## Devices (`/devices`, `local_lab/network.py`, `GET /api/network`)
+## Devices: run cells on another machine (`local_lab/devices.py`, `remote.py`, `/api/devices/*`)
+
+**Plain words.** The other device runs this same code. The Mac reaches it
+through an SSH port-forward and signs in with that Lab's owner key, which you
+copied over yourself into a private file. From then on that device's sessions
+appear in Resources as `device/label`, cells can **Run on** them, and the
+Terminal and Files panels work there. Nothing opens a public port anywhere;
+the remote Lab stays loopback-only on its own machine.
+
+**On the other device (Linux, for example Nexus):**
+
+```bash
+git clone https://github.com/tanaypatel7/mainaiger-web ~/mainaiger-web
+cd ~/mainaiger-web && git checkout feature/persistent-kernel
+python3 -m local_lab --port 8795      # a port other than this Mac's 8794
+```
+
+It prints its owner key path (`~/.local/share/mainaiger-lab/owner.key`).
+Copy that file to the Mac (`scp nexus:~/.local/share/mainaiger-lab/owner.key
+~/.mainaiger/nexus.key && chmod 600 ~/.mainaiger/nexus.key`). Docker on that
+device is needed for sessions there, exactly as on the Mac.
+
+**On the Mac, Devices page → Pair a device…** (`POST /api/devices/pair`):
+name, SSH host (an alias from your `~/.ssh/config` or `user@host`), the port,
+the key file path, and who runs the forward. Pairing writes
+`<state dir>/devices.json` (0600) and validates the key file (owner-owned,
+mode 0600, no symlink); nothing is sent.
+
+**Connect…** (`POST /api/devices/connect {name, confirm}`) shows the exact
+command first:
+
+```
+ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes -L 127.0.0.1:8795:127.0.0.1:8795 nexus
+```
+
+The Lab starts it as a child process (`devices.Tunnel`), waits up to 12 s for
+the port to answer, then signs in (`remote.RemoteLab.login`). `BatchMode=yes`
+means ssh never prompts; your key or agent must already work for that host.
+With "I run it myself" the Lab only signs in to `127.0.0.1:<port>` (use this
+with Tailscale SSH or your own tunnel). The same port is used on both ends
+because the remote Lab checks the `Host` header against its own port.
+**Disconnect** ends the child process; **Forget** removes the pairing.
+
+**Sessions on the device**: Devices page → New session, or the Graph page's
+New session… dialog with Device = that device (`POST
+/api/devices/session/start`). The Lab calls the device's own
+`/api/sessions/start`, then lists the session locally as `nexus/main`
+(`sessions.attach`, a `remote.RemoteKernel` that forwards execute, interrupt,
+variables and stop to the device's `/api/sessions/execute|interrupt|
+variables|stop`). `GET /api/sessions` refreshes device rows each time
+(`sync_remote`); rows of a dropped device show as ended. A device session is
+never made the active session by itself: cells that name no session always
+run here.
+
+**Run on a device**: set Run on = `nexus/main`; the run review lists it; the
+cell's code travels to the device, runs in its container, and the output comes
+back. The receiving Lab journals every piece of code that arrives through its
+API (`session.execute`), and this Mac journals terminal lines and runs as
+usual. Variables stay on the device (the cross-session rule). **Files** can
+browse the device's workspace/Mainbooks/Library roots (`GET
+/api/devices/files`, read-only, same escape rules there); the device's journal
+is readable (`GET /api/devices/journal`).
+
+**Status:** the client, kernel adapter, pairing rules, tunnel lifecycle
+(refused when the port is busy, ssh errors surfaced, timeout), connect/
+disconnect/forget, running a cell on the device, terminal and files there are
+tested with two in-process Labs and a stand-in for ssh (`tests/test_devices.py`,
+`DevicesPageTests` in the browser). A real SSH forward to Nexus and Docker
+sessions there are unverified until you try it.
+
+## Devices page: this device and the tailnet (`local_lab/network.py`, `GET /api/network`)
 
 The fourth page shows **this device** (host name, system, chip, memory, free
 disk, Python, whether Docker and Ollama are present), its **sessions** (the
