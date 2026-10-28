@@ -103,6 +103,15 @@ language, one process model.
 with variables filled in and binds the reply. The Models page gets a streaming
 chat whose "prompt sent" event is the A1 source.
 
+> **Update, later on 27 Oct:** the `MainAIger-Lab-Code.zip` archive (Nexus-hosted
+> MainAIger v0.6 + Lab 0.1) already contains a broker/connector/host device
+> fabric (Phase C) and a source workbench that maps a code tree into a symbol
+> graph with edit, diff and tests (most of B1–B2). `docs/INTEGRATION.md` is the
+> plan to bring it into this repository as `nexus/` and fold it in step by
+> step (I1 devices, I2 document import, I3 run on a device, I4 code map).
+> Phases B and C below are now mostly *porting* work, not new design; Phase A
+> is unchanged.
+
 ## Phase B — Code map: a repository as a graph
 
 **Why second:** this is the capability you described most: seeing the whole of
@@ -187,10 +196,11 @@ distribution, not design.
 
 ## What I recommend doing next, concretely
 
-1. **A1 with the chat-prompt event** (small, connects two existing parts, gives
-   the first "trigger from outside"), then **A2** with the edge-condition model.
-2. **B1 on `local_lab/`** right after, because seeing your own harness as a graph
-   is the quickest way to regain the overview you asked for, and it will show
-   where A1/A2 landed.
+1. **I1 from `docs/INTEGRATION.md`** (the Mac app sees Nexus), after you have
+   run the section-4 trial once by hand so the device link is proven.
+2. **I4 / B1 on `local_lab/`** next, because the source workbench already
+   exists and seeing your own harness as a graph is the quickest way to regain
+   the overview you asked for.
+3. Then **A1** (chat-prompt event) and **A2** (edge conditions with budgets).
 
 Say which of these to start, or what to change, and I will begin there.
