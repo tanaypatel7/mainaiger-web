@@ -243,3 +243,32 @@ class ModelCellTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 doc = self.doc('p'); doc['notebook']['cells'][1]['metadata']['mainaiger']['model'] = bad
                 self.assertEqual(self.req('/api/graph', {'document': doc}, auth)[0], 400)
+
+
+class TerminalTests(unittest.TestCase):
+    def test_command_runs_inside_the_session_and_is_journaled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = sessions_module.SessionRegistry(local_factory, tmp, journal_module.Journal(tmp)); reg.start({'workspace': None, 'cpus': '0.5', 'memory': '256m'}, label='main')
+            try:
+                row, result = reg.command('echo hello && exit 3')
+                self.assertEqual(result['status'], 'ok'); self.assertEqual(result['output'], 'hello\n[exit 3]\n'); self.assertEqual(row['label'], 'main')
+                self.assertEqual([v['name'] for v in reg.active_kernel().variables()], [], 'no helper names leak into the session')
+                self.assertEqual(reg.journal.tail()[-1]['kind'], 'shell.command')
+                for bad in ('', 'x' * 4001, 'a\x00b'):
+                    with self.subTest(bad=bad), self.assertRaises(KernelError): reg.command(bad)
+                reg.stop_all()
+                with self.assertRaises(KernelError): reg.command('ls')
+            finally:
+                reg.stop_all()
+
+
+class TerminalHttpTests(SessionsHttpTests):
+    def test_resources_table_per_cell_run_on_journal_and_files(self):
+        self.skipTest('inherited')
+    def test_terminal_route(self):
+        auth = self.login(); cookie = {'Cookie': auth['Cookie']}
+        self.assertEqual(self.req('/api/sessions/command', {'command': 'ls', 'confirm': True}, auth)[0], 409, 'no session yet')
+        rev = self.req('/api/sessions', headers=cookie)[1]['revision']; s1 = self.req('/api/sessions/start', {'confirm': True, 'revision': rev, 'label': 'main'}, auth)[1]
+        self.assertEqual(self.req('/api/sessions/command', {'command': 'ls'}, auth)[0], 400, 'confirm required')
+        status, data, _ = self.req('/api/sessions/command', {'id': s1['id'], 'command': 'printf hi', 'confirm': True}, auth)
+        self.assertEqual((status, data['result']['output']), (200, 'hi\n[exit 0]\n'))

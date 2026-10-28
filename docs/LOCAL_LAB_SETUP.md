@@ -199,6 +199,18 @@ headless Chromium (`tests/test_canvas_ui.py`, `PanelsOnRealKernelTests`),
 which also runs the six-cell starter ML flow end to end on a real kernel.
 Several Docker containers at once on a Mac is unverified.
 
+### Terminal (`sessions.command`, `POST /api/sessions/command`)
+
+A command line that runs **inside the chosen session's container**: the Lab
+wraps the line in a small Python program (`sessions.shell_program`) that calls
+`subprocess.run(..., shell=True, timeout=50)` through the session's kernel,
+prints stdout, stderr and `[exit N]`, and deletes its helper name afterwards
+so the variables table stays clean. The command therefore has exactly the
+session's powers and no more: no network, read-only workspace, the CPU/memory
+limits, the 60-second cell timeout. It never runs on this Mac. Every line is a
+journal entry (`shell.command`). Tested on a real kernel and in the browser
+(`tests/test_sessions.py`, `PanelsOnRealKernelTests`).
+
 ### Files (`local_lab/files.py`, `GET /api/files`, `GET /api/files/read`)
 
 Read-only browsing of the **workspace** folder (the one mounted into

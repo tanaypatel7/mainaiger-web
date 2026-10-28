@@ -645,7 +645,7 @@
       else act.append(button('quiet small', 'forget', 'Remove this stopped session from the table', '✕'));
       tr.append(act); body.append(tr);
     }
-    renderInspector();
+    renderInspector(); renderTerminalSessions();
   }
   $('sessions-table').addEventListener('click', async event => {
     const b = event.target.closest('button'); if (!b) return; const id = b.closest('tr').dataset.id, act = b.dataset.act;
@@ -706,6 +706,29 @@
     const own = meta(cellOf(sel)); const v = $('node-session').value; if (v) own.session = v; else delete own.session;
     updateNode(sel.id); markDirty();
   });
+
+  // ---------------------------------------------------------------- terminal (inside a session)
+  const termHistory = [];
+  function renderTerminalSessions() {
+    const sel = $('term-session'); const current = sel.value; sel.textContent = '';
+    for (const s of resources.sessions.filter(x => x.alive)) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.label + (s.active ? ' (active)' : ''); sel.append(o); }
+    if ([...sel.options].some(o => o.value === current)) sel.value = current;
+    $('term-run').disabled = !sel.options.length; $('term-input').disabled = !sel.options.length;
+    if (!sel.options.length) $('term-output').textContent = 'Start a session to run commands.';
+  }
+  async function runTerminal() {
+    const command = $('term-input').value.trim(); const id = $('term-session').value; if (!command || !id) return;
+    $('term-run').disabled = true; $('term-output').textContent = '$ ' + command + '\n…';
+    try {
+      const data = await api('/api/sessions/command', {id, command, confirm: true}); const r = data.result;
+      const text = (r.output || '') + (r.error ? (r.error.traceback || []).join('\n') : '') + (r.note ? '\n' + r.note : '');
+      termHistory.unshift('$ ' + command + '\n' + (text || '(no output)')); termHistory.length = Math.min(termHistory.length, 20);
+      $('term-output').textContent = termHistory.join('\n\n'); $('term-input').value = ''; refreshJournal();
+    } catch (error) { $('term-output').textContent = '$ ' + command + '\n' + error.message; }
+    finally { $('term-run').disabled = false; $('term-input').focus(); }
+  }
+  $('term-run').addEventListener('click', runTerminal);
+  $('term-input').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); runTerminal(); } });
 
   // ---------------------------------------------------------------- files (read-only)
   let filesState = {root: '', path: '', roots: {}};

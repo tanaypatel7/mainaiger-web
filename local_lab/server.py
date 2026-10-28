@@ -473,6 +473,13 @@ class LabHandler(BaseHTTPRequestHandler):
                 if label is not None and not isinstance(label,str):raise ValueError('label must be text')
                 try:return self.out(200,self.server.start_kernel(settings,label=label or None))
                 except KernelError as e:return self.out(409,{'error':str(e)})
+            if path=='/api/sessions/command':
+                # A terminal line, run inside the chosen session's container (no network, read-only workspace, limits), never on this device.
+                if set(data)-{'id','command','confirm'} or data.get('confirm') is not True or not isinstance(data.get('command'),str):raise ValueError('Send {command, confirm, id?}')
+                if 'id' in data and not isinstance(data['id'],str):raise ValueError('id must be text')
+                try:row,result=self.server.kernels.command(data['command'],data.get('id'))
+                except (KernelError,ValueError) as e:return self.out(409,{'error':str(e)})
+                return self.out(200,{'session':row,'result':result})
             if path in ('/api/sessions/stop','/api/sessions/interrupt','/api/sessions/select','/api/sessions/forget'):
                 if set(data)!={'id'} or not isinstance(data['id'],str):raise ValueError('Send {id}')
                 try:

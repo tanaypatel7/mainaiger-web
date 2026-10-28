@@ -159,6 +159,36 @@ class SessionRegistry:
                 self.active_id = next((r['id'] for r in self.rows.values() if r['kernel'].alive), None)
         return True
 
+    # ---- shell commands inside a session --------------------------------------
+    @staticmethod
+    def shell_program(command):
+        """Python that runs one shell command inside the session's container and prints what it did.
+        The temporary names are deleted afterwards so the variables table stays clean."""
+        if not isinstance(command, str) or not command.strip() or len(command) > 4000 or '\x00' in command:
+            raise KernelError('Enter one command of up to 4000 characters')
+        return ('def _mainaiger_shell():\n'
+                '    import subprocess\n'
+                '    try:\n'
+                '        r = subprocess.run(%r, shell=True, capture_output=True, text=True, timeout=50)\n'
+                '    except subprocess.TimeoutExpired:\n'
+                '        print("[stopped after 50 s]"); return\n'
+                '    out = r.stdout\n'
+                '    if r.stderr: out += ("\\n" if out and not out.endswith("\\n") else "") + r.stderr\n'
+                '    print(out, end="" if out.endswith("\\n") or not out else "\\n")\n'
+                '    print("[exit %%d]" %% r.returncode)\n'
+                '_mainaiger_shell()\n'
+                'del _mainaiger_shell\n') % (command,)
+
+    def command(self, command, ident=None):
+        """Run a shell command in a session (the active one by default). Returns (row status, result)."""
+        row = self.get(ident) if ident else self.active()
+        if row is None or not row['kernel'].alive:
+            raise KernelError('No running session')
+        program = self.shell_program(command)
+        result = row['kernel'].execute(program)
+        self._log('shell.command', '%s $ %s' % (row['label'], command.strip()[:200]), {'id': row['id'], 'label': row['label'], 'status': result.get('status'), 'command': command.strip()[:500]})
+        return self.row_status(row), result
+
     def stop_all(self):
         with self.lock:
             rows = list(self.rows.values())

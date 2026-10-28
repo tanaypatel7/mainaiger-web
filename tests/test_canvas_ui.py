@@ -259,6 +259,11 @@ class PanelsOnRealKernelTests(RealServerCase):
         p.wait_for_function("() => document.querySelectorAll('#sessions-table tbody tr').length === 2")
         rows = p.evaluate("() => [...document.querySelectorAll('#sessions-table tbody tr')].map(r => [...r.children].slice(0, 4).map(td => td.textContent))")
         self.assertEqual(rows, [['main ★', 'this Mac', '0.5', '256m'], ['worker', 'this Mac', '2', '256m']])
+        # 1b. Terminal: a command runs inside the chosen session and shows its exit code.
+        p.wait_for_function("() => document.getElementById('term-session').options.length === 2")
+        p.select_option('#term-session', label='worker'); p.fill('#term-input', 'echo from-worker && exit 5'); p.press('#term-input', 'Enter')
+        p.wait_for_function("() => document.getElementById('term-output').textContent.includes('[exit 5]')")
+        self.assertIn('from-worker', p.inner_text('#term-output'))
         # 2. Run on: cell-1 names "worker"; the card shows it; the run review lists it; the cell runs there.
         p.locator('.node[data-id="cell-1"] .node-foot').click(); p.wait_for_selector('#node-panel:not([hidden])')
         self.assertEqual(p.evaluate("() => [...document.querySelectorAll('#node-session option')].map(o => o.textContent)"), ['Active session', 'main', 'worker'])
