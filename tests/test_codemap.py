@@ -84,6 +84,22 @@ class CellFromMapTests(unittest.TestCase):
             with self.assertRaisesRegex(codemap.MapError, 'functions and methods'): codemap.cell_for(ids['mod:tools/ops.py'], [])
 
 
+    def test_existing_unrelated_root_does_not_hide_the_mapped_package(self):
+        import subprocess, sys
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp); unrelated = base / 'unrelated'; unrelated.mkdir()
+            root = base / 'checkout'; root.mkdir()
+            (root / 'target.py').write_text('def ping():\n    return "mapped source"\n')
+            node = next(n for n in codemap.scan(root)['nodes'] if n['id'] == 'def:target.py:ping')
+            cell = codemap.cell_for(node, [str(unrelated), str(root)])
+            out = subprocess.run([sys.executable, '-I', '-c', cell['source']], capture_output=True, text=True)
+            self.assertEqual((out.returncode, out.stdout), (0, 'mapped source\n'), out.stderr)
+            missing = codemap.cell_for(node, [str(unrelated)])
+            out = subprocess.run([sys.executable, '-I', '-c', missing['source']], capture_output=True, text=True)
+            self.assertNotEqual(out.returncode, 0)
+            self.assertIn('Mapped source is unavailable in this session', out.stderr)
+
+
 class ReplaceLinesTests(unittest.TestCase):
     def test_diff_then_atomic_write_with_hash_and_parse_checks(self):
         with tempfile.TemporaryDirectory() as tmp:

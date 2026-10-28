@@ -21,17 +21,26 @@ Fill the form on **Task**: what to change, which file, which test module (dotted
 """
 
 COPY = """# Copy the repository into the session's own temporary folder; the workspace stays read-only.
-import os, shutil, sys
-SRC = "/workspace" if os.path.isdir("/workspace") else os.getcwd()
-DST = "/tmp/mainaiger-repo"
+import os, shutil, sys, tempfile
+# Docker sessions already start in their approved workspace. Do not select an
+# unrelated /workspace merely because that path also exists on the host.
+SRC = os.getcwd()
+if os.path.isabs(file) or ".." in file.replace(chr(92), "/").split("/"):
+    raise ValueError("file must be a relative path inside the repository")
+if not os.path.isfile(os.path.join(SRC, file)):
+    raise ValueError("the file %r is not in the session's current workspace" % file)
+# Separate runs must never remove or modify each other's test copy.
+repo_copy = tempfile.TemporaryDirectory(prefix="mainaiger-repo-")
+DST = repo_copy.name
 SKIP = {".git", "node_modules", "__pycache__", "dist", ".venv", "venv", ".pytest_cache", "build"}
-shutil.rmtree(DST, ignore_errors=True)
 copied = 0
 for root, dirs, files in os.walk(SRC):
-    dirs[:] = [d for d in dirs if d not in SKIP]
+    dirs[:] = [d for d in dirs if d not in SKIP and not os.path.islink(os.path.join(root, d))]
     rel = os.path.relpath(root, SRC)
     os.makedirs(os.path.join(DST, rel) if rel != "." else DST, exist_ok=True)
     for name in files:
+        if os.path.islink(os.path.join(root, name)):
+            continue
         try:
             shutil.copy2(os.path.join(root, name), os.path.join(DST, rel, name) if rel != "." else os.path.join(DST, name))
             copied += 1

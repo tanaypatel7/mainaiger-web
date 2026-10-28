@@ -83,3 +83,7 @@ the website; no website login alone grants access to Nexus resources.
 ## Validation
 
 Homepage asset references, JavaScript syntax, exact approved copy/style/Lab-mark digests, 37 SVG rig paths, fixed loop openings, 444 motion geometry samples, Pause/Resume and 19 authored contrast pairs were checked before upload. Browser review covered eye intermediate frames, themes, narrow controls, keyboard gestures and pointer tickling. Reduced-motion behavior was tested with a simulated media query; host OS preference switching and physical touch-device tests were not performed.
+
+## Reviewed local memory
+
+The development Lab includes a **Memory** page for importing ChatGPT/Claude ZIP or JSON text exports, selecting source messages, reviewing drafts, and searching owner-confirmed memory. Notes, code, tests and Mainbook snapshots remain separate from original chats and do not execute on retrieval. See [docs/MEMORY.md](docs/MEMORY.md) for the workflow, limits and remaining work.
