@@ -166,6 +166,29 @@ process (`tests/test_graph.py`) and the canvas was exercised end to end in a
 headless browser. Running the graph inside Docker on a Mac is the same
 unverified step as the session itself.
 
+### Canvas performance (`local_lab/ui/graph.js`)
+
+How the canvas stays smooth, and where to look if it does not:
+
+- **No forced layout while dragging.** `box()` takes each card's size from a
+  `ResizeObserver` cache (`sizes`) instead of reading `offsetWidth` after every
+  move. Before this change a 30-cell drag forced ~83 layouts per pointermove.
+- **Only affected edges move.** `drawEdges()` rebuilds the SVG only when the set
+  of edges changes; `updateEdgesFor(ids)` re-routes the paths touching moved or
+  resized cards and keeps every other `<path>` as is.
+- **One frame per input burst.** `scheduleFrame()` coalesces pointermove, pan,
+  wheel-zoom and link previews into a single `requestAnimationFrame`.
+- **Selection repaints two cards**, not all of them; edges only change class.
+- **`.world` has `will-change: transform`** so pan/zoom scales a cached raster.
+- **Run polling adapts**: 250 ms right after a cell finishes, backing off to
+  1.5 s while a long cell runs; only cards whose run entry changed repaint.
+
+Measure before touching any of this: `python3 tests/perf/bench_canvas.py 30 mylabel`
+(needs Playwright Chromium) prints per-event JS cost, forced-layout counts and
+frame gaps and writes `tests/perf/results/mylabel.json`.
+`tests/test_canvas_ui.py` checks drag, typing, selection, link-drag and pan/zoom
+behaviour in headless Chromium and is skipped when Playwright is absent.
+
 ## Local models (Ollama)
 
 **Models (Ollama) →** in the Lab header opens `/models`, a second Mainbook:

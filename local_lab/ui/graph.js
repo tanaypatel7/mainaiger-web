@@ -26,7 +26,14 @@
   const nodes = () => state.doc.graph.nodes;
   const edges = () => state.doc.graph.edges;
   const cells = () => state.doc.notebook.cells;
-  const nodeById = id => nodes().find(n => n.id === id);
+  // Lookup caches. The document arrays are the source of truth; these maps only avoid
+  // linear scans and querySelector calls on hot paths. buildNodes() refills them.
+  const nodeIndex = new Map();   // node id -> node object
+  const nodeEls = new Map();     // node id -> <article class="node">
+  const sizes = new Map();       // node id -> {w, h} in world px, kept fresh by a ResizeObserver
+  const edgePaths = new Map();   // edge key -> {path, label, edge}
+  const nodeById = id => nodeIndex.get(id) || nodes().find(n => n.id === id);
+  const elOf = id => nodeEls.get(id) || null;
   const cellOf = node => cells()[node.cell_index];
   const meta = cell => { cell.metadata = cell.metadata || {}; cell.metadata.mainaiger = cell.metadata.mainaiger || {}; return cell.metadata.mainaiger; };
   const sourceOf = cell => Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
@@ -49,8 +56,17 @@
     const fed = new Set(state.dataEdges.filter(e => e.target === id).map(e => e.name));
     return info.inputs.filter(n => !fed.has(n) && !state.variables.has(n));
   }
+  // One observer for every card. When a card changes size (typing grows a textarea, output
+  // arrives, code is collapsed) the browser tells us; we never ask with offsetWidth/offsetHeight
+  // during a drag, because that forces a synchronous layout of the whole canvas.
+  const sizeObserver = new ResizeObserver(entries => {
+    const touched = [];
+    for (const entry of entries) { const id = entry.target.dataset.id; const b = entry.borderBoxSize && entry.borderBoxSize[0]; const w = b ? b.inlineSize : entry.target.offsetWidth, h = b ? b.blockSize : entry.target.offsetHeight; if (!w && !h) continue; sizes.set(id, {w, h}); touched.push(id); }
+    if (touched.length) { scheduleFrame({nodes: touched, layoutNotebook: state.view === 'notebook'}); }
+  });
   function buildNodes() {
     const root = $('nodes'); root.textContent = '';
+    nodeEls.clear(); sizes.clear(); sizeObserver.disconnect(); reindex();
     for (const node of nodes()) {
       const el = document.createElement('article');
       el.className = 'node ' + node.kind + ((node.kind === 'start' || node.kind === 'finish') ? ' terminal' : '');
@@ -75,14 +91,14 @@
       }
       if (node.kind === 'finish') { const foot = document.createElement('div'); foot.className = 'finish-note'; el.append(foot); }
       if (node.kind !== 'finish' && node.kind !== 'markdown') { const pout = document.createElement('span'); pout.className = 'port out'; pout.title = 'Drag to another cell to add a trigger'; el.append(pout); }
-      root.append(el);
+      root.append(el); nodeEls.set(node.id, el); sizeObserver.observe(el, {box: 'border-box'});
       updateNode(node.id);
       placeNode(node.id);
     }
     drawEdges();
   }
   function updateNode(id) {
-    const node = nodeById(id), el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`); if (!node || !el) return;
+    const node = nodeById(id), el = elOf(id); if (!node || !el) return;
     el.querySelector('.node-head b').textContent = titleOf(node);
     el.classList.toggle('selected', state.selected && state.selected.type === 'node' && state.selected.id === id);
     el.classList.toggle('disconnected', state.disconnected.includes(id));
@@ -118,40 +134,90 @@
   }
   function autosize(area) { area.style.height = 'auto'; area.style.height = Math.min(440, Math.max(56, area.scrollHeight + 2)) + 'px'; }
   function placeNode(id) {
-    const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`); if (!el) return;
+    const el = elOf(id); if (!el) return;
     if (state.view === 'notebook') { const n = nodeById(id); if (n.kind === 'start' || n.kind === 'finish') { el.style.display = 'none'; return; } el.style.display = ''; const p = (state.notebookPos || {})[id] || {x: 40, y: 30}; el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; return; }
     el.style.display = ''; const p = position(id); el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
   }
-  function layoutNotebook() { if (state.view !== 'notebook') return; const place = () => { state.notebookPos = notebookPositions(); nodes().forEach(n => placeNode(n.id)); }; place(); requestAnimationFrame(place); }
-  function box(id) { const el = document.querySelector(`.node[data-id="${CSS.escape(id)}"]`), p = (state.view === 'notebook' && state.notebookPos && state.notebookPos[id]) || position(id); return {x: p.x, y: p.y, w: el ? el.offsetWidth : widthOf(nodeById(id)), h: el ? el.offsetHeight : 60}; }
+  function layoutNotebook() { if (state.view !== 'notebook') return; state.notebookPos = notebookPositions(); nodes().forEach(n => placeNode(n.id)); }
+  function box(id) {
+    // Position comes from the document; size comes from the ResizeObserver cache. The one
+    // offsetWidth read below happens only the first time a card is seen, before the observer fires.
+    const p = (state.view === 'notebook' && state.notebookPos && state.notebookPos[id]) || position(id);
+    let s = sizes.get(id);
+    if (!s) { const el = elOf(id); s = el && el.offsetWidth ? {w: el.offsetWidth, h: el.offsetHeight} : {w: widthOf(nodeById(id)), h: 60}; if (el && el.offsetWidth) sizes.set(id, s); }
+    return {x: p.x, y: p.y, w: s.w, h: s.h};
+  }
   function curve(a, b) { const dy = Math.max(40, Math.abs(b.y - a.y) / 2); return `M${a.x} ${a.y} C${a.x} ${a.y + dy} ${b.x} ${b.y - dy} ${b.x} ${b.y}`; }
+  const svgNS = 'http://www.w3.org/2000/svg';
+  function edgeGeometry(entry) {
+    // Where an edge starts and ends, in world px. Control edges leave the bottom centre of the
+    // source; data edges leave near the right so the two kinds do not overlap.
+    const a = box(entry.edge.source), b = box(entry.edge.target);
+    if (entry.kind === 'control') return {start: {x: a.x + a.w / 2, y: a.y + a.h}, end: {x: b.x + b.w / 2, y: b.y}};
+    return {start: {x: a.x + a.w - 28, y: a.y + a.h}, end: {x: b.x + b.w - 28, y: b.y}};
+  }
+  function positionEdge(entry) {
+    const g = edgeGeometry(entry); entry.path.setAttribute('d', curve(g.start, g.end));
+    if (entry.label) { entry.label.setAttribute('x', (g.start.x + g.end.x) / 2 + 6); entry.label.setAttribute('y', (g.start.y + g.end.y) / 2); }
+  }
+  function edgeClass(entry) {
+    if (entry.kind !== 'control') return 'edge data';
+    const fired = state.run && state.run.fired && state.run.fired.includes(entry.edge.id);
+    const selected = state.selected && state.selected.type === 'edge' && state.selected.id === entry.edge.id;
+    return 'edge control' + (fired ? ' fired' : '') + (selected ? ' selected' : '');
+  }
   function drawEdges() {
-    const layer = $('edge-layer'); layer.textContent = '';
+    // Full rebuild: used when the set of edges changes (save, add/delete, data-edge toggle, view switch).
+    // Moving nodes does not come here; it goes through updateEdgesFor().
+    const layer = $('edge-layer'); layer.textContent = ''; edgePaths.clear();
     if (state.view === 'notebook') return;
-    const fired = new Set(state.run ? state.run.fired : []);
-    const svgNS = 'http://www.w3.org/2000/svg';
-    for (const edge of edges().filter(e => e.kind === 'control')) {
-      const a = box(edge.source), b = box(edge.target);
-      const path = document.createElementNS(svgNS, 'path');
-      path.setAttribute('d', curve({x: a.x + a.w / 2, y: a.y + a.h}, {x: b.x + b.w / 2, y: b.y}));
-      path.setAttribute('class', 'edge control' + (fired.has(edge.id) ? ' fired' : '') + (state.selected && state.selected.type === 'edge' && state.selected.id === edge.id ? ' selected' : ''));
-      path.dataset.id = edge.id; layer.append(path);
+    for (const edge of edges()) {
+      if (edge.kind !== 'control') continue;
+      const path = document.createElementNS(svgNS, 'path'); path.dataset.id = edge.id;
+      const entry = {kind: 'control', edge, path, label: null}; edgePaths.set('c:' + edge.id, entry);
+      path.setAttribute('class', edgeClass(entry)); positionEdge(entry); layer.append(path);
     }
-    if ($('show-data').checked) for (const edge of state.dataEdges) {
-      const a = box(edge.source), b = box(edge.target);
-      const path = document.createElementNS(svgNS, 'path');
-      const start = {x: a.x + a.w - 28, y: a.y + a.h}, end = {x: b.x + b.w - 28, y: b.y};
-      path.setAttribute('d', curve(start, end)); path.setAttribute('class', 'edge data'); layer.append(path);
-      const label = document.createElementNS(svgNS, 'text'); label.setAttribute('class', 'edge-label');
-      label.setAttribute('x', (start.x + end.x) / 2 + 6); label.setAttribute('y', (start.y + end.y) / 2); label.textContent = edge.name; layer.append(label);
-    }
+    if ($('show-data').checked) state.dataEdges.forEach((edge, i) => {
+      const path = document.createElementNS(svgNS, 'path'); path.setAttribute('class', 'edge data');
+      const label = document.createElementNS(svgNS, 'text'); label.setAttribute('class', 'edge-label'); label.textContent = edge.name;
+      const entry = {kind: 'data', edge, path, label}; edgePaths.set('d:' + i, entry);
+      positionEdge(entry); layer.append(path, label);
+    });
+  }
+  function updateEdgesFor(ids) {
+    // Re-route only the edges that touch these nodes; everything else keeps its existing <path>.
+    if (state.view === 'notebook') return;
+    const set = ids instanceof Set ? ids : new Set(ids);
+    for (const entry of edgePaths.values()) if (set.has(entry.edge.source) || set.has(entry.edge.target)) positionEdge(entry);
+  }
+  function restyleEdges() { for (const entry of edgePaths.values()) if (entry.kind === 'control') entry.path.setAttribute('class', edgeClass(entry)); }
+  // One animation frame per burst of input. pointermove can arrive at 120+ Hz on a Mac; the
+  // screen only shows 60-120 frames a second, so we note what changed and apply it once per frame.
+  const frame = {pending: false, nodes: new Set(), viewport: false, layoutNotebook: false, link: null};
+  function scheduleFrame(work) {
+    if (work.nodes) for (const id of work.nodes) frame.nodes.add(id);
+    if (work.viewport) frame.viewport = true;
+    if (work.layoutNotebook) frame.layoutNotebook = true;
+    if (work.link) frame.link = work.link;
+    if (frame.pending) return;
+    frame.pending = true;
+    requestAnimationFrame(() => {
+      frame.pending = false;
+      const ids = [...frame.nodes]; frame.nodes.clear();
+      if (frame.layoutNotebook) { frame.layoutNotebook = false; layoutNotebook(); }
+      else for (const id of ids) placeNode(id);
+      if (ids.length) updateEdgesFor(ids);
+      if (frame.viewport) { frame.viewport = false; applyViewport(); }
+      if (frame.link) { const l = frame.link; frame.link = null; const b = box(l.source); $('pending-edge').setAttribute('d', curve({x: b.x + b.w / 2, y: b.y + b.h}, l.point)); }
+    });
   }
   function applyViewport() { $('world').style.transform = `translate(${state.pan.x}px,${state.pan.y}px) scale(${state.zoom})`; $('zoom-label').textContent = Math.round(state.zoom * 100) + '%'; state.doc.layout.viewport = {x: state.pan.x, y: state.pan.y, zoom: state.zoom}; }
   function worldPoint(event) { const r = $('viewport').getBoundingClientRect(); return {x: (event.clientX - r.left - state.pan.x) / state.zoom, y: (event.clientY - r.top - state.pan.y) / state.zoom}; }
 
   // ---------------------------------------------------------------- view state from server
+  function reindex() { nodeIndex.clear(); for (const n of nodes()) nodeIndex.set(n.id, n); }
   function applyView(view) {
-    if (view.document) state.doc = view.document;
+    if (view.document) { state.doc = view.document; reindex(); }
     state.analysis = view.analysis || {}; state.dataEdges = view.data_edges || []; state.order = view.order || []; state.disconnected = view.disconnected || []; state.revision = view.revision;
     if (view.session) state.session = view.session; if (view.csrf) state.csrf = view.csrf; if ('run' in view && view.run) state.run = view.run;
   }
@@ -163,7 +229,12 @@
   }
 
   // ---------------------------------------------------------------- selection + inspector
-  function select(type, id) { state.selected = type ? {type, id} : null; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector(); $('delete').disabled = !state.selected || (type === 'node' && (nodeById(id).kind === 'start' || nodeById(id).kind === 'finish')); const code = type === 'node' && nodeById(id).kind === 'code'; $('run-from').disabled = !code; $('run-one').disabled = !code; }
+  function select(type, id) {
+    const before = state.selected; state.selected = type ? {type, id} : null;
+    // Only the two cards whose selection state changed need repainting; edges change class only.
+    if (before && before.type === 'node') updateNode(before.id);
+    if (type === 'node') updateNode(id);
+    restyleEdges(); renderInspector(); $('delete').disabled = !state.selected || (type === 'node' && (nodeById(id).kind === 'start' || nodeById(id).kind === 'finish')); const code = type === 'node' && nodeById(id).kind === 'code'; $('run-from').disabled = !code; $('run-one').disabled = !code; }
   function chips(container, names, missing) { container.textContent = ''; if (!names.length) { container.textContent = '—'; return; } for (const n of names) { const c = document.createElement('span'); c.className = 'chip' + (missing && missing.has(n) ? ' missing' : ''); c.textContent = n; container.append(c); } }
   function renderInspector() {
     const panel = $('node-panel'); const sel = state.selected && state.selected.type === 'node' ? nodeById(state.selected.id) : null;
@@ -190,7 +261,7 @@
     $('session-start').disabled = alive; $('session-stop').disabled = !alive; $('session-interrupt').disabled = !alive || !state.session.executing;
     const running = state.run && (state.run.state === 'running' || state.run.state === 'pending');
     $('run-cancel').disabled = !running; $('run-all').disabled = !!running; $('variables-refresh').disabled = !alive || !!state.session.executing;
-    document.querySelectorAll('.node textarea').forEach(a => { a.readOnly = !!running; });
+    if (state.readOnly !== !!running) { state.readOnly = !!running; document.querySelectorAll('.node textarea').forEach(a => { a.readOnly = !!running; }); }
   }
 
   // ---------------------------------------------------------------- editing
@@ -263,39 +334,47 @@
     if (event.button !== 0) return;
     if (event.target.closest('button')) return;  // header buttons keep their click; no drag, no capture
     if (state.view === 'notebook') { if (nodeEl) select('node', nodeEl.dataset.id); else if (!edgeEl) select(null); return; }  // notebook view: no dragging or linking
-    if (portOut) { const id = nodeEl.dataset.id; state.linking = {source: id}; viewport.classList.add('linking'); viewport.setPointerCapture(event.pointerId); const p = worldPoint(event); $('pending-edge').hidden = false; $('pending-edge').setAttribute('d', curve({x: box(id).x + box(id).w / 2, y: box(id).y + box(id).h}, p)); event.preventDefault(); return; }
+    if (portOut) { const id = nodeEl.dataset.id; state.linking = {source: id}; viewport.classList.add('linking'); viewport.setPointerCapture(event.pointerId); const p = worldPoint(event); $('pending-edge').style.display = ''; $('pending-edge').setAttribute('d', curve({x: box(id).x + box(id).w / 2, y: box(id).y + box(id).h}, p)); event.preventDefault(); return; }
     if (head) { const id = nodeEl.dataset.id; select('node', id); const p = worldPoint(event), pos = position(id); state.dragging = {id, dx: p.x - pos.x, dy: p.y - pos.y}; viewport.setPointerCapture(event.pointerId); event.preventDefault(); return; }
     if (nodeEl) { select('node', nodeEl.dataset.id); return; }  // clicks inside textarea/output keep their default behavior
     if (edgeEl) { select('edge', edgeEl.dataset.id); return; }
     select(null); state.panning = {x: event.clientX - state.pan.x, y: event.clientY - state.pan.y}; viewport.classList.add('panning'); viewport.setPointerCapture(event.pointerId);
   });
   viewport.addEventListener('pointermove', event => {
-    if (state.dragging) { const p = worldPoint(event); const pos = position(state.dragging.id); pos.x = Math.round(p.x - state.dragging.dx); pos.y = Math.round(p.y - state.dragging.dy); placeNode(state.dragging.id); drawEdges(); return; }
-    if (state.linking) { const p = worldPoint(event); const b = box(state.linking.source); $('pending-edge').setAttribute('d', curve({x: b.x + b.w / 2, y: b.y + b.h}, p)); document.querySelectorAll('.port.target').forEach(x => x.classList.remove('target')); const under = document.elementFromPoint(event.clientX, event.clientY); const target = under && under.closest('.node'); if (target && target.dataset.id !== state.linking.source) { const pin = target.querySelector('.port.in'); if (pin) pin.classList.add('target'); } return; }
-    if (state.panning) { state.pan = {x: event.clientX - state.panning.x, y: event.clientY - state.panning.y}; applyViewport(); }
+    // Handlers only record where the pointer is; scheduleFrame() applies it once per frame.
+    if (state.dragging) { const p = worldPoint(event); const pos = position(state.dragging.id); pos.x = Math.round(p.x - state.dragging.dx); pos.y = Math.round(p.y - state.dragging.dy); scheduleFrame({nodes: [state.dragging.id]}); return; }
+    if (state.linking) {
+      scheduleFrame({link: {source: state.linking.source, point: worldPoint(event)}});
+      const under = document.elementFromPoint(event.clientX, event.clientY); const target = under && under.closest('.node'); const id = target && target.dataset.id !== state.linking.source ? target.dataset.id : null;
+      if (id !== state.linking.hover) { const old = state.linking.hover && elOf(state.linking.hover); if (old) { const pin = old.querySelector('.port.in'); if (pin) pin.classList.remove('target'); } state.linking.hover = id; const pin = id && elOf(id).querySelector('.port.in'); if (pin) pin.classList.add('target'); }
+      return;
+    }
+    if (state.panning) { state.pan = {x: event.clientX - state.panning.x, y: event.clientY - state.panning.y}; scheduleFrame({viewport: true}); }
   });
   function endPointer(event) {
-    if (state.dragging) { state.dragging = null; markDirty(); }
-    if (state.linking) { const under = document.elementFromPoint(event.clientX, event.clientY); const target = under && under.closest('.node'); $('pending-edge').hidden = true; document.querySelectorAll('.port.target').forEach(x => x.classList.remove('target')); if (target) addControlEdge(state.linking.source, target.dataset.id); state.linking = null; viewport.classList.remove('linking'); }
-    if (state.panning) { state.panning = null; viewport.classList.remove('panning'); markDirty(); }
+    if (state.dragging) { const id = state.dragging.id; state.dragging = null; placeNode(id); updateEdgesFor([id]); markDirty(); }
+    if (state.linking) { const under = document.elementFromPoint(event.clientX, event.clientY); const target = under && under.closest('.node'); $('pending-edge').style.display = 'none'; $('pending-edge').setAttribute('d', ''); frame.link = null; document.querySelectorAll('.port.target').forEach(x => x.classList.remove('target')); if (target) addControlEdge(state.linking.source, target.dataset.id); state.linking = null; viewport.classList.remove('linking'); }
+    if (state.panning) { state.panning = null; viewport.classList.remove('panning'); applyViewport(); markDirty(); }
   }
   viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', endPointer);
   viewport.addEventListener('wheel', event => {
     if (event.target.closest('textarea, .node-output')) return;
     event.preventDefault();
-    if (state.view === 'notebook') { state.pan.y = Math.min(0, state.pan.y - event.deltaY); applyViewport(); return; }
+    if (state.view === 'notebook') { state.pan.y = Math.min(0, state.pan.y - event.deltaY); scheduleFrame({viewport: true}); return; }
     const factor = Math.exp(-event.deltaY * 0.0015); const zoom = Math.max(0.2, Math.min(2.5, state.zoom * factor));
     const r = viewport.getBoundingClientRect(), mx = event.clientX - r.left, my = event.clientY - r.top;
-    state.pan = {x: mx - (mx - state.pan.x) * (zoom / state.zoom), y: my - (my - state.pan.y) * (zoom / state.zoom)}; state.zoom = zoom; applyViewport();
+    state.pan = {x: mx - (mx - state.pan.x) * (zoom / state.zoom), y: my - (my - state.pan.y) * (zoom / state.zoom)}; state.zoom = zoom; scheduleFrame({viewport: true});
   }, {passive: false});
   $('nodes').addEventListener('input', event => {
-    const area = event.target.closest('textarea'); if (!area) return; const node = nodeById(area.closest('.node').dataset.id); cellOf(node).source = area.value; autosize(area); updateNode(node.id); drawEdges(); layoutNotebook(); markDirty();
+    // A keystroke touches one card. autosize may change its height; the ResizeObserver then
+    // re-routes only that card's edges (and re-stacks the notebook view) on the next frame.
+    const area = event.target.closest('textarea'); if (!area) return; const node = nodeById(area.closest('.node').dataset.id); cellOf(node).source = area.value; updateNode(node.id); markDirty();
   });
   $('nodes').addEventListener('click', event => {
     const button = event.target.closest('.node-run, .node-toggle'); if (!button) return; const id = button.closest('.node').dataset.id; const act = button.dataset.act;
     if (act === 'all') { reviewRun('all', []); return; }
     if (act === 'add') { select('node', id); addNode('code'); return; }
-    if (button.classList.contains('node-toggle')) { const own = meta(cellOf(nodeById(id))); own.collapsed = own.collapsed || {}; own.collapsed[act] = !own.collapsed[act]; updateNode(id); drawEdges(); layoutNotebook(); markDirty(); return; }
+    if (button.classList.contains('node-toggle')) { const own = meta(cellOf(nodeById(id))); own.collapsed = own.collapsed || {}; own.collapsed[act] = !own.collapsed[act]; updateNode(id); markDirty(); return; }
     select('node', id); reviewRun(act, [id]);
   });
   document.addEventListener('keydown', event => {
@@ -451,11 +530,28 @@
     catch (error) { toast(error.message); }
   });
   $('run-cancel').addEventListener('click', async () => { try { await api('/api/graph/cancel', {}); toast('Cancelling after the current cell…'); } catch (error) { toast(error.message); } });
+  function applyRunSnapshot(run) {
+    // Repaint only the cards whose run entry changed since the last snapshot, and restyle edges
+    // (the "fired" class) without rebuilding them.
+    const before = state.run; state.run = run;
+    const changed = new Set();
+    const ids = new Set([...(before ? Object.keys(before.nodes) : []), ...(run ? Object.keys(run.nodes) : [])]);
+    for (const id of ids) { const a = before && before.nodes[id], b = run && run.nodes[id]; if (JSON.stringify(a) !== JSON.stringify(b)) changed.add(id); }
+    const finish = nodes().find(n => n.kind === 'finish'); if (finish) changed.add(finish.id);
+    for (const id of changed) updateNode(id);
+    restyleEdges();
+    return changed.size > 1;
+  }
   async function poll() {
     clearTimeout(state.pollTimer);
     try {
-      const data = await api('/api/graph/run'); state.run = data.run; state.session = data.session || state.session; nodes().forEach(n => updateNode(n.id)); drawEdges(); renderInspector();
-      if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) { state.pollTimer = setTimeout(poll, 500); return; }
+      const data = await api('/api/graph/run'); state.session = data.session || state.session; const moved = applyRunSnapshot(data.run); renderInspector();
+      if (state.run && (state.run.state === 'running' || state.run.state === 'pending')) {
+        // Poll quickly right after something changed (a cell just finished), back off while a long cell runs.
+        state.pollDelay = moved ? 250 : Math.min(1500, (state.pollDelay || 250) * 1.5);
+        state.pollTimer = setTimeout(poll, state.pollDelay); return;
+      }
+      state.pollDelay = 250;
       const view = await api('/api/graph'); const run = state.run; applyView(view); state.run = run; nodes().forEach(n => updateNode(n.id)); layoutNotebook(); drawEdges(); renderInspector(); refreshVariables();
       toast(state.run ? `Run ${state.run.state}${state.run.error ? ': ' + state.run.error : ''}` : 'Run finished');
       if (state.dirty) save();

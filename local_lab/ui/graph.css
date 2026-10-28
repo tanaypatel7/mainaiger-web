@@ -14,13 +14,13 @@ button.small{padding:6px 12px;font-size:13px}
 .save-state{font-size:12px;color:var(--muted);margin-left:6px}.save-state[data-state="dirty"]{color:var(--warn)}.save-state[data-state="error"]{color:var(--err)}
 .workspace{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:0}
 .viewport{position:relative;overflow:hidden;background:var(--soft);background-image:radial-gradient(var(--line) 1px,transparent 1px);background-size:24px 24px;cursor:grab;outline:none}.viewport.panning{cursor:grabbing}.viewport.linking{cursor:crosshair}
-.world{position:absolute;left:0;top:0;transform-origin:0 0;width:0;height:0}
+.world{position:absolute;left:0;top:0;transform-origin:0 0;width:0;height:0;will-change:transform}
 .edges{position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible;pointer-events:none}
 .edges path{fill:none;pointer-events:stroke}
 .edge.control{stroke:var(--muted);stroke-width:2;marker-end:url(#arrow)}.edge.control.selected{stroke:var(--purple);stroke-width:3}
 .edge.data{stroke:var(--data);stroke-width:1.5;stroke-dasharray:5 4;opacity:.75}
 .edge.fired{stroke:var(--ok);stroke-width:3;marker-end:url(#arrow-fired);stroke-dasharray:10 6;animation:flow 1.2s linear infinite}
-.edge.pending{stroke:var(--purple);stroke-width:2;stroke-dasharray:6 4}
+.edge.pending{stroke:var(--purple);stroke-width:2;stroke-dasharray:6 4;pointer-events:none}
 #arrow path{fill:var(--muted)}#arrow-fired path{fill:var(--ok)}
 .edge-label{font-size:11px;fill:var(--data);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;paint-order:stroke;stroke:var(--soft);stroke-width:4px;stroke-linejoin:round}
 @keyframes flow{to{stroke-dashoffset:-32}}
