@@ -42,6 +42,11 @@ class SchemaTests(unittest.TestCase):
         for bad in ({}, {'type': 'array'}, {'properties': {'a b': {}}}, {'properties': {'a': {'type': 'blob'}}}, {'properties': {'a': {'enum': []}}}, {'properties': {'a': {}}, 'required': ['zzz']},
                     {'properties': {('p%d' % i): {} for i in range(21)}}):
             with self.subTest(bad=bad), self.assertRaises(decide.DecisionError): decide.check_schema(bad)
+    def test_min_length_rejects_a_fence_tag_where_code_was_asked(self):
+        # Seen on a Mac with llama3.2:1b: "source": "python" for a whole training cell.
+        s = decide.check_schema({'type': 'object', 'properties': {'source': {'type': 'string', 'minLength': 40}}})
+        self.assertIn('too short', decide.validate({'source': 'python'}, s)); self.assertIn('too short', decide.validate({'source': ' ' * 50}, s))
+        self.assertIsNone(decide.validate({'source': 'x = 1\n' * 10}, s))
     def test_extract_json(self):
         self.assertEqual(decide.extract_json('{"a": 1}'), {'a': 1})
         self.assertEqual(decide.extract_json('```json\n{"a": 1}\n```'), {'a': 1})

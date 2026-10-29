@@ -628,7 +628,10 @@ object reaches the code that acts on it. `decide.ask(model, question, context,
 schema, chat=...)` takes any chat function with `models.chat`'s signature, so
 the same decision runs on Ollama today and on an OpenAI-compatible endpoint
 (ASU Sol) once a provider is added. Budgets: question ≤ 4 kB, context ≤ 24 kB,
-at most 3 attempts. Each call is one journal line (`model.decide`).
+at most 3 attempts. Schemas may set `minLength` on a string: the second Mac
+run showed a 1B model answering `"source": "python"` (a fence tag) where a
+whole cell was asked for; now the shape check refuses it and the model is
+told why, once. Each call is one journal line (`model.decide`).
 
 Example: "Given this diff and these test results, keep or revert?" with
 `{action: keep|revert|ask, confidence: number, reasons: string[≤3]}` is the

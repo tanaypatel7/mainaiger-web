@@ -37,7 +37,7 @@ class DecisionError(ValueError):
 
 def check_schema(schema, _nested=False):
     """Accept a small subset of JSON Schema: an object with typed properties, enums, required,
-    maxLength, maxItems, items of a simple type or (one level down) a flat object. Returns the normalised schema."""
+    minLength/maxLength, maxItems, items of a simple type or (one level down) a flat object. Returns the normalised schema."""
     if not isinstance(schema, dict) or schema.get('type', 'object') != 'object' or not isinstance(schema.get('properties'), dict):
         raise DecisionError('schema must be {"type": "object", "properties": {...}}')
     props = schema['properties']
@@ -59,6 +59,8 @@ def check_schema(schema, _nested=False):
             clean['description'] = spec['description'][:300]
         if 'maxLength' in spec and isinstance(spec['maxLength'], int) and spec['maxLength'] > 0:
             clean['maxLength'] = spec['maxLength']
+        if 'minLength' in spec and isinstance(spec['minLength'], int) and spec['minLength'] > 0:
+            clean['minLength'] = spec['minLength']  # a small model may answer a fence tag ("python") where code was asked for
         if kind == 'array':
             items = spec.get('items', {'type': 'string'})
             if isinstance(items, dict) and items.get('type') == 'object' and not _nested:
@@ -103,6 +105,8 @@ def validate(value, schema):
             return 'field "%s" must be one of %s' % (name, ', '.join(json.dumps(e) for e in spec['enum']))
         if kind == 'string' and 'maxLength' in spec and len(v) > spec['maxLength']:
             return 'field "%s" is longer than %d characters' % (name, spec['maxLength'])
+        if kind == 'string' and 'minLength' in spec and len(v.strip()) < spec['minLength']:
+            return 'field "%s" is too short: at least %d characters of real content are needed' % (name, spec['minLength'])
         if kind == 'array':
             if 'maxItems' in spec and len(v) > spec['maxItems']:
                 return 'field "%s" has more than %d items' % (name, spec['maxItems'])

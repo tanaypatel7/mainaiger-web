@@ -267,10 +267,10 @@ def available(python=None, refresh=False):
     cached = _AVAILABLE.get(python)
     if cached and not refresh and time.time() - cached['checked'] < 300:
         return cached
-    probe = ('import json, os\n'
+    probe = ('import json, os, importlib.metadata\n'
              'try:\n    import playwright\n    from playwright.sync_api import sync_playwright\nexcept Exception as e:\n    print(json.dumps({"playwright": False, "chromium": False, "detail": str(e)[:200]})); raise SystemExit\n'
              'with sync_playwright() as p:\n    path = p.chromium.executable_path\n'
-             'print(json.dumps({"playwright": True, "chromium": bool(path) and os.path.exists(path), "version": getattr(playwright, "__version__", ""), "detail": path}))\n')
+             'print(json.dumps({"playwright": True, "chromium": bool(path) and os.path.exists(path), "version": importlib.metadata.version("playwright"), "detail": path}))\n')
     out = {'python': python, 'playwright': False, 'chromium': False, 'version': '', 'detail': '', 'checked': time.time(),
            'install': ['%s -m pip install playwright' % python, '%s -m playwright install chromium' % python]}
     try:

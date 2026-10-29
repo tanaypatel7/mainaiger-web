@@ -143,7 +143,8 @@
         "properties": {
          "source": {
           "type": "string",
-          "description": "the complete new training cell"
+          "minLength": 40,
+          "description": "the complete new training cell: every line of Python, not a language name or a fragment"
          },
          "why": {
           "type": "string",
@@ -159,7 +160,7 @@
       }
      }
     },
-    "source": "You improve a small machine-learning training cell written in plain Python (standard library only, no numpy).\nHere are the baseline metrics the current cell achieved:\n{{output:Evaluate}}\n\nWhat the previous attempt did, if there was one (do not propose the same change again):\n{{output:Apply to copy}}\n\nHere is the current training cell. It must keep defining `model` as a dict with \"weights\", \"bias\" and a \"predict\" function taking one feature list and returning 0 or 1. It may use the variables X_train and y_train only.\n----\nimport math\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.01\nfor epoch in range(10):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n----\nPropose ONE small change that might improve accuracy (for example the learning rate, the number of epochs, or feature scaling inside the loop). Return the complete new cell source and one sentence why.",
+    "source": "You improve a small machine-learning training cell written in plain Python (standard library only, no numpy).\nHere are the baseline metrics the current cell achieved:\n{{output:Evaluate}}\n\nWhat the previous attempt did, if there was one (do not propose the same change again):\n{{output:Apply to copy}}\n\nReturn the whole rewritten cell in \"source\": every line of Python, ready to run; a language name or a fragment is not a cell. Here is the current training cell. It must keep defining `model` as a dict with \"weights\", \"bias\" and a \"predict\" function taking one feature list and returning 0 or 1. It may use the variables X_train and y_train only.\n----\nimport math\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.01\nfor epoch in range(10):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n----\nPropose ONE small change that might improve accuracy (for example the learning rate, the number of epochs, or feature scaling inside the loop). Return the complete new cell source and one sentence why.",
     "execution_count": null,
     "outputs": []
    },
