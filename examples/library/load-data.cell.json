@@ -1,0 +1,18 @@
+{
+ "format": "mainaiger-cell",
+ "schema_version": 1,
+ "name": "load-data",
+ "title": "Load data",
+ "cell_type": "code",
+ "source": "import random\nrandom.seed(7)\n# Synthetic dataset: two blobs in 2-D. Replace with a real loader; keep `rows` as [(features, label), ...].\nrows = []\nfor _ in range(200):\n    label = random.randint(0, 1)\n    centre = (0.0, 0.0) if label == 0 else (2.0, 1.5)\n    rows.append(([random.gauss(centre[0], 1.0), random.gauss(centre[1], 1.0)], label))\nprint(f\"loaded {len(rows)} rows, {sum(r[1] for r in rows)} positive\")\n",
+ "inputs": [],
+ "outputs": [
+  "rows"
+ ],
+ "tags": [
+  "ml",
+  "data"
+ ],
+ "description": "Builds a small synthetic two-class dataset with the standard library only (no files, no network). Replace the body with your own loader; keep the name `rows`: a list of (features, label).",
+ "version": 1
+}

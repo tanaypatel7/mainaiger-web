@@ -1,0 +1,21 @@
+/* Code map: columns of modules, small nodes, four edge kinds. Reuses graph.css for the frame. */
+.mnode{position:absolute;box-sizing:border-box;height:24px;line-height:22px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;user-select:none}
+.mnode.module{font-weight:700;background:var(--soft);border-color:var(--muted);height:26px;line-height:24px}
+.mnode.module::before{content:'▾ ';opacity:.6}.mnode.module.collapsed::before{content:'▸ '}
+.mnode.class{font-weight:600}.mnode.method{padding-left:18px;color:var(--ink)}.mnode.function{padding-left:10px}
+.mnode.route{background:#fff6e5;border-color:#d8a24a;color:#7a4b00}.mnode.ui{background:#eef6ff;border-color:#5c8fd6;color:#1d4e8f}
+@media(prefers-color-scheme:dark){.mnode.route{background:#3a2a10;color:#f1c98a}.mnode.ui{background:#12263d;color:#9fc3f0}}
+.mnode.selected{outline:2px solid var(--purple);outline-offset:-1px}.mnode.dim{opacity:.25}.mnode.hit{box-shadow:0 0 0 2px #e0b84a}
+.mcol-title{position:absolute;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+.edges path.map-calls{stroke:#6747a6;stroke-width:1.2;fill:none;opacity:.55}.edges path.map-imports{stroke:#2a8a5a;stroke-width:1.2;fill:none;opacity:.5;stroke-dasharray:4 3}
+.edges path.map-routes{stroke:#d8a24a;stroke-width:1.4;fill:none;opacity:.8}.edges path.map-ui{stroke:#5c8fd6;stroke-width:1.2;fill:none;opacity:.7;stroke-dasharray:2 3}
+.edges path.lit{opacity:1;stroke-width:2.2}.edges path.faded{opacity:.06}
+.legend .line.map-calls{border-top:2px solid #6747a6}.legend .line.map-imports{border-top:2px dashed #2a8a5a}.legend .line.map-routes{border-top:2px solid #d8a24a}.legend .line.map-ui{border-top:2px dotted #5c8fd6}
+.map-source{max-height:40vh;font-size:11.5px}#sel-links a{display:block;color:var(--purple);text-decoration:none;cursor:pointer}#sel-links b{display:block;margin-top:6px}
+#map-search{width:180px}
+.mnode.route{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}
+
+.map-editor{width:100%;min-height:200px;max-height:50vh;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;line-height:1.4;tab-size:4;resize:vertical;margin-top:6px}
+.map-diff{max-height:50vh;font-size:11.5px;white-space:pre}
+
+.patch-text{min-height:120px;font-size:11.5px}

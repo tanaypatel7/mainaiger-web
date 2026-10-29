@@ -1,0 +1,191 @@
+{
+ "format": "mainaiger",
+ "schema_version": 2,
+ "notebook": {
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+   "kernelspec": {
+    "name": "python3",
+    "display_name": "Python 3",
+    "language": "python"
+   },
+   "mainaiger": {
+    "example": true
+   }
+  },
+  "cells": [
+   {
+    "id": "intent",
+    "cell_type": "markdown",
+    "metadata": {
+     "mainaiger": {
+      "title": "Intent"
+     }
+    },
+    "source": "# Branching statistics\nOne load step feeds two independent analyses; a report joins them. The Lab still runs cells one at a time, in trigger order, but the graph shows which steps depend on which.",
+    "outputs": []
+   },
+   {
+    "id": "load",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Load samples"
+     }
+    },
+    "source": "import math, random\nrandom.seed(7)\nsamples = [round(random.gauss(50, 10), 2) for _ in range(200)]\nprint(len(samples), \"samples; first five:\", samples[:5])",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "moments",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Mean and standard deviation"
+     }
+    },
+    "source": "mean = sum(samples) / len(samples)\nstd = math.sqrt(sum((s - mean) ** 2 for s in samples) / (len(samples) - 1))\nprint(f\"mean={mean:.2f} std={std:.2f}\")",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "quantiles",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Quantiles"
+     }
+    },
+    "source": "ordered = sorted(samples)\nq = lambda p: ordered[min(len(ordered) - 1, int(p * len(ordered)))]\nquantiles = {\"p05\": q(0.05), \"p50\": q(0.5), \"p95\": q(0.95)}\nquantiles",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "histogram",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Histogram"
+     }
+    },
+    "source": "low, high = min(samples), max(samples)\nbins = 8\nwidth = (high - low) / bins\ncounts = [0] * bins\nfor s in samples:\n    counts[min(bins - 1, int((s - low) / width))] += 1\nfor i, c in enumerate(counts):\n    print(f\"{low + i * width:6.1f} | {'#' * (c // 2)} {c}\")",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "report",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Report (joins both branches)"
+     }
+    },
+    "source": "print(f\"n={len(samples)} mean={mean:.2f} std={std:.2f} p05={quantiles['p05']} p50={quantiles['p50']} p95={quantiles['p95']}\")\nassert quantiles[\"p05\"] < mean < quantiles[\"p95\"]\nprint(\"Report complete.\")",
+    "execution_count": null,
+    "outputs": []
+   }
+  ]
+ },
+ "graph": {
+  "nodes": [
+   {
+    "id": "start",
+    "kind": "start"
+   },
+   {
+    "id": "intent",
+    "kind": "markdown",
+    "cell_index": 0
+   },
+   {
+    "id": "load",
+    "kind": "code",
+    "cell_index": 1
+   },
+   {
+    "id": "moments",
+    "kind": "code",
+    "cell_index": 2
+   },
+   {
+    "id": "quantiles",
+    "kind": "code",
+    "cell_index": 3
+   },
+   {
+    "id": "histogram",
+    "kind": "code",
+    "cell_index": 4
+   },
+   {
+    "id": "report",
+    "kind": "code",
+    "cell_index": 5
+   },
+   {
+    "id": "finish",
+    "kind": "finish"
+   }
+  ],
+  "edges": [
+   {
+    "id": "e1",
+    "kind": "control",
+    "source": "start",
+    "target": "load"
+   },
+   {
+    "id": "e2",
+    "kind": "control",
+    "source": "load",
+    "target": "moments"
+   },
+   {
+    "id": "e3",
+    "kind": "control",
+    "source": "load",
+    "target": "quantiles"
+   },
+   {
+    "id": "e4",
+    "kind": "control",
+    "source": "load",
+    "target": "histogram"
+   },
+   {
+    "id": "e5",
+    "kind": "control",
+    "source": "moments",
+    "target": "report"
+   },
+   {
+    "id": "e6",
+    "kind": "control",
+    "source": "quantiles",
+    "target": "report"
+   },
+   {
+    "id": "e7",
+    "kind": "control",
+    "source": "histogram",
+    "target": "finish"
+   },
+   {
+    "id": "e8",
+    "kind": "control",
+    "source": "report",
+    "target": "finish"
+   }
+  ]
+ },
+ "layout": {
+  "nodes": {},
+  "viewport": {
+   "x": 40,
+   "y": 30,
+   "zoom": 1
+  }
+ }
+}

@@ -1,0 +1,9 @@
+/* Browser page: scripts on the left (list + JSON editor), runs and captures in the inspector. Reuses graph.css, map.css, memory.css. */
+.script-json{min-height:320px;max-height:60vh;font-size:11.5px}
+#runner-state.warn{color:var(--warn)}
+.run-pages{list-style:none;margin:6px 0;padding:0;font-size:12px}.run-pages li{padding:3px 0;border-bottom:1px dashed var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run-log{font-size:11.5px;margin:6px 0 0 18px;padding:0;max-height:220px;overflow:auto}.run-log li.bad{color:var(--warn)}
+.run-dialog-steps{max-height:40vh;overflow:auto;margin:6px 0 6px 18px}
+#run-dialog{width:min(720px,94vw)}#run-dialog-params label{display:block;margin-top:6px}#run-dialog-params input{width:100%}
+.captures{list-style:none;margin:0;padding:0}.captures li{padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:var(--bg)}.captures .row-head{display:flex;gap:8px;align-items:baseline}.captures .row-head b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.captures .preview{font-size:12px;color:var(--muted);margin:3px 0 4px}.captures .status{font-size:10.5px}.captures .status[data-s="stable"]{color:var(--ok)}.captures .status[data-s="draft"]{color:var(--warn)}

@@ -1,0 +1,190 @@
+name: Acceptance (Windows fact-finding)
+
+# What a Windows user gets today if they follow the website path. This is
+# fact-finding only: every step records its result as an annotation and an
+# expected failure never fails the job. Nothing here deploys or publishes.
+
+on:
+  push:
+    branches: ['e2e/windows']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout (workflow source only)
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Python 3.13
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: 1. Inventory and Docker container mode
+        continue-on-error: true
+        run: |
+          set +e
+          py=$(python --version 2>&1); nd=$(node --version 2>&1); dv=$(docker --version 2>&1 || echo 'docker missing')
+          os=$(docker info --format '{{.OSType}}' 2>&1 | tr -d '\r' | tail -1)
+          pull=$(docker pull python:3.13.18-slim 2>&1 | tr -d '\r' | tail -2 | tr '\n' ' ')
+          echo "::notice title=1 inventory::python=$py node=$nd $dv docker OSType=$os"
+          echo "::notice title=1 docker pull python:3.13.18-slim::$pull"
+
+      - name: 2. User path - download branch ZIP and unzip
+        id: zip
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/user" && cd "$RUNNER_TEMP/user"
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/${GITHUB_REF_NAME}.zip"
+          curl -fsSL "$url" -o src.zip && unzip -q src.zip
+          dir=$(find . -maxdepth 1 -type d -name 'mainaiger-web-*' | head -1)
+          echo "src=$RUNNER_TEMP/user/${dir#./}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=2 download::ZIP $(stat -c %s src.zip) bytes from $url unzipped to ${dir#./}"
+
+      - name: 3. Node tests
+        continue-on-error: true
+        working-directory: ${{ steps.zip.outputs.src }}
+        run: |
+          set +e
+          node --test tests/*.test.js > node-tests.log 2>&1; rc=$?
+          echo "::notice title=3 node tests::exit=$rc $(grep -E '^# (pass|fail)' node-tests.log | tr '\n' ' ')"
+
+      - name: 4. Python tests
+        continue-on-error: true
+        working-directory: ${{ steps.zip.outputs.src }}
+        run: |
+          set +e
+          python -m unittest discover -s tests -p 'test_*.py' > python-tests.log 2>&1; rc=$?
+          cat python-tests.log | tail -80
+          python - <<'EOF'
+          import re
+          text = open('python-tests.log', encoding='utf-8', errors='replace').read()
+          m = re.search(r'^Ran \d+ tests.*$', text, re.M); r = re.search(r'^(OK|FAILED.*)$', text, re.M)
+          print(f"::notice title=4 python tests::{m.group(0) if m else '?'} -> {r.group(0) if r else '?'}")
+          blocks = [b.strip().splitlines() for b in re.split(r'\n=+\n', text)[1:]]
+          blocks = [b for b in blocks if b and b[0].startswith(('FAIL:', 'ERROR:'))]
+          causes = {}
+          for i, lines in enumerate(blocks):
+              last = next((l for l in reversed(lines) if l.strip() and not l.startswith('-')), '')
+              causes.setdefault(last[:90], []).append(lines[0].split('(')[0].replace('ERROR: ', '').replace('FAIL: ', ''))
+              level = 'error' if i < 10 else 'warning'
+              print(f"::{level} title=4 {lines[0][:60]}::{last[:500]}")
+          for cause, names in sorted(causes.items(), key=lambda kv: -len(kv[1]))[:10]:
+              print(f"::notice title=4 root cause x{len(names)}::{cause} <- {', '.join(names)[:400]}")
+          EOF
+
+      - name: 5. Notebook bridge CLI round trip
+        continue-on-error: true
+        working-directory: ${{ steps.zip.outputs.src }}
+        run: |
+          set +e
+          out=$(python tools/notebook_bridge.py validate examples/signal-demo.ipymb 2>&1 | tr -d '\r'); rc=$?
+          exp=$(python tools/notebook_bridge.py export examples/signal-demo.ipymb "$RUNNER_TEMP/rt.ipynb" --force 2>&1 | tr -d '\r'); rc2=$?
+          imp=$(python tools/notebook_bridge.py import "$RUNNER_TEMP/rt.ipynb" "$RUNNER_TEMP/rt.ipymb" --force 2>&1 | tr -d '\r'); rc3=$?
+          val=$(python tools/notebook_bridge.py validate "$RUNNER_TEMP/rt.ipymb" 2>&1 | tr -d '\r'); rc4=$?
+          echo "::notice title=5 notebook bridge::validate rc=$rc [$out] export rc=$rc2 [$exp] import rc=$rc3 [$imp] revalidate rc=$rc4 [$val]"
+
+      - name: 6. Kernel protocol as a plain Windows process
+        continue-on-error: true
+        working-directory: ${{ steps.zip.outputs.src }}
+        run: |
+          python - <<'EOF'
+          import json, subprocess, sys, time, threading, signal, os
+          def spawn():
+              # New process group so a console Ctrl event targets the kernel, not this driver.
+              return subprocess.Popen([sys.executable, '-I', 'local_lab/kernel/kernel.py'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
+          def readline_timeout(p, seconds):
+              box = {}
+              def go():
+                  try: box['line'] = p.stdout.readline()
+                  except Exception as e: box['err'] = repr(e)
+              t = threading.Thread(target=go, daemon=True); t.start(); t.join(seconds)
+              return box.get('line') if t.is_alive() is False else None
+          def ask(p, req, seconds=10):
+              p.stdin.write(json.dumps(req) + '\n'); p.stdin.flush()
+              line = readline_timeout(p, seconds)
+              return json.loads(line) if line else None
+          feats = {n: hasattr(os, n) for n in ('getuid', 'O_NOFOLLOW', 'O_DIRECTORY', 'umask', 'dup2')}
+          feats['supports_dir_fd'] = os.open in os.supports_dir_fd
+          print(f"::notice title=6 posix features on windows::{feats}")
+          try:
+              p = spawn()
+              ready = readline_timeout(p, 15)
+              if not ready:
+                  try: p.wait(5)
+                  except subprocess.TimeoutExpired: pass
+                  err = p.stderr.read().strip().replace('\r', '').replace('\n', ' | ') if p.poll() is not None else '(still running, no output)'
+                  print(f"::notice title=6 kernel did not report ready::returncode={p.returncode} stderr={err[-900:] or '(empty)'}", flush=True)
+              else:
+                  print(f"::notice title=6 kernel ready::{ready.strip()[:300]}", flush=True)
+              if ready:
+                  r1 = ask(p, {'id': 1, 'op': 'execute', 'code': 'import os,sys\nx=2\nprint(x*21)\nos.write(1,b"fd\\n")\nsys.stderr.write("err\\n")'})
+                  r2 = ask(p, {'id': 2, 'op': 'execute', 'code': 'x+1'})
+                  r3 = ask(p, {'id': 3, 'op': 'variables'})
+                  r4 = ask(p, {'id': 4, 'op': 'execute', 'code': '1/0'})
+                  print(flush=True); print(f"::notice title=6 execute::r1={json.dumps(r1)[:300]} r2={json.dumps(r2)[:200]}")
+                  print(f"::notice title=6 variables and error::vars={json.dumps(r3)[:250]} err={json.dumps((r4 or {}).get('error'))[:200]}")
+                  # Interrupt semantics on Windows
+                  p.stdin.write(json.dumps({'id': 5, 'op': 'execute', 'code': 'while True: pass'}) + '\n'); p.stdin.flush()
+                  time.sleep(1.0)
+                  how = 'none'
+                  try:
+                      p.send_signal(signal.CTRL_BREAK_EVENT); how = 'CTRL_BREAK_EVENT sent (CTRL_C_EVENT cannot target a new process group)'
+                  except Exception as e:
+                      how = 'CTRL_BREAK_EVENT failed: ' + repr(e)
+                      try: p.send_signal(signal.SIGINT); how += '; SIGINT sent'
+                      except Exception as e2: how += '; SIGINT failed: ' + repr(e2)
+                  line = readline_timeout(p, 5)
+                  alive = p.poll() is None
+                  print(f"::notice title=6 interrupt::{how}; reply within 5s={(line or 'NONE').strip()[:200]}; process alive={alive} returncode={p.returncode}")
+              p.kill()
+          except Exception as e:
+              print(f"::error title=6 kernel driver crashed::{e!r}")
+          EOF
+
+      - name: 7. Service entry point python -m local_lab
+        continue-on-error: true
+        working-directory: ${{ steps.zip.outputs.src }}
+        run: |
+          set +e
+          state="$RUNNER_TEMP/state"
+          python -m local_lab --port 8794 --state-dir "$state" > service.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 20); do grep -q 'Lab panel:' service.log && break; kill -0 $pid 2>/dev/null || break; sleep 1; done
+          if grep -q 'Lab panel:' service.log; then
+            key=$(cat "$state/owner.key")
+            login=$(curl -s -c cj.txt -H 'Origin: http://127.0.0.1:8794' -H 'Content-Type: application/json' -d "{\"key\":\"$key\"}" http://127.0.0.1:8794/api/login)
+            st=$(curl -s -b cj.txt http://127.0.0.1:8794/api/state)
+            echo "::notice title=7 service started::login=${login:0:40}... state docker_available=$(echo "$st" | python -c 'import sys,json; d=json.load(sys.stdin); print(d.get("docker_available"))' 2>&1)"
+            kill $pid 2>/dev/null || true
+          else
+            tail=$(tr -d '\r' < service.log | grep -vE '^\s*$' | tail -4 | tr '\n' ' | ')
+            echo "::notice title=7 service did not start::$tail"
+          fi
+          kill $pid 2>/dev/null || true
+
+      - name: 8. Companion service entry point
+        continue-on-error: true
+        working-directory: ${{ steps.zip.outputs.src }}
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/cws"; echo hi > "$RUNNER_TEMP/cws/note.txt"
+          python -m companion --state-dir "$RUNNER_TEMP/cstate" --workspace "$RUNNER_TEMP/cws" --port 8793 > companion.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 15); do grep -q 'Local owner panel:' companion.log && break; kill -0 $pid 2>/dev/null || break; sleep 1; done
+          if grep -q 'Local owner panel:' companion.log; then echo "::notice title=8 companion started::$(head -1 companion.log)"; else echo "::notice title=8 companion did not start::$(tr -d '\r' < companion.log | grep -vE '^\s*$' | tail -3 | tr '\n' ' | ')"; fi
+          kill $pid 2>/dev/null || true
+
+      - name: 9. Summary
+        run: |
+          echo "::notice title=9 summary::See per-step annotations 1-8 above; this job never fails on expected Windows limitations. Steps 7 and 8 report whether the services start on Windows; step 4 lists failing tests grouped by root cause."

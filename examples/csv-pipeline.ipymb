@@ -1,0 +1,179 @@
+{
+ "format": "mainaiger",
+ "schema_version": 2,
+ "notebook": {
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+   "kernelspec": {
+    "name": "python3",
+    "display_name": "Python 3",
+    "language": "python"
+   },
+   "mainaiger": {
+    "example": true
+   }
+  },
+  "cells": [
+   {
+    "id": "intent",
+    "cell_type": "markdown",
+    "metadata": {
+     "mainaiger": {
+      "title": "Intent"
+     }
+    },
+    "source": "# CSV pipeline\nParse a small CSV, drop bad rows, summarize per city, and print a report. Each step is one cell; the arrows are the order the Lab runs them.",
+    "outputs": []
+   },
+   {
+    "id": "load",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Load CSV text"
+     }
+    },
+    "source": "raw = \"\"\"city,temp_c,humidity\nTempe,41.2,12\nPhoenix,42.0,10\nFlagstaff,24.5,30\nTempe,39.8,15\nPhoenix,,11\nTucson,38.1,18\n\"\"\"\nprint(raw.count(\"\\n\") - 1, \"rows\")",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "parse",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Parse rows"
+     }
+    },
+    "source": "import csv, io\nrows = list(csv.DictReader(io.StringIO(raw)))\nprint(rows[0])",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "clean",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Drop rows with missing values"
+     }
+    },
+    "source": "clean_rows = [r for r in rows if r[\"temp_c\"] and r[\"humidity\"]]\nfor r in clean_rows:\n    r[\"temp_c\"] = float(r[\"temp_c\"]); r[\"humidity\"] = int(r[\"humidity\"])\nprint(len(rows) - len(clean_rows), \"row(s) dropped\")",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "summarize",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Summarize per city"
+     }
+    },
+    "source": "from collections import defaultdict\ntotals = defaultdict(list)\nfor r in clean_rows:\n    totals[r[\"city\"]].append(r[\"temp_c\"])\nsummary = {city: round(sum(v) / len(v), 1) for city, v in totals.items()}\nsummary",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "report",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Print report"
+     }
+    },
+    "source": "for city, mean_temp in sorted(summary.items(), key=lambda kv: -kv[1]):\n    print(f\"{city:<10} {mean_temp:>5} °C\")\nhottest = max(summary, key=summary.get)\nprint(\"Hottest:\", hottest)",
+    "execution_count": null,
+    "outputs": []
+   }
+  ]
+ },
+ "graph": {
+  "nodes": [
+   {
+    "id": "start",
+    "kind": "start"
+   },
+   {
+    "id": "intent",
+    "kind": "markdown",
+    "cell_index": 0
+   },
+   {
+    "id": "load",
+    "kind": "code",
+    "cell_index": 1
+   },
+   {
+    "id": "parse",
+    "kind": "code",
+    "cell_index": 2
+   },
+   {
+    "id": "clean",
+    "kind": "code",
+    "cell_index": 3
+   },
+   {
+    "id": "summarize",
+    "kind": "code",
+    "cell_index": 4
+   },
+   {
+    "id": "report",
+    "kind": "code",
+    "cell_index": 5
+   },
+   {
+    "id": "finish",
+    "kind": "finish"
+   }
+  ],
+  "edges": [
+   {
+    "id": "e1",
+    "kind": "control",
+    "source": "start",
+    "target": "load"
+   },
+   {
+    "id": "e2",
+    "kind": "control",
+    "source": "load",
+    "target": "parse"
+   },
+   {
+    "id": "e3",
+    "kind": "control",
+    "source": "parse",
+    "target": "clean"
+   },
+   {
+    "id": "e4",
+    "kind": "control",
+    "source": "clean",
+    "target": "summarize"
+   },
+   {
+    "id": "e5",
+    "kind": "control",
+    "source": "summarize",
+    "target": "report"
+   },
+   {
+    "id": "e6",
+    "kind": "control",
+    "source": "report",
+    "target": "finish"
+   }
+  ]
+ },
+ "layout": {
+  "nodes": {},
+  "viewport": {
+   "x": 40,
+   "y": 30,
+   "zoom": 1
+  }
+ }
+}

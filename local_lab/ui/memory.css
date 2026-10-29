@@ -1,0 +1,23 @@
+/* Memory page: a list of notes (or their link graph) and one note open in the inspector. Reuses graph.css and map.css. */
+.memory-list{flex:1;min-width:0;overflow:auto;padding:10px 14px;border-right:1px solid var(--line)}
+.memory-list ul{list-style:none;margin:0;padding:0}
+.memory-list li{padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;background:var(--bg)}
+.memory-list li:hover{border-color:var(--purple)}.memory-list li.selected{border-color:var(--purple);box-shadow:0 0 0 2px #6747a640}
+.memory-list .row-head{display:flex;gap:8px;align-items:baseline}.memory-list .row-head b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.memory-list .kind{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--purple)}
+.memory-list .status{font-size:10.5px}.memory-list .status[data-s="draft"]{color:var(--muted)}.memory-list .status[data-s="growing"]{color:var(--warn)}.memory-list .status[data-s="stable"]{color:var(--ok)}
+.memory-list .preview{font-size:12px;color:var(--muted);margin:3px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.memory-list .snippet{font-size:12px;margin:3px 0 0}.memory-list .snippet mark{background:#f3e7a6;color:inherit;padding:0 2px;border-radius:3px}
+.memory-list .tags{font-size:11px;color:var(--muted)}
+.memory-body{width:100%;min-height:220px;max-height:55vh;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.45;resize:vertical}
+#note-links a{color:var(--purple);text-decoration:none;cursor:pointer;margin-right:8px}
+.mnode.idea{background:#fff6e5;border-color:#d8a24a}.mnode.rule{background:#f6e9ff;border-color:#9b6fd0}.mnode.mainbook{background:#e6f5ec;border-color:#2f8f5b}.mnode.chat{background:#eef6ff;border-color:#5c8fd6}
+.mnode.status-stable{font-weight:600}.mnode.status-draft{opacity:.7}
+@media(prefers-color-scheme:dark){.mnode.idea{background:#3a2a10}.mnode.rule{background:#2a1f3a}.mnode.mainbook{background:#1b2d22}.mnode.chat{background:#12263d}.memory-list .snippet mark{background:#5a4d12}}
+.idea-box{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px;background:var(--soft)}.idea-box textarea{width:100%;font:inherit;font-size:13px;resize:vertical}
+#idea-similar-list label{display:block;font-size:12px;margin:4px 0}#idea-similar-list .snip{color:var(--muted);font-size:11.5px;margin-left:22px}
+.review-item{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0}.review-item .row{display:flex;gap:8px;align-items:center}.review-item .row input[type=text]{flex:1}.review-item textarea{width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;margin-top:4px}
+.review-item .meta{font-size:11px;color:var(--muted);margin-top:4px}#review-dialog{width:min(760px,94vw)}#review-items{max-height:55vh;overflow:auto}
+.ask-hits{list-style:none;margin:8px 0;padding:0}.ask-hits li{display:flex;gap:8px;align-items:baseline;font-size:12px;padding:3px 0;border-bottom:1px dashed var(--line)}.ask-hits li b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--purple)}.ask-hits .status{font-size:10.5px}
+.cost-cards{display:flex;gap:10px;margin:8px 0}.cost-card{flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg)}.cost-card b{font-size:12px}.cost-card p{margin:4px 0 6px;font-size:12px}.cost-card.recommended{border-color:var(--ok);box-shadow:0 0 0 2px #2f8f5b33}
+.ask-answer{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}.ask-answer pre{white-space:pre-wrap;font-size:12.5px;font-family:inherit;margin:4px 0}

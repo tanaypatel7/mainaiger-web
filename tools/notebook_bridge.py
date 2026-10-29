@@ -82,8 +82,8 @@ def validate_document(document: dict) -> None:
     """Validate structure and references; incomplete draft graphs remain valid."""
     _require(isinstance(document, dict), "MainAIger document must be an object.")
     _require(document.get("format") == "mainaiger", "Expected format: mainaiger.")
-    _require(type(document.get("schema_version")) is int and document["schema_version"] == 1,
-             "Unsupported schema_version; this bridge supports version 1.")
+    _require(type(document.get("schema_version")) is int and document["schema_version"] in (1, 2),
+             "Unsupported schema_version; this bridge supports versions 1 and 2.")
     validate_notebook(document.get("notebook"))
     graph = document.get("graph")
     _require(isinstance(graph, dict), "graph must be an object.")
@@ -195,7 +195,7 @@ def main(argv=None) -> int:
         source = _read(args.source)
         if args.command == "validate":
             validate_document(source)
-            print("Valid MainAIger v1 document (structural check; not an execution-readiness check).")
+            print("Valid MainAIger document (structural check; not an execution-readiness check).")
             return 0
         _require(args.source.resolve() != args.destination.resolve(), "Source and destination must differ.")
         if args.command == "import":

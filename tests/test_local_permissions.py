@@ -93,7 +93,7 @@ class LocalPermissionsTests(unittest.TestCase):
         alias = self.root / 'workspace-alias'
         alias.symlink_to(self.work, target_is_directory=True)
         aliased_store = PermissionStore(alias / 'private-state')
-        self.assertEqual(aliased_store.path, self.work / 'private-state')
+        self.assertEqual(aliased_store.path, (self.work / 'private-state').resolve())  # real path; macOS temp dirs live under /private/var
         with self.assertRaises(ValueError):
             aliased_store.register('unsafe', 'Workspace containing state', self.work)
         self.assertEqual(aliased_store.snapshot()['resources'], [])

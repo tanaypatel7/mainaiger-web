@@ -1,0 +1,22 @@
+{
+ "format": "mainaiger-cell",
+ "schema_version": 1,
+ "name": "train-classifier",
+ "title": "Train classifier",
+ "cell_type": "code",
+ "source": "import math\n# Logistic regression, gradient descent, standard library only.\nweights = [0.0] * len(X_train[0]); bias = 0.0; lr = 0.1\nfor epoch in range(300):\n    grad_w = [0.0] * len(weights); grad_b = 0.0\n    for xi, yi in zip(X_train, y_train):\n        z = sum(w * v for w, v in zip(weights, xi)) + bias\n        p = 1 / (1 + math.exp(-z))\n        err = p - yi\n        for j, v in enumerate(xi):\n            grad_w[j] += err * v\n        grad_b += err\n    n = len(X_train)\n    weights = [w - lr * g / n for w, g in zip(weights, grad_w)]\n    bias -= lr * grad_b / n\ndef predict(x):\n    return 1 if sum(w * v for w, v in zip(weights, x)) + bias > 0 else 0\nmodel = {\"weights\": weights, \"bias\": bias, \"predict\": predict}\nprint(\"weights\", [round(w, 3) for w in weights], \"bias\", round(bias, 3))\n",
+ "inputs": [
+  "X_train",
+  "y_train"
+ ],
+ "outputs": [
+  "model"
+ ],
+ "tags": [
+  "ml",
+  "train",
+  "logistic-regression"
+ ],
+ "description": "Logistic regression by plain gradient descent in pure Python (no numpy needed). Defines `model` = {weights, bias, predict}.",
+ "version": 1
+}

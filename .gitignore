@@ -5,3 +5,8 @@ __pycache__/
 .env
 .env.*
 artifacts/
+build/
+dist/
+verify-mac-*.json
+verify-mac-*.md
+.venv/

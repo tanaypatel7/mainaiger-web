@@ -61,7 +61,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_versions_are_not_silently_upgraded(self):
         document = bridge.import_notebook(sample())
-        document["schema_version"] = 2
+        document["schema_version"] = 3  # 1 and 2 are known; anything newer is refused
         with self.assertRaisesRegex(bridge.DocumentError, "schema_version"):
             bridge.validate_document(document)
 

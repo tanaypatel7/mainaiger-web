@@ -1,0 +1,205 @@
+{
+ "format": "mainaiger",
+ "schema_version": 2,
+ "notebook": {
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+   "kernelspec": {
+    "name": "python3",
+    "display_name": "Python 3",
+    "language": "python"
+   },
+   "mainaiger": {
+    "example": true,
+    "name": "review-chats",
+    "title": "Review imported chats as a Mainbook (review, choose, keep, loop)"
+   }
+  },
+  "cells": [
+   {
+    "id": "readme",
+    "cell_type": "markdown",
+    "metadata": {
+     "mainaiger": {
+      "title": "Review imported chats, as a Mainbook"
+     }
+    },
+    "source": "# Review imported chats, as a Mainbook\n\nThe REVIEW section of the Memory page, laid out as cards. **Review next chat** is a Memory cell: the Lab takes the next unreviewed chat in `chats/` and asks your local model what is worth keeping (`proposal`; nothing is written). **Choose items** is plain Python — the rule for what to keep (edit it: keep only facts and procedures, require a minimum length, drop items whose title repeats a note you have, or `raise SystemExit` to stop and look). **Keep** writes the chosen items as *draft* notes linked to the chat and marks the chat reviewed — it only runs when the arrow's condition holds (a real chat, and the model answered). **Report** prints what happened, and its loop arrow goes back to **Review next chat** while chats are pending, at most 3 more per run. Needs a running session, an approved Memory folder with imported chats, and an installed model. Drafts stay drafts until you mark them stable on the Memory page.\n",
+    "outputs": []
+   },
+   {
+    "id": "review",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Review next chat",
+      "memory": {
+       "op": "review",
+       "output": "proposal"
+      }
+     }
+    },
+    "source": "",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "choose",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Choose items"
+     }
+    },
+    "source": "# The rule for what to keep from each chat. Plain Python over `proposal`; edit freely.\nWANTED = (\"fact\", \"procedure\", \"rule\", \"preference\")\npath = proposal[\"chat\"][\"path\"] if proposal[\"chat\"] else None\nmodel = proposal[\"model\"]\nitems = [i for i in proposal[\"items\"] if i[\"kind\"] in WANTED and len(i[\"text\"]) >= 20]\nif path is None:\n    print(\"nothing left to review\")\nelse:\n    print(\"chat:\", proposal[\"chat\"][\"title\"], \"| %d proposed, keeping %d | %d chat(s) still pending\" % (len(proposal[\"items\"]), len(items), proposal[\"pending\"]))\n    for i in items:\n        print(\" +\", i[\"title\"], \"(%s)\" % i[\"kind\"])\n    if proposal[\"error\"]:\n        print(\"model problem, nothing will be kept:\", proposal[\"error\"])\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "keep",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Keep",
+      "memory": {
+       "op": "keep",
+       "output": "kept"
+      }
+     }
+    },
+    "source": "",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "report",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Report"
+     }
+    },
+    "source": "print(\"kept %d draft note(s) from %s; %d chat(s) still pending\" % (len(kept[\"written\"]), kept[\"chat\"], kept[\"review\"][\"pending\"]))\nfor w in kept[\"written\"]:\n    print(\" -\", w[\"path\"])\n",
+    "execution_count": null,
+    "outputs": []
+   }
+  ]
+ },
+ "graph": {
+  "nodes": [
+   {
+    "id": "start",
+    "kind": "start"
+   },
+   {
+    "id": "readme",
+    "kind": "markdown",
+    "cell_index": 0
+   },
+   {
+    "id": "review",
+    "kind": "code",
+    "cell_index": 1
+   },
+   {
+    "id": "choose",
+    "kind": "code",
+    "cell_index": 2
+   },
+   {
+    "id": "keep",
+    "kind": "code",
+    "cell_index": 3
+   },
+   {
+    "id": "report",
+    "kind": "code",
+    "cell_index": 4
+   },
+   {
+    "id": "finish",
+    "kind": "finish"
+   }
+  ],
+  "edges": [
+   {
+    "id": "e-start-review",
+    "kind": "control",
+    "source": "start",
+    "target": "review"
+   },
+   {
+    "id": "e-review-choose",
+    "kind": "control",
+    "source": "review",
+    "target": "choose"
+   },
+   {
+    "id": "e-choose-keep",
+    "kind": "control",
+    "source": "choose",
+    "target": "keep",
+    "when": "path is not None and not proposal[\"error\"]"
+   },
+   {
+    "id": "e-keep-report",
+    "kind": "control",
+    "source": "keep",
+    "target": "report"
+   },
+   {
+    "id": "e-report-review",
+    "kind": "control",
+    "source": "report",
+    "target": "review",
+    "loop": true,
+    "when": "kept[\"review\"][\"pending\"] > 0",
+    "max_fires": 3
+   },
+   {
+    "id": "e-report-finish",
+    "kind": "control",
+    "source": "report",
+    "target": "finish"
+   }
+  ]
+ },
+ "layout": {
+  "nodes": {
+   "readme": {
+    "x": 40.0,
+    "y": 40.0
+   },
+   "start": {
+    "x": 40.0,
+    "y": 520.0
+   },
+   "finish": {
+    "x": 2060.0,
+    "y": 520.0
+   },
+   "review": {
+    "x": 460.0,
+    "y": 420.0
+   },
+   "choose": {
+    "x": 860.0,
+    "y": 420.0
+   },
+   "keep": {
+    "x": 1260.0,
+    "y": 420.0
+   },
+   "report": {
+    "x": 1660.0,
+    "y": 420.0
+   }
+  },
+  "viewport": {
+   "x": 40,
+   "y": 30,
+   "zoom": 0.6
+  }
+ }
+}

@@ -1,0 +1,449 @@
+{
+ "format": "mainaiger",
+ "schema_version": 2,
+ "notebook": {
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+   "kernelspec": {
+    "name": "python3",
+    "display_name": "Python 3",
+    "language": "python"
+   },
+   "mainaiger": {
+    "example": true,
+    "name": "self-improve-repo",
+    "title": "Self-improvement loop on a repository (copy, change, test, judge, loop)"
+   }
+  },
+  "cells": [
+   {
+    "id": "readme",
+    "cell_type": "markdown",
+    "metadata": {
+     "mainaiger": {
+      "title": "How this loop works"
+     }
+    },
+    "source": "# Self-improvement loop on a repository\n\nThe session's workspace must be a checkout of a repository (for MainAIger itself: this repository). **Copy repository** copies it into the session's own `/tmp` (the workspace stays read-only), **Baseline tests** runs the test module you name there, **Read the file** prints the file you name, **Propose change** asks a model for ONE find/replace change for the task you typed, **Apply to copy** restores the file from the workspace and applies the change to the copy (never the checkout), **Run tests** runs the same tests in the copy, **Held-out tests** runs a second test module whose output goes only to the judge — the proposer never sees it, so it cannot write to the test — **Judge** decides keep / revert / ask from the diff and both test outputs, and the dashed loop arrow sends the run back to **Propose** (at most twice) while the verdict is not \"keep\", with the previous attempt pasted into the next prompt. **Report** prints every attempt and, for a keep, the patch: paste it into the Map page's PATCH box, where every hunk is checked and shown before a reviewed, atomic write into your checkout.\n\nFill the form on **Task**: what to change, which file, which test module (dotted, e.g. `tests.test_decide`) and which held-out module. Needs a running session, a workspace, and an installed Ollama model named in the two model cells (Models page). Keep the test modules small: a cell has 60 seconds.\n",
+    "outputs": []
+   },
+   {
+    "id": "task",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Task",
+      "form": {
+       "fields": [
+        {
+         "name": "task",
+         "type": "text",
+         "label": "What to change (one small step)",
+         "default": "Add a one-line comment above extract_json explaining what it does"
+        },
+        {
+         "name": "file",
+         "type": "text",
+         "label": "File to change (relative to the repository)",
+         "default": "local_lab/decide.py"
+        },
+        {
+         "name": "test_module",
+         "type": "text",
+         "label": "Test module to run (dotted)",
+         "default": "tests.test_decide"
+        },
+        {
+         "name": "heldout_module",
+         "type": "text",
+         "label": "Held-out test module (the proposer never sees its output)",
+         "default": "tests.test_graph"
+        },
+        {
+         "name": "max_lines",
+         "type": "integer",
+         "label": "Lines of the file shown to the model",
+         "default": 400
+        }
+       ],
+       "values": {}
+      }
+     }
+    },
+    "source": "print(\"task:\", task)\nprint(\"file:\", file, \"| tests:\", test_module, \"| held-out:\", heldout_module)\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "copy",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Copy repository"
+     }
+    },
+    "source": "# Copy the repository into the session's own temporary folder; the workspace stays read-only.\nimport os, shutil, sys\nSRC = \"/workspace\" if os.path.isdir(\"/workspace\") else os.getcwd()\nDST = \"/tmp/mainaiger-repo\"\nSKIP = {\".git\", \"node_modules\", \"__pycache__\", \"dist\", \".venv\", \"venv\", \".pytest_cache\", \"build\"}\nshutil.rmtree(DST, ignore_errors=True)\ncopied = 0\nfor root, dirs, files in os.walk(SRC):\n    dirs[:] = [d for d in dirs if d not in SKIP]\n    rel = os.path.relpath(root, SRC)\n    os.makedirs(os.path.join(DST, rel) if rel != \".\" else DST, exist_ok=True)\n    for name in files:\n        try:\n            shutil.copy2(os.path.join(root, name), os.path.join(DST, rel, name) if rel != \".\" else os.path.join(DST, name))\n            copied += 1\n        except OSError:\n            pass\nprint(\"copied %d files from %s to %s\" % (copied, SRC, DST))\nif not os.path.isfile(os.path.join(DST, file)):\n    raise SystemExit(\"the file %r is not in the repository\" % file)\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "baseline",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Baseline tests"
+     }
+    },
+    "source": "# The named tests, in the untouched copy: the bar every proposal must clear.\nimport subprocess, sys\ndef run_tests(module=None):\n    r = subprocess.run([sys.executable, \"-m\", \"unittest\", module or test_module], cwd=DST, capture_output=True, text=True, timeout=50)\n    tail = \"\\n\".join((r.stdout + r.stderr).strip().splitlines()[-12:])\n    return r.returncode == 0, tail\nbaseline_ok, baseline_text = run_tests()\nprint(\"baseline:\", \"OK\" if baseline_ok else \"FAILED\")\nprint(baseline_text)\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "read",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Read the file"
+     }
+    },
+    "source": "# What the model sees: the file, with line numbers, up to max_lines lines.\nimport os\nwith open(os.path.join(DST, file), encoding=\"utf-8\", errors=\"replace\") as handle:\n    file_lines = handle.read().splitlines()\nprint(\"file:\", file, \"(%d lines%s)\" % (len(file_lines), \"\" if len(file_lines) <= max_lines else \", first %d shown\" % max_lines))\nfor number, text in enumerate(file_lines[:max_lines], 1):\n    print(\"%4d  %s\" % (number, text))\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "propose",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Propose change",
+      "model": {
+       "model": "qwen2.5-coder:7b",
+       "output": "proposal",
+       "attempts": 2,
+       "schema": {
+        "type": "object",
+        "properties": {
+         "find": {
+          "type": "string"
+         },
+         "replace": {
+          "type": "string"
+         },
+         "why": {
+          "type": "string",
+          "maxLength": 300
+         }
+        },
+        "required": [
+         "find",
+         "replace",
+         "why"
+        ]
+       }
+      }
+     }
+    },
+    "source": "You change code in a repository, one small step at a time. Standard library Python only unless the file already imports more.\n\n{{output:Task}}\n\nThe previous attempt, if there was one (do not repeat it):\n{{output:Apply to copy}}\n{{output:Run tests}}\n\nThe file (line numbers are not part of the file):\n{{output:Read the file}}\n\nPropose ONE change as a find/replace. \"find\" must be copied verbatim from the file (at least one complete line, without the line numbers) and occur exactly once; \"replace\" is the new text for those lines; \"why\" is one sentence. Keep the file valid Python.\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "apply",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Apply to copy"
+     }
+    },
+    "source": "# Restore the file from the workspace, then apply the proposal to the COPY only; show the diff.\nimport difflib, os, shutil\noriginal_path = os.path.join(SRC, file); copy_path = os.path.join(DST, file)\nshutil.copy2(original_path, copy_path)\nwith open(copy_path, encoding=\"utf-8\", errors=\"replace\") as handle:\n    before = handle.read()\ntry:\n    history\nexcept NameError:\n    history = []\nattempt = {\"why\": proposal.get(\"why\", \"\"), \"applied\": False, \"diff\": \"\", \"error\": None}\ncount = before.count(proposal[\"find\"]) if proposal.get(\"find\") else 0\nif count != 1:\n    attempt[\"error\"] = \"the 'find' text occurs %d times in %s (it must occur exactly once)\" % (count, file)\nelse:\n    after = before.replace(proposal[\"find\"], proposal[\"replace\"], 1)\n    try:\n        compile(after, file, \"exec\")\n    except SyntaxError as error:\n        attempt[\"error\"] = \"the result is not valid Python: line %s: %s\" % (error.lineno, error.msg)\n    else:\n        with open(copy_path, \"w\", encoding=\"utf-8\") as handle:\n            handle.write(after)\n        attempt[\"applied\"] = True\n        attempt[\"diff\"] = \"\".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True), \"a/\" + file, \"b/\" + file))\nhistory.append(attempt)\nprint(\"attempt %d\" % len(history))\nprint(\"why:\", attempt[\"why\"])\nif attempt[\"applied\"]:\n    print(attempt[\"diff\"])\nelse:\n    print(\"the proposal could not be applied:\", attempt[\"error\"])\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "tests",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Run tests"
+     }
+    },
+    "source": "# The same tests, in the changed copy.\nif history[-1][\"applied\"]:\n    tests_ok, tests_text = run_tests()\nelse:\n    tests_ok, tests_text = False, \"(not run: the proposal could not be applied)\"\nhistory[-1][\"tests_ok\"] = tests_ok\nprint(\"tests after the change:\", \"OK\" if tests_ok else \"FAILED\")\nprint(tests_text)\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "heldout",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Held-out tests"
+     }
+    },
+    "source": "# Tests the proposer never sees: their output goes to the judge only (no {{output:Held-out tests}} in the Propose prompt).\nif history[-1][\"applied\"]:\n    heldout_ok, heldout_text = run_tests(heldout_module)\nelse:\n    heldout_ok, heldout_text = False, \"(not run: the proposal could not be applied)\"\nhistory[-1][\"heldout_ok\"] = heldout_ok\nprint(\"held-out tests (%s): %s\" % (heldout_module, \"OK\" if heldout_ok else \"FAILED\"))\nprint(heldout_text)\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "judge",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Judge",
+      "model": {
+       "model": "qwen2.5-coder:7b",
+       "output": "verdict",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "action": {
+          "type": "string",
+          "enum": [
+           "keep",
+           "revert",
+           "ask"
+          ]
+         },
+         "confidence": {
+          "type": "number"
+         },
+         "reasons": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "maxItems": 3
+         }
+        },
+        "required": [
+         "action",
+         "confidence"
+        ]
+       }
+      }
+     }
+    },
+    "source": "A change was applied to a copy of a repository and its tests were run.\n{{output:Task}}\n\nThe change:\n{{output:Apply to copy}}\n\nThe tests afterwards:\n{{output:Run tests}}\n\nHeld-out tests the proposer never saw:\n{{output:Held-out tests}}\n\nDecide: \"keep\" only if the change was applied, both test runs pass, and it does what the task asked; \"revert\" if the tests fail, the change could not be applied, or it does something else; \"ask\" if you cannot tell. Give up to three short reasons.\n",
+    "execution_count": null,
+    "outputs": []
+   },
+   {
+    "id": "report",
+    "cell_type": "code",
+    "metadata": {
+     "mainaiger": {
+      "title": "Report"
+     }
+    },
+    "source": "print(\"=\" * 56)\nprint(\"Repository self-improvement loop: %d attempt%s\" % (len(history), \"\" if len(history) == 1 else \"s\"))\nprint(\"=\" * 56)\nprint(\"task:\", task)\nprint(\"file:\", file, \"| tests:\", test_module, \"| baseline:\", \"OK\" if baseline_ok else \"FAILED\")\nfor i, h in enumerate(history, 1):\n    state = (\"tests OK\" if h.get(\"tests_ok\") else \"tests FAILED\") + (\", held-out OK\" if h.get(\"heldout_ok\") else \", held-out FAILED\") if h[\"applied\"] else \"not applied: \" + str(h[\"error\"])\n    print(\"  %d. %s - %s\" % (i, state, h[\"why\"]))\nprint(\"last verdict:\", verdict[\"action\"], \"(confidence %.2f)\" % verdict[\"confidence\"])\nfor r in verdict.get(\"reasons\", []):\n    print(\" -\", r)\nif verdict[\"action\"] == \"keep\" and history[-1][\"applied\"]:\n    print()\n    print(\"Nothing was written to your checkout. To keep this change, paste the patch below into the\")\n    print(\"Map page's PATCH box (every hunk is checked and shown before a reviewed write), or save it as\")\n    print(\"change.patch and run: git apply change.patch   (then read it, run the full suite, commit)\")\n    print(\"-\" * 56)\n    print(history[-1][\"diff\"])\nelif verdict[\"action\"] == \"ask\":\n    print(\"Could not tell after the loop's budget: run again, narrow the task, or name a more specific test module.\")\nelse:\n    print(\"Every attempt was reverted: the checkout is untouched. Run again for new proposals, or narrow the task.\")\n",
+    "execution_count": null,
+    "outputs": []
+   }
+  ]
+ },
+ "graph": {
+  "nodes": [
+   {
+    "id": "start",
+    "kind": "start"
+   },
+   {
+    "id": "readme",
+    "kind": "markdown",
+    "cell_index": 0
+   },
+   {
+    "id": "task",
+    "kind": "code",
+    "cell_index": 1
+   },
+   {
+    "id": "copy",
+    "kind": "code",
+    "cell_index": 2
+   },
+   {
+    "id": "baseline",
+    "kind": "code",
+    "cell_index": 3
+   },
+   {
+    "id": "read",
+    "kind": "code",
+    "cell_index": 4
+   },
+   {
+    "id": "propose",
+    "kind": "code",
+    "cell_index": 5
+   },
+   {
+    "id": "apply",
+    "kind": "code",
+    "cell_index": 6
+   },
+   {
+    "id": "tests",
+    "kind": "code",
+    "cell_index": 7
+   },
+   {
+    "id": "heldout",
+    "kind": "code",
+    "cell_index": 8
+   },
+   {
+    "id": "judge",
+    "kind": "code",
+    "cell_index": 9
+   },
+   {
+    "id": "report",
+    "kind": "code",
+    "cell_index": 10
+   },
+   {
+    "id": "finish",
+    "kind": "finish"
+   }
+  ],
+  "edges": [
+   {
+    "id": "e-start-task",
+    "kind": "control",
+    "source": "start",
+    "target": "task"
+   },
+   {
+    "id": "e-task-copy",
+    "kind": "control",
+    "source": "task",
+    "target": "copy"
+   },
+   {
+    "id": "e-copy-baseline",
+    "kind": "control",
+    "source": "copy",
+    "target": "baseline"
+   },
+   {
+    "id": "e-baseline-read",
+    "kind": "control",
+    "source": "baseline",
+    "target": "read"
+   },
+   {
+    "id": "e-read-propose",
+    "kind": "control",
+    "source": "read",
+    "target": "propose"
+   },
+   {
+    "id": "e-propose-apply",
+    "kind": "control",
+    "source": "propose",
+    "target": "apply"
+   },
+   {
+    "id": "e-apply-tests",
+    "kind": "control",
+    "source": "apply",
+    "target": "tests"
+   },
+   {
+    "id": "e-tests-heldout",
+    "kind": "control",
+    "source": "tests",
+    "target": "heldout"
+   },
+   {
+    "id": "e-heldout-judge",
+    "kind": "control",
+    "source": "heldout",
+    "target": "judge"
+   },
+   {
+    "id": "e-judge-report",
+    "kind": "control",
+    "source": "judge",
+    "target": "report"
+   },
+   {
+    "id": "e-report-finish",
+    "kind": "control",
+    "source": "report",
+    "target": "finish"
+   },
+   {
+    "id": "e-judge-propose",
+    "kind": "control",
+    "source": "judge",
+    "target": "propose",
+    "loop": true,
+    "max_fires": 2,
+    "when": "verdict[\"action\"] != \"keep\""
+   }
+  ]
+ },
+ "layout": {
+  "nodes": {
+   "readme": {
+    "x": 40.0,
+    "y": 40.0
+   },
+   "start": {
+    "x": 40.0,
+    "y": 620.0
+   },
+   "finish": {
+    "x": 2460.0,
+    "y": 620.0
+   },
+   "task": {
+    "x": 460.0,
+    "y": 40.0
+   },
+   "copy": {
+    "x": 460.0,
+    "y": 460.0
+   },
+   "baseline": {
+    "x": 860.0,
+    "y": 40.0
+   },
+   "read": {
+    "x": 860.0,
+    "y": 460.0
+   },
+   "propose": {
+    "x": 1260.0,
+    "y": 40.0
+   },
+   "apply": {
+    "x": 1260.0,
+    "y": 460.0
+   },
+   "tests": {
+    "x": 1660.0,
+    "y": 40.0
+   },
+   "heldout": {
+    "x": 1660.0,
+    "y": 460.0
+   },
+   "judge": {
+    "x": 2060.0,
+    "y": 40.0
+   },
+   "report": {
+    "x": 2060.0,
+    "y": 460.0
+   }
+  },
+  "viewport": {
+   "x": 40,
+   "y": 30,
+   "zoom": 0.55
+  }
+ }
+}

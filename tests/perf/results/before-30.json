@@ -1,0 +1,63 @@
+{
+ "cells": 30,
+ "label": "before-30",
+ "dom": {
+  "edge_elements": 120,
+  "nodes": 35
+ },
+ "drag_handler": {
+  "n": 120,
+  "mean": 1.98,
+  "p50": 1.9,
+  "p95": 2.4,
+  "max": 3.6,
+  "layouts_per_move": 82.93,
+  "style_recalcs_per_move": 82.93,
+  "layout_ms_total": 83.5,
+  "script_ms_total": 100.9
+ },
+ "drag_frames": {
+  "n": 109,
+  "mean": 16.6,
+  "p50": 16.6,
+  "p95": 19.1,
+  "max": 24,
+  "fps": 60.2,
+  "long_frames_over_20ms": 2
+ },
+ "pan_handler": {
+  "n": 120,
+  "mean": 0.01,
+  "p50": 0,
+  "p95": 0.1,
+  "max": 0.1
+ },
+ "pan_frames": {
+  "n": 109,
+  "mean": 16.56,
+  "p50": 16.7,
+  "p95": 17,
+  "max": 25.9,
+  "fps": 60.4,
+  "long_frames_over_20ms": 3
+ },
+ "select_handler": {
+  "n": 20,
+  "mean": 5.54,
+  "p50": 4.7,
+  "p95": 17.5,
+  "max": 17.5
+ },
+ "typing_handler": {
+  "n": 40,
+  "mean": 2.58,
+  "p50": 2.3,
+  "p95": 4,
+  "max": 9
+ },
+ "save": {
+  "round_trips_after_40_keystrokes": 1,
+  "server_analysis_ms_mean": 2.6,
+  "round_trips_after_10_slow_keystrokes": 1
+ }
+}

@@ -1,0 +1,262 @@
+name: Linux acceptance (real Docker)
+
+# End-to-end check of the local Lab on a real Ubuntu machine with a real Docker
+# daemon: a user downloads the branch as a ZIP (no git), starts the service,
+# unlocks it with the owner key, and runs one-shot and persistent-session cells
+# whose isolation is checked from INSIDE the container. Each check is its own
+# step and reports PASS/FAIL as an annotation. Nothing here deploys anything
+# or contacts any service other than Docker Hub (image pull) and GitHub (ZIP).
+
+on:
+  push:
+    branches: ['e2e/linux', 'feature/**']
+    paths:
+      - 'local_lab/**'
+      - 'tests/**'
+      - 'tools/**'
+      - '.github/workflows/acceptance-linux.yml'
+      - '.github/acceptance/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LAB_URL: http://127.0.0.1:8794
+
+jobs:
+  acceptance:
+    name: Download, run, isolate, interrupt, stop
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (only for the acceptance helpers)
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve temp paths
+        run: |
+          echo "STATE_DIR=$RUNNER_TEMP/state" >> "$GITHUB_ENV"
+          echo "LAB_DIR=$RUNNER_TEMP/lab" >> "$GITHUB_ENV"
+          echo "DOWNLOAD_DIR=$RUNNER_TEMP/download" >> "$GITHUB_ENV"
+          docker version --format 'Docker {{.Server.Version}} ({{.Server.Os}}/{{.Server.Arch}})'
+          python3 --version
+          test -z "$(docker ps -a --filter name=mainaiger-lab- -q)"
+
+      - name: 1. Download the branch as a ZIP, like a user without git
+        run: |
+          mkdir -p "$DOWNLOAD_DIR" && cd "$DOWNLOAD_DIR"
+          curl -fsSL -o source.zip "https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/${GITHUB_REF_NAME}.zip"
+          unzip -q source.zip
+          src=$(find . -maxdepth 2 -type d -name local_lab -printf '%h\n' | head -1)
+          test -n "$src" && echo "LAB_SRC=$(cd "$src" && pwd)" >> "$GITHUB_ENV"
+          echo "::notice::1 download: PASS - unzipped $(du -sh "$src" | cut -f1) from ${GITHUB_REF_NAME}.zip"
+
+      - name: 2. Pull the pinned Python image
+        run: |
+          image=$(python3 -c "import sys; sys.path.insert(0,'$LAB_SRC'); from local_lab.runner import IMAGE; print(IMAGE)")
+          docker pull --quiet "$image"
+          echo "::notice::2 image: PASS - $image $(docker image inspect --format '{{.Id}}' "$image" | cut -c1-19)"
+
+      - name: 3. Start the Lab service and read the local owner key
+        run: |
+          cd "$LAB_SRC"
+          nohup python3 -m local_lab --port 8794 --state-dir "$STATE_DIR" > "$RUNNER_TEMP/service.log" 2>&1 < /dev/null &
+          echo $! > "$RUNNER_TEMP/service.pid"
+          for i in $(seq 1 30); do grep -q 'Lab panel: http://127.0.0.1:8794' "$RUNNER_TEMP/service.log" && break; sleep 1; done
+          grep -q 'Lab panel: http://127.0.0.1:8794' "$RUNNER_TEMP/service.log"
+          test -f "$STATE_DIR/owner.key"
+          stat -c '%a' "$STATE_DIR" | grep -qx 700
+          stat -c '%a' "$STATE_DIR/owner.key" | grep -qx 600
+          echo "::notice::3 service: PASS - loopback panel ready; owner.key present with mode 600 in a 700 state dir"
+
+      - name: 4. Unlock with the owner key (cookie + CSRF, same-origin only)
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          cross=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Origin: https://mainaiger.org' -H 'Content-Type: application/json' --data '{"key":"x"}' "$LAB_URL/api/login")
+          lab_post /api/login '{"key":"not-the-key"}' > /dev/null; wrong=$(lab_status)
+          lab_login; login=$?
+          state=$(lab_get /api/state)
+          if [[ "$cross" == 403 && "$wrong" == 403 && $login == 0 ]] && jq -e '.docker_available == true and .session.alive == false' <<<"$state" > /dev/null; then
+            pass 4 "cross-origin login 403, wrong key 403, owner key accepted, docker_available=true"
+          else fail 4 "cross=$cross wrong=$wrong login=$login state=$state"; exit 1; fi
+
+      - name: a. One-shot run in a fresh container
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          body=$(lab_post /api/run "$(jq -cn --argjson r "$(lab_revision)" '{code:"print(1+1)",confirm:true,revision:$r}')" 60)
+          out=$(jq -r .output <<<"$body"); code=$(jq -r .exit_code <<<"$body")
+          if [[ "$(lab_status)" == 200 && "$out" == "2" && "$code" == "0" ]]; then pass a "one-shot run printed 2, exit 0"; else fail a "status=$(lab_status) body=$body"; fi
+
+      - name: b. Save settings - read-only folder, 1 CPU, 256 MB
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          ws="$RUNNER_TEMP/workspace"; mkdir -p "$ws"; echo hello > "$ws/hello.txt"; chmod 755 "$ws"; chmod 644 "$ws/hello.txt"
+          body=$(lab_post /api/settings "$(jq -cn --arg w "$ws" '{workspace:$w,cpus:"1",memory:"256m"}')")
+          state=$(lab_get /api/state)
+          if [[ "$(lab_status)" == 200 ]] && jq -e --arg w "$ws" '.workspace == $w and .limits.cpus == "1" and .limits.memory == "256m"' <<<"$state" > /dev/null; then
+            pass b "settings saved: $(jq -c '{workspace,limits}' <<<"$state")"; else fail b "settings=$body state=$state"; fi
+
+      - name: c. Start a persistent session (kernel in a container)
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          body=$(lab_start_session)
+          if [[ "$(lab_status)" == 200 ]] && jq -e '.alive == true and (.python | test("^3\\."))' <<<"$body" > /dev/null; then
+            pass c "session alive, python $(jq -r .python <<<"$body"), container $(containers | tr '\n' ' ')"
+            docker inspect "$(containers | head -1)" --format 'HostConfig: Memory={{.HostConfig.Memory}} NanoCpus={{.HostConfig.NanoCpus}} PidsLimit={{.HostConfig.PidsLimit}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} NetworkMode={{.HostConfig.NetworkMode}} CapDrop={{.HostConfig.CapDrop}} User={{.Config.User}} Mounts={{range .Mounts}}{{.Source}}->{{.Destination}}(rw={{.RW}}) {{end}}'
+          else fail c "status=$(lab_status) body=$body"; fi
+
+      - name: d. Variables persist between cells
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          first=$(lab_exec $'x = [1, 2, 3]\nprint("made x")'); second=$(lab_exec 'sum(x)')
+          vars=$(lab_get /api/kernel/variables)
+          if [[ "$(jq -r .output <<<"$first")" == "made x" && "$(jq -r .output <<<"$second")" == "6" ]] && jq -e '.variables[] | select(.name=="x" and .type=="list" and .summary=="3 items")' <<<"$vars" > /dev/null; then
+            pass d "sum(x)=6 across cells; variables lists x:list:3 items; cell count $(jq -r .count <<<"$second")"
+          else fail d "first=$first second=$second vars=$vars"; fi
+
+      - name: e. Isolation observed from inside the container
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          body=$(lab_exec_file .github/acceptance/isolation_probe.py)
+          probe=$(jq -r .output <<<"$body")
+          echo "probe: $probe"
+          ok=1; why=""
+          check() { if ! jq -e "$1" <<<"$probe" > /dev/null; then ok=0; why="$why [$2]"; fi; }
+          check '.write_workspace != "allowed"' "workspace writable"
+          check '.read_workspace == "hello"' "workspace unreadable"
+          check '.network != "allowed"' "network reachable"
+          check '.uid == 65534' "not nobody"
+          check '.docker_sock == false' "docker socket visible"
+          check '.tmp_write == "ok"' "tmp not writable"
+          check '.kernel_write != "allowed"' "kernel mount writable"
+          check '.root_write != "allowed"' "root fs writable"
+          if [[ $ok == 1 && "$(jq -r .status <<<"$body")" == ok ]]; then
+            pass e "ws write=$(jq -r .write_workspace <<<"$probe") read=$(jq -r .read_workspace <<<"$probe") net=$(jq -r .network <<<"$probe") uid=$(jq -r .uid <<<"$probe") sock=$(jq -r .docker_sock <<<"$probe") tmp=$(jq -r .tmp_write <<<"$probe") kernel=$(jq -r .kernel_write <<<"$probe") rootfs=$(jq -r .root_write <<<"$probe") cpu_count=$(jq -r .cpu_count <<<"$probe") cpu.max=$(jq -r .cpu_max <<<"$probe") memory.max=$(jq -r .memory_limit <<<"$probe") pids.max=$(jq -r .pids_max <<<"$probe")"
+          else fail e "problems:$why probe=$probe body=$body"; fi
+
+      - name: f. Errors report name, value and cell traceback
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          body=$(lab_exec '1/0')
+          if jq -e '.status=="error" and .error.ename=="ZeroDivisionError" and ((.error.traceback|join("\n"))|test("<cell [0-9]+>"))' <<<"$body" > /dev/null; then
+            pass f "$(jq -r '.error.ename + ": " + .error.evalue' <<<"$body"); traceback names $(jq -r '.error.traceback|join(" ")' <<<"$body" | grep -o '<cell [0-9]*>' | head -1)"
+          else fail f "body=$body"; fi
+
+      - name: g. Interrupt a running cell, session survives
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          lab_exec $'import time\nwhile True: time.sleep(0.01)' 90 > "$LAB_DIR/interrupted.json" &
+          bg=$!
+          sleep 2
+          busy=$(lab_exec 'print(1)'); busy_status=$(lab_status)
+          irq=$(lab_post /api/kernel/interrupt '{}')
+          wait $bg
+          res=$(cat "$LAB_DIR/interrupted.json")
+          after=$(lab_exec 'print("alive")')
+          if [[ "$busy_status" == 409 && "$(jq -r .ok <<<"$irq")" == true && "$(jq -r .status <<<"$res")" == interrupted && "$(jq -r .output <<<"$after")" == alive ]]; then
+            pass g "second cell refused with 409 while busy; interrupt delivered; cell status=interrupted after $(jq -r .elapsed_ms <<<"$res") ms; session still answers"
+          else fail g "busy=$busy_status/$busy irq=$irq res=$res after=$after"; fi
+
+      - name: t. Cell time limit (60 s) interrupts automatically
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          start=$(date +%s)
+          res=$(lab_exec 'while True: pass' 110)
+          took=$(( $(date +%s) - start ))
+          after=$(lab_exec '6 * 7')
+          if [[ "$(jq -r .status <<<"$res")" == timeout && "$(jq -r .output <<<"$after")" == 42 && $took -lt 90 ]]; then
+            pass t "busy loop stopped with status=timeout after ${took}s; note: $(jq -r .note <<<"$res"); session continues (6*7=42)"
+          else fail t "took=${took}s res=$res after=$after"; fi
+
+      - name: h. Memory limit kills a runaway cell at the container boundary
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          res=$(lab_exec 'b = b"x" * (600 * 1024 * 1024)' 90)
+          sleep 2
+          status=$(lab_get /api/kernel)
+          left=$(containers | tr '\n' ' ')
+          if [[ "$(jq -r .status <<<"$res")" == killed && "$(jq -r .alive <<<"$status")" == false && -z "$left" ]]; then
+            pass h "600 MB allocation under a 256 MB limit: cell status=killed, note='$(jq -r .note <<<"$res")', session alive=false, no container left"
+          else fail h "res=$res status=$status containers='$left'"; fi
+          # a new session must start cleanly afterwards
+          again=$(lab_start_session)
+          jq -e '.alive == true and .count == 0' <<<"$again" > /dev/null && echo "::notice::h2: PASS - fresh session started after the OOM kill" || fail h2 "restart=$again"
+
+      - name: i. Stop session removes the container
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          res=$(lab_post /api/kernel/stop '{}')
+          sleep 1
+          left=$(containers | tr '\n' ' ')
+          if [[ "$(jq -r .alive <<<"$res")" == false && -z "$left" ]]; then pass i "alive=false, ended='$(jq -r .ended <<<"$res")', no mainaiger container remains"; else fail i "res=$res containers='$left'"; fi
+
+      - name: j. SIGTERM (Quit Lab) shuts down cleanly and removes a running session
+        continue-on-error: true
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          lab_start_session > /dev/null
+          before=$(containers | tr '\n' ' ')
+          pid=$(cat "$RUNNER_TEMP/service.pid")
+          kill -TERM "$pid"
+          for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+          sleep 1
+          left=$(containers | tr '\n' ' ')
+          if ! kill -0 "$pid" 2>/dev/null && grep -q 'Lab stopped\.' "$RUNNER_TEMP/service.log" && [[ -n "$before" && -z "$left" ]]; then
+            pass j "service exited within 10 s, log says 'Lab stopped.', session container '$before' removed"
+          else fail j "pid alive=$(kill -0 "$pid" 2>/dev/null && echo yes || echo no) before='$before' left='$left' log=$(tail -3 "$RUNNER_TEMP/service.log" | tr '\n' ' ')"; fi
+
+      - name: j2. Exit code of a SIGTERM-ed service is 0
+        continue-on-error: true
+        run: |
+          cd "$LAB_SRC"
+          python3 -m local_lab --port 8795 --state-dir "$RUNNER_TEMP/state2" > "$RUNNER_TEMP/service2.log" 2>&1 < /dev/null &
+          pid=$!
+          for i in $(seq 1 30); do grep -q 'Lab panel' "$RUNNER_TEMP/service2.log" && break; sleep 1; done
+          kill -TERM "$pid"; wait "$pid"; code=$?
+          if [[ $code == 0 ]] && grep -q 'Lab stopped\.' "$RUNNER_TEMP/service2.log"; then echo "::notice::j2: PASS - exit code 0 after SIGTERM"; echo "j2 PASS - exit 0" >> "$LAB_DIR/results.txt"; else echo "::error::j2: FAIL - exit code $code"; echo "j2 FAIL - exit $code" >> "$LAB_DIR/results.txt"; fi
+
+      - name: k. No mainaiger containers remain
+        if: always()
+        run: |
+          source .github/acceptance/lab.sh
+          set +e
+          pid=$(cat "$RUNNER_TEMP/service.pid" 2>/dev/null || true)
+          if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then kill -TERM "$pid"; sleep 3; fi
+          left=$(docker ps -a --filter name=mainaiger-lab- --format '{{.Names}} {{.Status}}' | tr '\n' ' ')
+          if [[ -z "$left" ]]; then pass k "docker ps -a shows no mainaiger-lab-* container"; else docker rm -f $(docker ps -a --filter name=mainaiger-lab- -q); fail k "leftover: $left"; fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "::notice::SUMMARY $(tr '\n' ';' < "$LAB_DIR/results.txt")"
+          cat "$LAB_DIR/results.txt"
+          echo "--- service log ---"; tail -20 "$RUNNER_TEMP/service.log" || true
+          ! grep -q FAIL "$LAB_DIR/results.txt"

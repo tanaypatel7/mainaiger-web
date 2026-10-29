@@ -155,7 +155,14 @@ class PermissionStore:
 
     def register(self, resource_id, name, root):
         resource_id, name = label(resource_id, 80), label(name)
-        root = str(Path(root).expanduser().absolute())
+        # The root itself must not be a symlink (an alias would hide the real
+        # target from the owner), but its ancestors are resolved once: macOS keeps
+        # /var, /tmp and /etc as symlinks into /private, and the stored real path
+        # is walked with O_NOFOLLOW on every access so later symlink swaps are refused.
+        chosen = Path(root).expanduser().absolute()
+        if chosen.is_symlink():
+            raise OSError('Workspace root must be a real directory, not a symlink')
+        root = str(chosen.parent.resolve(strict=True) / chosen.name)
         root_path = Path(root)
         if root_path == Path('/') or root_path == self.path or root_path in self.path.parents or self.path in root_path.parents:
             raise ValueError('Workspace and private state must be separate; sharing a filesystem root is refused')
@@ -165,6 +172,9 @@ class PermissionStore:
             old = db.execute('SELECT root FROM resources WHERE id=?', (resource_id,)).fetchone()
             if old and old['root'] != root:
                 raise ValueError('Resource roots are immutable; use a new resource ID')
+            taken = db.execute('SELECT id FROM resources WHERE root=? AND id<>?', (root, resource_id)).fetchone()
+            if taken:
+                raise ValueError('This folder is already registered as resource ' + taken['id'])
             db.execute('INSERT INTO resources VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label', (resource_id, name, root))
 
     def snapshot(self):

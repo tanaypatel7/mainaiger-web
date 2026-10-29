@@ -53,7 +53,11 @@ pairing and integration into the live Nexus runtime remain unimplemented.
 `local_lab/` is a separate, manually started local Python Lab prototype. It
 requires Docker Desktop and a separately downloaded Python image, offers a
 single Python cell and `.ipynb` import/export, and asks before each constrained
-container run. It does not configure remote pairing, network access or GPUs.
+container run. An optional persistent session keeps one kernel container alive
+so variables survive between cells (`local_lab/kernel/`, `local_lab/kernel_session.py`), and a graph canvas
+(`/graph`; `local_lab/graph.py`, `local_lab/graph_run.py`, `local_lab/ui/graph.*`) runs cells as a trigger
+flow, serially, in that session.
+It does not configure remote pairing, network access or GPUs.
 See `docs/LOCAL_LAB_SETUP.md`. Docker and macOS acceptance remain unverified.
 
 The website is hosted at mainaiger.org through GitHub Pages and Cloudflare DNS.
