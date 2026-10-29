@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from local_lab import network
 from local_lab.server import LabServer, initialize_state
@@ -26,6 +27,9 @@ def fake_run(output, code=0):
 
 
 class TailnetTests(unittest.TestCase):
+    def setUp(self):
+        # The real Tailscale.app on a Mac must not be found before the fake finder: these tests describe the code, not the machine.
+        p = patch.object(network, 'MAC_CLI', '/nonexistent/Tailscale'); p.start(); self.addCleanup(p.stop)
     def test_absent_cli_means_not_available_not_guessed(self):
         t = network.tailnet(find=lambda n: None, run=fake_run('{}'))
         self.assertEqual((t['available'], t['logged_in'], t['peers']), (False, False, []))

@@ -666,8 +666,14 @@ Start → How this loop works (note) → Load data → Extract features → Spli
   `{{output:Apply to copy}}` plus the question; its answer is schema-checked
   as `{action: keep|revert|ask, confidence, reasons[≤3]}` and stored in
   `verdict`.
-- **The loop arrow** Judge → Propose fires while the verdict is not "keep",
-  at most twice. Each new Propose prompt carries the previous attempt's
+- **The loop arrow** Judge → Propose fires while the verdict is not a "keep"
+  *backed by the numbers* (`not (verdict["action"] == "keep" and improved)`),
+  at most twice. `improved` is computed by Apply from the measured accuracies
+  with the same +0.02 bar the Judge prompt states, so the model's verdict is
+  never the only gate — the first real run on a Mac (`llama3.2:1b`, 29 Oct)
+  proposed a change that changed nothing (delta +0.000) and the judge still
+  answered "keep, confidence 1.0"; Report now says when a verdict and the
+  measurements disagree and does not offer the source to keep. Each new Propose prompt carries the previous attempt's
   numbers (again through `{{output:Apply to copy}}`) so the model does not
   repeat itself, and the Apply cell keeps a `history` list in the session.
 - **Report** prints every attempt with its accuracy and delta, the last
@@ -689,10 +695,12 @@ fake first proposes a bad `train` (reverted, so the loop arrow fires), then a
 good one (kept, so it does not); the test checks that each Judge prompt
 carried that pass's numbers, that the second Propose prompt carried the
 first attempt, the loop count, the step count and the report's two lines; run
-on a real kernel like every other example. With a real Ollama model (`qwen2.5-coder:7b` is named in the
-two model cells; change it on the card to any installed coder model) the run
-is unverified here: expect most proposals to be rejected or to fail the
-schema, which the run shows plainly. Fixed while building it: output
+on a real kernel like every other example. **Verified on a Mac (29 Oct 2026)** through `scripts/verify_mac.py`
+with `llama3.2:1b` inside a real Docker session: both model cells answered
+within their schemas, the run finished, and the rubber-stamp above was found
+and fixed (`test_self_improve_rejects_a_keep_the_numbers_contradict`). The
+cards name `qwen2.5-coder:7b`; change it to any installed model. Expect a 1B
+model to propose weak changes; the numbers, not the verdict, decide. Fixed while building it: output
 placeholders now accept cell titles with spaces (`{{output:Apply to copy}}`
 was left literal before).
 

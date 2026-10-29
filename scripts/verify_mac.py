@@ -191,11 +191,19 @@ def probe_tests(r, skip):
     code, out = run_cmd([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py'], cwd=str(ROOT), timeout=1800)
     m = re.search(r'Ran (\d+) tests? in ([\d.]+)s', out)
     py = 'Python: %s tests in %ss, %s' % (m.group(1), m.group(2), 'OK' if code == 0 else 'FAILED') if m else 'Python: no result (exit %s)' % code
-    ncode, nout = run_cmd(['node', '--test'] + sorted(str(p) for p in (ROOT / 'tests').glob('*.test.js')), cwd=str(ROOT), timeout=600)
+    _, nver = run_cmd(['node', '--version'], timeout=20)
+    # Newer Node picks a reporter by terminal; ask for TAP explicitly so the pass/fail lines are always there to parse.
+    ncode, nout = run_cmd(['node', '--test', '--test-reporter=tap', '--test-reporter-destination=stdout'] + sorted(str(p) for p in (ROOT / 'tests').glob('*.test.js')), cwd=str(ROOT), timeout=600)
     passed = re.search(r'# pass (\d+)', nout); failed = re.search(r'# fail (\d+)', nout)
-    node = 'Node: %s pass, %s fail' % (passed.group(1) if passed else '?', failed.group(1) if failed else '?') if ncode is not None else 'Node: could not run (%s)' % nout[:100]
-    status = 'ok' if code == 0 and ncode == 0 else 'fail'
-    r.add('tests', status, py + '; ' + node, python_tail=out[-4000:] if code != 0 else out[-300:], node_tail=nout[-2000:] if ncode != 0 else '', skipped=re.findall(r'skipped=(\d+)', out))
+    if ncode is None:
+        node = 'Node: not installed or could not run (the Node tests cover the website, not the Lab)'
+    elif passed and failed:
+        node = 'Node %s: %s pass, %s fail' % (nver.strip(), passed.group(1), failed.group(1))
+    else:
+        node = 'Node %s: exit %s but no TAP summary to parse' % (nver.strip(), ncode)
+    node_ok = ncode is None or (ncode == 0 and failed is not None and failed.group(1) == '0')
+    status = 'ok' if code == 0 and node_ok else 'fail'
+    r.add('tests', status, py + '; ' + node, python_tail=out[-4000:] if code != 0 else out[-300:], node_tail='' if node_ok and ncode == 0 else nout[-2000:], node_version=nver.strip()[:20], skipped=re.findall(r'skipped=(\d+)', out))
 
 
 def docker_kernel(state_dir, workspace):

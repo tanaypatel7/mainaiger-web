@@ -154,6 +154,22 @@ class ExampleRunTests(unittest.TestCase):
                     self.assertEqual(g.preflight(doc, g.plan(doc, 'all'))['missing'], [], 'examples must not depend on hidden state')
                 finally:
                     kernel.stop()
+    def test_self_improve_rejects_a_keep_the_numbers_contradict(self):
+        """Seen on a real Mac with llama3.2:1b: the proposal changed nothing (delta +0.000) and the judge still said
+        "keep, confidence 1.0". The verdict must never be the only gate: the loop goes on and Report says so."""
+        same = 'model = {"weights": weights, "bias": bias, "predict": predict}\nprint("candidate trained")\n'  # reuses the baseline: delta 0
+        def agreeable(cfg, prompt):
+            value = {'source': same, 'why': 'A change that changes nothing.'} if cfg['output'] == 'proposal' else {'action': 'keep', 'confidence': 1.0, 'reasons': ['clearly better (0.860 vs 0.860)']}
+            return {'ok': True, 'value': value, 'raw': '', 'error': None, 'elapsed_ms': 1, 'attempts': 1, 'model': cfg['model']}
+        doc = g.validate(load_example('self-improve'))
+        run = GraphRun(doc, g.plan(doc, 'all'), self.kernel, on_result=lambda i, r: g.record_result(doc, i, r), ask_model=agreeable).start()
+        self.assertEqual(run.wait(120), 'finished', run.snapshot().get('error'))
+        snap = run.snapshot()
+        self.assertEqual((snap['edges']['e-judge-propose']['fires'], snap['edges']['e-judge-propose']['state']), (2, 'exhausted'), 'the loop keeps going while keep is not backed by the numbers, until its budget ends')
+        self.assertIn('improved by at least +0.02: False', snap['nodes']['apply']['output'])
+        report = snap['nodes']['report']['output']
+        self.assertIn('Self-improvement loop: 3 attempts', report); self.assertIn('last verdict: keep', report)
+        self.assertIn('the measurements contradict: the baseline stays', report); self.assertNotIn('To keep this change', report)
     def test_branching_example_reports_missing_input_when_run_alone(self):
         doc = g.validate(load_example('branching-stats'))
         check = g.preflight(doc, g.plan(doc, 'one', ['report']))

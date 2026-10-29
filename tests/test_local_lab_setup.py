@@ -27,7 +27,8 @@ class SetupTest(unittest.TestCase):
 
     def test_desktop_checks_endpoint_and_engine(self):
         endpoint = 'unix://' + str(Path.home() / '.docker/run/docker.sock')
-        with patch.object(setup.shutil, 'which', return_value='/usr/local/bin/docker'), patch.object(setup.platform, 'system', return_value='Darwin'), patch.object(setup, '_run', side_effect=[(0, endpoint), (0, 'Docker Desktop|linux')]):
+        # Path.is_file is pinned False so a real Docker.app on the machine running the tests is not found before the fake PATH entry.
+        with patch.object(setup.shutil, 'which', return_value='/usr/local/bin/docker'), patch.object(setup.Path, 'is_file', return_value=False), patch.object(setup.platform, 'system', return_value='Darwin'), patch.object(setup, '_run', side_effect=[(0, endpoint), (0, 'Docker Desktop|linux')]):
             docker, _ = setup._local_docker()
             self.assertEqual(docker, '/usr/local/bin/docker')
 
