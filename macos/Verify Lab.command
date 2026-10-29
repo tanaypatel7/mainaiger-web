@@ -18,6 +18,8 @@ echo "== 1. git pull --ff-only"
 git pull --ff-only || echo "(pull failed; continuing with the checkout as it is)"
 echo
 echo "== 2. verify"
+PY=python3
+if [ -x .venv/bin/python3 ]; then PY=.venv/bin/python3; echo "(using the checkout's .venv Python, where Playwright is installed)"; fi
 FLAGS=(--docker --model auto)
 if ssh -G nexus 2>/dev/null | grep -qi '^hostname nexus$'; then
   echo "(no ssh alias named nexus in ~/.ssh/config; skipping the ssh probe)"
@@ -25,8 +27,8 @@ else
   FLAGS+=(--ssh-host nexus)
 fi
 if [ "${1:-}" != "" ]; then FLAGS+=(--export "$1"); fi
-echo "python3 scripts/verify_mac.py ${FLAGS[*]}"
-python3 scripts/verify_mac.py "${FLAGS[@]}"
+echo "$PY scripts/verify_mac.py ${FLAGS[*]}"
+"$PY" scripts/verify_mac.py "${FLAGS[@]}"
 STATUS=$?
 echo
 echo "== 3. report"

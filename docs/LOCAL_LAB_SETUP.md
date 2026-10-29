@@ -1151,8 +1151,14 @@ browser cell inside a graph run through the server too; the engine with a
 fake runner (`tests/test_nested.py`); the page and the Graph inspector end
 to end in headless Chromium (`BrowserPageTests`, a script that captures the
 Lab's own front page). All of it against local pages: **no real site has
-been scripted yet**, and the macOS Lab needs `pip install playwright` +
-`playwright install chromium` for its Python before the first run.
+been scripted yet**, and the macOS Lab needs Playwright for *its own* Python before the first run.
+Homebrew's Python refuses `pip install` system-wide (PEP 668), so make a
+virtual environment in the checkout and run the Lab from it:
+`python3 -m venv .venv && .venv/bin/python3 -m pip install playwright &&
+.venv/bin/python3 -m playwright install chromium`, then
+`.venv/bin/python3 -m local_lab`. `Verify Lab.command` uses `.venv` when it
+exists. The bundled Mac app has its own Python, where Playwright is still
+*future*.
 
 ## Verifying the Lab on a real Mac (`scripts/verify_mac.py`, `macos/Verify Lab.command`)
 

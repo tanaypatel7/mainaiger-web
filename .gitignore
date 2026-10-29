@@ -9,3 +9,4 @@ build/
 dist/
 verify-mac-*.json
 verify-mac-*.md
+.venv/
