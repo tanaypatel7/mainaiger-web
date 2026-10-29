@@ -1154,6 +1154,48 @@ Lab's own front page). All of it against local pages: **no real site has
 been scripted yet**, and the macOS Lab needs `pip install playwright` +
 `playwright install chromium` for its Python before the first run.
 
+## Verifying the Lab on a real Mac (`scripts/verify_mac.py`, `macos/Verify Lab.command`)
+
+Everything above is tested in CI with fake models, a fake export and local
+pages. The checks only a real machine can answer are collected in one script
+that runs them **through the Lab's own modules** (the same `resolve_docker`,
+`session_command`, `decide.ask`, `models.chat`, `inspect_zip`,
+`browser.available` and `network.tailnet` the app uses) and writes one report:
+`verify-mac-<stamp>.json` and `.md` in the repository folder (ignored by git).
+Every probe is labelled **ok / fail / skip** with the reason; a probe that
+crashes becomes a *fail* with its traceback, never a crash of the report; the
+home folder is replaced by `~` in every string so the file can be shared.
+
+Probes, in order: `environment` (commit, branch, Python); `docker` (Desktop
+engine verified, session image pulled); `ollama` (running, models, RAM);
+`playwright` (ready for *this* Python, else the two install commands);
+`tailscale` (peer names and online state, no addresses); `nexus-ssh`
+(`--ssh-host`: a read-only `ssh -o BatchMode=yes` probe with the options
+Devices → Connect uses, reporting Python, Docker, the checkout and whether a
+Lab listens on 8795 there); `tests` (both suites); `docker-session`
+(`--docker`: a real session container with this script's own staged kernel and
+private `--state-dir`, one cell that checks the workspace is read-only and
+the network is absent, an `evaluate`, a second cell); `self-improve-loop`
+(`--model auto|NAME`: `examples/self-improve.ipymb` on that session with a real
+model through the server's own model-cell path, every model call logged with
+its seconds, attempts and answer; `--repo-loop` adds the repository loop);
+`memory-import` (`--export PATH`: `inspect_zip` on a real ChatGPT or Claude
+export — counts, parse errors and other file names only, never titles or
+text). The script never reads an owner key, never writes to a Lab's state
+folder or the checkout, and never installs anything.
+
+**`macos/Verify Lab.command`** is the double-click version: it pulls the
+branch (fast-forward only), runs the script with `--docker --model auto`
+(plus `--ssh-host nexus` when `~/.ssh/config` has that alias, and `--export`
+when a zip is passed as the first argument), and opens the folder with the
+report. Upload the newest `verify-mac-*.json` to the chat.
+
+**Status:** the report, redaction, skip labels, model picking, the export
+probe on a synthetic zip and the loop probe on a local kernel with the fake
+model are tested (`tests/test_verify_mac.py`); the Docker, Ollama, Tailscale
+and ssh probes are tested only by running the script on Linux here, where they
+skip. The script's whole purpose is unverified until it has run on your Mac.
+
 ## Settings
 
 Settings remain in memory while the panel runs and are reset on restart. Stop it

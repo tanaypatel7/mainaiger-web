@@ -7,3 +7,5 @@ __pycache__/
 artifacts/
 build/
 dist/
+verify-mac-*.json
+verify-mac-*.md
